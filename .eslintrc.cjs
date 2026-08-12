@@ -50,6 +50,9 @@ module.exports = {
       },
       rules: {
         "react/no-unknown-property": ["error", { ignore: ["variant"] }],
+        // Plain-JS app with no prop-types dependency: component contracts are
+        // documented with JSDoc and default parameters instead.
+        "react/prop-types": "off",
       },
     },
 
@@ -84,6 +87,7 @@ module.exports = {
         ".graphqlrc.{js,ts}",
         "shopify.server.{js,ts}",
         "**/*.server.{js,ts}",
+        "prisma/*.{js,ts}",
       ],
       env: {
         node: true,

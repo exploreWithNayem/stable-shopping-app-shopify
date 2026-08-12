@@ -1,0 +1,13 @@
+{
+  "recommendations": {
+    "heading": "You may also like",
+    "add_to_cart": "Add to cart",
+    "added": "Added",
+    "choose_options": "Choose options",
+    "sold_out": "Sold out",
+    "error": "Try again",
+    "empty": "No recommendations available right now.",
+    "previous": "Previous",
+    "next": "Next"
+  }
+}

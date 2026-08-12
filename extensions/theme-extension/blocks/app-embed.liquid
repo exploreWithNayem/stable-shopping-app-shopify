@@ -1,0 +1,43 @@
+{%- comment -%}
+  Easy Recommendation — app embed.
+
+  Publishes runtime config for reco.js. Deliberately does not load the script
+  itself: the recommendations block declares it, so the script is present
+  wherever a block is, whether or not the merchant enabled this embed.
+
+  reco.js reads this object at call time rather than load time, so the two can
+  arrive in either order.
+{%- endcomment -%}
+
+<script>
+  window.EasyReco = window.EasyReco || {};
+  window.EasyReco.config = {
+    proxy: "/apps/easy-reco",
+    shop: {{ shop.permanent_domain | json }},
+    moneyFormat: {{ shop.money_format | json }},
+    enabled: {% if block.settings.enable_tracking %}true{% else %}false{% endif %},
+    strings: {
+      addToCart: {{ 'recommendations.add_to_cart' | t | json }},
+      added: {{ 'recommendations.added' | t | json }},
+      soldOut: {{ 'recommendations.sold_out' | t | json }},
+      chooseOptions: {{ 'recommendations.choose_options' | t | json }},
+      error: {{ 'recommendations.error' | t | json }}
+    }
+  };
+</script>
+
+{% schema %}
+{
+  "name": "Easy Recommendation",
+  "target": "body",
+  "settings": [
+    {
+      "type": "checkbox",
+      "id": "enable_tracking",
+      "label": "Track recommendation performance",
+      "info": "Turn off to stop recording impressions, clicks and add to carts. Recommendations keep working.",
+      "default": true
+    }
+  ]
+}
+{% endschema %}

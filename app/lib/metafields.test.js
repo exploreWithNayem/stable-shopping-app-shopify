@@ -1,0 +1,237 @@
+import { afterAll, beforeEach, describe, expect, test } from "vitest";
+import prisma from "../db.server";
+import { upsertOverride, markOverrideSynced } from "../models/override.server";
+import {
+  METAFIELDS_SET_BATCH,
+  METAFIELD_KEY,
+  METAFIELD_NAMESPACE,
+  buildMetafieldValue,
+  deleteOverrideMetafield,
+  shouldPublishToStorefront,
+  syncAllOverrides,
+  syncOverrideMetafield,
+} from "./metafields.server";
+
+const DOMAIN = "vitest-metafields.myshopify.com";
+let shopId;
+
+/** Records mutations and lets a test force userErrors. */
+function stubAdmin({ setErrors = [], deleteErrors = [] } = {}) {
+  const calls = [];
+  return {
+    calls,
+    setCalls: () => calls.filter((c) => c.query.includes("metafieldsSet")),
+    deleteCalls: () => calls.filter((c) => c.query.includes("metafieldsDelete")),
+    graphql: async (query, options) => {
+      calls.push({ query, variables: options?.variables ?? {} });
+      const isSet = query.includes("metafieldsSet");
+      return {
+        json: async () => ({
+          data: isSet
+            ? { metafieldsSet: { metafields: [{ id: "gid://mf/1" }], userErrors: setErrors } }
+            : { metafieldsDelete: { deletedMetafields: [], userErrors: deleteErrors } },
+        }),
+      };
+    },
+  };
+}
+
+const override = (overrides = {}) => ({
+  id: "row-1",
+  productId: "55",
+  placement: "pdp",
+  enabled: true,
+  items: [
+    { id: "1", handle: "one" },
+    { id: "2", handle: "two" },
+  ],
+  ...overrides,
+});
+
+beforeEach(async () => {
+  await prisma.shop.deleteMany({ where: { domain: DOMAIN } });
+  const shop = await prisma.shop.create({ data: { domain: DOMAIN } });
+  shopId = shop.id;
+});
+
+afterAll(async () => {
+  await prisma.shop.deleteMany({ where: { domain: DOMAIN } });
+});
+
+describe("shouldPublishToStorefront", () => {
+  test("publishes an enabled pdp or both override", () => {
+    expect(shouldPublishToStorefront(override({ placement: "pdp" }))).toBe(true);
+    expect(shouldPublishToStorefront(override({ placement: "both" }))).toBe(true);
+  });
+
+  // The metafield is read by the PDP block only. Publishing a checkout-only
+  // override would put it on the product page, where it was never meant to be.
+  test("does not publish a checkout-only override", () => {
+    expect(shouldPublishToStorefront(override({ placement: "checkout" }))).toBe(false);
+  });
+
+  test("does not publish a disabled or empty override", () => {
+    expect(shouldPublishToStorefront(override({ enabled: false }))).toBe(false);
+    expect(shouldPublishToStorefront(override({ items: [] }))).toBe(false);
+    expect(shouldPublishToStorefront(null)).toBe(false);
+  });
+});
+
+describe("buildMetafieldValue", () => {
+  test("writes the versioned shape Liquid expects", () => {
+    const value = JSON.parse(
+      buildMetafieldValue(
+        [{ id: 1, handle: "one", title: "One", position: 0 }],
+        { now: new Date("2026-08-12T00:00:00Z") },
+      ),
+    );
+
+    expect(value).toEqual({
+      v: 1,
+      updatedAt: "2026-08-12T00:00:00.000Z",
+      items: [{ id: "1", handle: "one" }],
+    });
+  });
+
+  test("keeps ids as strings and tolerates a missing handle", () => {
+    const value = JSON.parse(buildMetafieldValue([{ id: 42 }]));
+    expect(value.items[0]).toEqual({ id: "42", handle: null });
+  });
+});
+
+describe("syncOverrideMetafield", () => {
+  test("writes the metafield for a published override", async () => {
+    const admin = stubAdmin();
+    const result = await syncOverrideMetafield(admin, override());
+
+    expect(result.published).toBe(true);
+    expect(admin.setCalls()).toHaveLength(1);
+    expect(admin.setCalls()[0].variables.metafields[0]).toMatchObject({
+      ownerId: "gid://shopify/Product/55",
+      namespace: METAFIELD_NAMESPACE,
+      key: METAFIELD_KEY,
+      type: "json",
+    });
+  });
+
+  // Turning an override off has to remove the metafield, otherwise the theme
+  // keeps rendering the old list.
+  test("deletes the metafield when the override should not be live", async () => {
+    const admin = stubAdmin();
+    const result = await syncOverrideMetafield(admin, override({ enabled: false }));
+
+    expect(result.published).toBe(false);
+    expect(admin.deleteCalls()).toHaveLength(1);
+    expect(admin.setCalls()).toHaveLength(0);
+  });
+
+  test("throws on userErrors so the caller can warn the merchant", async () => {
+    const admin = stubAdmin({ setErrors: [{ message: "Owner not found" }] });
+    await expect(syncOverrideMetafield(admin, override())).rejects.toThrow(
+      /Owner not found/,
+    );
+  });
+});
+
+describe("deleteOverrideMetafield", () => {
+  test("sends the identifier for the product", async () => {
+    const admin = stubAdmin();
+    await deleteOverrideMetafield(admin, 77);
+
+    expect(admin.deleteCalls()[0].variables.metafields[0]).toEqual({
+      ownerId: "gid://shopify/Product/77",
+      namespace: METAFIELD_NAMESPACE,
+      key: METAFIELD_KEY,
+    });
+  });
+
+  test("throws on userErrors", async () => {
+    const admin = stubAdmin({ deleteErrors: [{ message: "nope" }] });
+    await expect(deleteOverrideMetafield(admin, 77)).rejects.toThrow(/nope/);
+  });
+});
+
+describe("syncAllOverrides", () => {
+  const save = (productId, extra = {}) =>
+    upsertOverride({
+      shopId,
+      productId,
+      productTitle: `P${productId}`,
+      productHandle: `p-${productId}`,
+      items: [{ id: "9", handle: "nine" }],
+      ...extra,
+    });
+
+  test("pushes drifted overrides and marks them synced", async () => {
+    const a = await save(1);
+    const b = await save(2);
+    const admin = stubAdmin();
+
+    const result = await syncAllOverrides({ admin, shopId });
+
+    expect(result).toMatchObject({ total: 2, synced: 2, errors: [] });
+    for (const row of [a, b]) {
+      const reloaded = await prisma.override.findUnique({ where: { id: row.id } });
+      expect(reloaded.syncedAt).toBeInstanceOf(Date);
+    }
+  });
+
+  test("skips rows already in sync", async () => {
+    const row = await save(1);
+    await markOverrideSynced(row.id);
+    const admin = stubAdmin();
+
+    expect(await syncAllOverrides({ admin, shopId })).toMatchObject({ total: 0 });
+    expect(admin.calls).toHaveLength(0);
+  });
+
+  test("onlyUnsynced false re-pushes everything", async () => {
+    const row = await save(1);
+    await markOverrideSynced(row.id);
+    const admin = stubAdmin();
+
+    expect(
+      await syncAllOverrides({ admin, shopId, onlyUnsynced: false }),
+    ).toMatchObject({ total: 1, synced: 1 });
+  });
+
+  // metafieldsSet caps at 25 per call, and it is atomic — one oversized request
+  // would fail wholesale.
+  test("splits large sets into batches of 25", async () => {
+    for (let i = 1; i <= 26; i += 1) await save(i);
+    const admin = stubAdmin();
+
+    const result = await syncAllOverrides({ admin, shopId });
+
+    expect(admin.setCalls()).toHaveLength(2);
+    expect(admin.setCalls()[0].variables.metafields).toHaveLength(METAFIELDS_SET_BATCH);
+    expect(admin.setCalls()[1].variables.metafields).toHaveLength(1);
+    expect(result.synced).toBe(26);
+  });
+
+  test("routes unpublishable rows to delete instead of set", async () => {
+    await save(1, { enabled: false });
+    await save(2, { placement: "checkout" });
+    await save(3);
+    const admin = stubAdmin();
+
+    await syncAllOverrides({ admin, shopId });
+
+    expect(admin.setCalls()[0].variables.metafields).toHaveLength(1);
+    expect(admin.deleteCalls()[0].variables.metafields).toHaveLength(2);
+  });
+
+  // One failing batch must not abandon the rest of the shop's overrides.
+  test("reports errors without throwing", async () => {
+    await save(1);
+    const admin = stubAdmin({ setErrors: [{ message: "rate limited" }] });
+
+    const result = await syncAllOverrides({ admin, shopId });
+
+    expect(result.synced).toBe(0);
+    expect(result.errors[0]).toMatch(/rate limited/);
+
+    const row = await prisma.override.findFirst({ where: { shopId } });
+    expect(row.syncedAt).toBeNull(); // still flagged as drifted
+  });
+});

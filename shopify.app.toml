@@ -1,40 +1,48 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
 client_id = "7678ebc29ace1636fc3db87257ba7629"
-name = "stable-shipping-app"
+name = "easy-recommendation-app"
 application_url = "https://example.com"
 embedded = true
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "write_products,write_metaobjects,write_metaobject_definitions"
+# read_orders and read_customer_events are protected customer data scopes and
+# require approval in the Partner Dashboard before the app can be listed.
+#
+# unauthenticated_read_product_listings backs the Storefront API calls that
+# fetch Shopify's own product recommendations — the Admin API has no
+# productRecommendations query, so this is the only server-side source.
+#
+# read_orders and read_customer_events are PROTECTED CUSTOMER DATA and are
+# withheld until the app is approved (Partner Dashboard → App setup → Protected
+# customer data access). Shopify rejects the whole dev preview otherwise. To
+# restore revenue attribution, get approval and change this line back to:
+#   "read_products,write_products,read_orders,read_customer_events,unauthenticated_read_product_listings"
+scopes = "read_products,write_products,unauthenticated_read_product_listings"
 
-[product.metafields.app.demo_info]
-type = "single_line_text_field"
-name = "Demo Source Info"
-description = "Tracks products created by the Shopify app template for development"
+# Storefront-readable mirror of a product's manual recommendation override.
+# Written by the app whenever an override is saved (see CLAUDE.md Phase 6) so the
+# theme app block can render server-side in Liquid without an extra network hop.
+# Shape: { "v": 1, "updatedAt": "<iso>", "items": [{ "id": 123, "handle": "…" }] }
+[product.metafields.app.reco_overrides]
+name = "Recommendation Overrides"
+description = "Manual product recommendations that replace the Shopify-generated list"
+type = "json"
 
-  [product.metafields.app.demo_info.access]
-  admin = "merchant_read_write"
+  [product.metafields.app.reco_overrides.access]
+  admin = "merchant_read"
+  storefront = "public_read"
 
-[metaobjects.app.example]
-name = "Example"
-description = "An example metaobject definition created by this template"
-
-  [metaobjects.app.example.access]
-  admin = "merchant_read_write"
-
-[metaobjects.app.example.fields.title]
-name = "Title"
-type = "single_line_text_field"
-required = true
-
-[metaobjects.app.example.fields.description]
-name = "Description"
-type = "multi_line_text_field"
+# Storefront endpoint for the theme block and checkout extension.
+# https://<shop>/apps/easy-reco/<path>  ->  <application_url>/proxy/<path>
+[app_proxy]
+url = "https://example.com/proxy"
+subpath = "easy-reco"
+prefix = "apps"
 
 [webhooks]
-api_version = "2026-10"
+api_version = "2026-07"
 
   [[webhooks.subscriptions]]
   uri = "/webhooks/app/uninstalled"
@@ -44,9 +52,21 @@ api_version = "2026-10"
   uri = "/webhooks/app/scopes_update"
   topics = [ "app/scopes_update" ]
 
+  # Closes the attribution loop: reads the _reco_* line properties the theme
+  # block attaches, and books the revenue against the recommendation.
+  #
+  # DISABLED until the app has protected customer data approval — orders/create
+  # carries customer data, and Shopify refuses the whole dev preview with
+  # "not approved to subscribe to webhook topics containing protected customer
+  # data" while it is declared. The handler and its tests are already written
+  # (app/routes/webhooks.orders.create.jsx); uncomment once approved.
+  #
+  # [[webhooks.subscriptions]]
+  # uri = "/webhooks/orders/create"
+  # topics = [ "orders/create" ]
+
 [auth]
 redirect_urls = [ "https://example.com/api/auth" ]
 
 [build]
-include_config_on_deploy = true
 automatically_update_urls_on_dev = true

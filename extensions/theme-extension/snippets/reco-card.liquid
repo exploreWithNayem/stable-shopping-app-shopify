@@ -1,0 +1,116 @@
+{%- comment -%}
+  One recommendation card, rendered from Liquid for the override path.
+
+  Add to cart only appears for single-variant products: adding "the first
+  variant" of a product with options is a guess, and guessing wrong puts the
+  wrong size in someone's cart. Multi-variant products link to the PDP instead,
+  which is what Dawn does.
+
+  Accepts: reco (product), block
+{%- endcomment -%}
+
+{%- liquid
+  assign variant = reco.selected_or_first_available_variant
+  assign on_sale = false
+  if reco.compare_at_price > reco.price
+    assign on_sale = true
+  endif
+  assign rating = reco.metafields.reviews.rating.value
+
+  comment
+    Not `| default: 'key' | t` — that pipes the merchant's own label through the
+    translation filter and renders "translation missing".
+  endcomment
+  assign add_label = block.settings.add_to_cart_label
+  if add_label == blank
+    assign add_label = 'recommendations.add_to_cart' | t
+  endif
+-%}
+
+<div
+  class="reco-card"
+  data-reco-card
+  data-reco-product-id="{{ reco.id }}"
+  data-reco-handle="{{ reco.handle }}"
+>
+  <a class="reco-card__media" href="{{ reco.url }}" data-reco-link>
+    {%- if reco.featured_image -%}
+      <img
+        class="reco-card__image"
+        src="{{ reco.featured_image | image_url: width: 400 }}"
+        srcset="{{ reco.featured_image | image_url: width: 200 }} 200w, {{ reco.featured_image | image_url: width: 400 }} 400w, {{ reco.featured_image | image_url: width: 600 }} 600w"
+        sizes="(min-width: 750px) 25vw, 45vw"
+        alt="{{ reco.featured_image.alt | escape }}"
+        width="{{ reco.featured_image.width }}"
+        height="{{ reco.featured_image.height }}"
+        loading="lazy"
+      >
+      {%- if block.settings.hover_image and reco.images[1] -%}
+        <img
+          class="reco-card__image reco-card__image--hover"
+          src="{{ reco.images[1] | image_url: width: 400 }}"
+          alt=""
+          width="{{ reco.images[1].width }}"
+          height="{{ reco.images[1].height }}"
+          loading="lazy"
+          aria-hidden="true"
+        >
+      {%- endif -%}
+    {%- else -%}
+      <div class="reco-card__image reco-card__image--placeholder"></div>
+    {%- endif -%}
+  </a>
+
+  <div class="reco-card__info">
+    {%- if block.settings.show_vendor and reco.vendor != blank -%}
+      <span class="reco-card__vendor">{{ reco.vendor }}</span>
+    {%- endif -%}
+
+    {%- if block.settings.show_title -%}
+      <a class="reco-card__title" href="{{ reco.url }}" data-reco-link>{{ reco.title }}</a>
+    {%- endif -%}
+
+    {%- if block.settings.show_rating and rating.rating -%}
+      <span class="reco-card__rating" aria-label="{{ rating.rating }} / {{ rating.scale_max }}">
+        {%- assign rounded = rating.rating | round -%}
+        {%- for i in (1..rating.scale_max) -%}
+          {%- if i <= rounded %}&#9733;{% else %}&#9734;{% endif -%}
+        {%- endfor -%}
+      </span>
+    {%- endif -%}
+
+    {%- if block.settings.show_price -%}
+      <span class="reco-card__price{% if on_sale %} reco-card__price--sale{% endif %}">
+        {{ reco.price | money }}
+        {%- if block.settings.show_compare_price and on_sale -%}
+          <s class="reco-card__compare">{{ reco.compare_at_price | money }}</s>
+        {%- endif -%}
+      </span>
+    {%- endif -%}
+
+    {%- if block.settings.show_add_to_cart -%}
+      {%- if reco.available == false -%}
+        <button type="button" class="reco-card__button reco-card__button--{{ block.settings.button_style }}" disabled>
+          {{ 'recommendations.sold_out' | t }}
+        </button>
+      {%- elsif reco.has_only_default_variant -%}
+        <button
+          type="button"
+          class="reco-card__button reco-card__button--{{ block.settings.button_style }}"
+          data-reco-add
+          data-reco-variant-id="{{ variant.id }}"
+        >
+          {{ add_label }}
+        </button>
+      {%- else -%}
+        <a
+          class="reco-card__button reco-card__button--{{ block.settings.button_style }}"
+          href="{{ reco.url }}"
+          data-reco-link
+        >
+          {{ 'recommendations.choose_options' | t }}
+        </a>
+      {%- endif -%}
+    {%- endif -%}
+  </div>
+</div>

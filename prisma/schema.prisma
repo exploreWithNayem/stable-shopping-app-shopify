@@ -32,3 +32,100 @@ model Session {
   refreshToken        String?
   refreshTokenExpires DateTime?
 }
+
+/// One row per installed store. Created on first authenticated admin request.
+model Shop {
+  id                String    @id @default(cuid())
+  domain            String    @unique // my-store.myshopify.com
+  plan              String    @default("free") // free | standard | enterprise
+  subscriptionId    String? // Shopify AppSubscription GID, null on the free plan
+  billingCycleStart DateTime? // anchor for the monthly quota window
+  currencyCode      String? // shop currency, cached for money formatting
+  storefrontToken   String? // delegated Storefront API token, provisioned on demand
+  installedAt       DateTime  @default(now())
+  uninstalledAt     DateTime?
+  settings          Json? // global widget defaults, see Phase 13
+
+  overrides Override[]
+  usage     UsagePeriod[]
+  events    RecommendationEvent[]
+  daily     AnalyticsDaily[]
+}
+
+/// A manual recommendation list that replaces the Shopify-generated one.
+/// Mirrored to the product's $app:reco_overrides metafield on every write.
+model Override {
+  id            String    @id @default(cuid())
+  shopId        String
+  shop          Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  productId     String // numeric Shopify product ID
+  productTitle  String
+  productHandle String
+  placement     String    @default("pdp") // pdp | checkout | both
+  enabled       Boolean   @default(true)
+  items         Json // [{ id, handle, title, position }]
+  syncedAt      DateTime? // last successful metafield sync
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([shopId, productId, placement])
+  @@index([shopId, enabled])
+}
+
+/// Quota window. One row per shop per billing month.
+model UsagePeriod {
+  id          String   @id @default(cuid())
+  shopId      String
+  shop        Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  periodStart DateTime
+  periodEnd   DateTime
+  servedCount Int      @default(0)
+  quota       Int // snapshot of the plan limit; -1 = unlimited
+  planAtStart String
+
+  @@unique([shopId, periodStart])
+}
+
+/// Raw, append-only tracking events. Rolled up into AnalyticsDaily and pruned
+/// by the retention job (Phase 9).
+model RecommendationEvent {
+  id              String   @id @default(cuid())
+  shopId          String
+  shop            Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  type            String // served | impression | click | add_to_cart | purchase
+  sourceProductId String // the PDP / cart product the widget was shown on
+  recoProductId   String? // the recommended product; null for `served`
+  placement       String // pdp | checkout | thank_you | order_status
+  source          String // shopify | override
+  sessionId       String?
+  clientId        String?  @unique // client-generated idempotency key
+  orderId         String?
+  revenue         Decimal?
+  createdAt       DateTime @default(now())
+
+  @@index([shopId, type, createdAt])
+  @@index([shopId, recoProductId, type])
+  // Backs the per-source metrics on the recommendations list page, which asks
+  // "how did the widget on THIS product's page perform".
+  @@index([shopId, sourceProductId, type])
+}
+
+/// Pre-aggregated daily metrics. Every admin analytics read hits this table,
+/// never the raw event table.
+model AnalyticsDaily {
+  id          String   @id @default(cuid())
+  shopId      String
+  shop        Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  date        DateTime // UTC midnight
+  productId   String // the recommended product
+  placement   String
+  served      Int      @default(0)
+  impressions Int      @default(0)
+  clicks      Int      @default(0)
+  addToCarts  Int      @default(0)
+  purchases   Int      @default(0)
+  revenue     Decimal  @default(0)
+
+  @@unique([shopId, date, productId, placement])
+  @@index([shopId, date])
+}

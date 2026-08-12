@@ -1,0 +1,365 @@
+{%- liquid
+  assign overrides = product.metafields.app.reco_overrides.value
+  assign limit = block.settings.limit
+
+  comment
+    Not `| default: 'key' | t` — that pipes the merchant's own heading through
+    the translation filter and renders "translation missing".
+  endcomment
+  assign heading = block.settings.heading
+  if heading == blank
+    assign heading = 'recommendations.heading' | t
+  endif
+
+  assign add_label = block.settings.add_to_cart_label
+  if add_label == blank
+    assign add_label = 'recommendations.add_to_cart' | t
+  endif
+-%}
+
+{%- comment -%}
+  Overrides render straight from the metafield: no JS, no network, no layout
+  shift. Anything else is left to reco.js, which falls back to Shopify's Ajax
+  recommendations API in the browser.
+
+  all_products is capped at 20 lookups per page, which is why `limit` maxes at 12.
+{%- endcomment -%}
+
+{%- capture cards -%}
+  {%- if overrides.items -%}
+    {%- for item in overrides.items limit: limit -%}
+      {%- assign reco = all_products[item.handle] -%}
+      {%- if reco.id -%}
+        {%- render 'reco-card', reco: reco, block: block -%}
+      {%- endif -%}
+    {%- endfor -%}
+  {%- endif -%}
+{%- endcapture -%}
+
+{%- if product -%}
+  <div
+    class="reco reco--{{ block.settings.layout }} reco--align-{{ block.settings.text_align }}"
+    data-reco-block
+    data-reco-source-product="{{ product.id }}"
+    data-reco-source="{% if cards != blank %}override{% else %}shopify{% endif %}"
+    data-reco-server-rendered="{% if cards != blank %}true{% else %}false{% endif %}"
+    data-reco-limit="{{ limit }}"
+    data-reco-intent="{{ block.settings.intent }}"
+    data-reco-atc="{{ block.settings.atc_behavior }}"
+    data-reco-autoplay="{{ block.settings.autoplay }}"
+    data-reco-autoplay-speed="{{ block.settings.autoplay_speed }}"
+    style="
+      --reco-columns-desktop: {{ block.settings.columns_desktop }};
+      --reco-columns-mobile: {{ block.settings.columns_mobile }};
+      --reco-accent: {{ block.settings.accent_color }};
+      --reco-padding-top: {{ block.settings.padding_top }}px;
+      --reco-padding-bottom: {{ block.settings.padding_bottom }}px;
+      --reco-ratio: {% case block.settings.image_ratio %}{% when 'square' %}1/1{% when 'portrait' %}3/4{% else %}auto{% endcase %};
+      --reco-card-border: {% if block.settings.show_border %}1px{% else %}0px{% endif %};
+    "
+    {{ block.shopify_attributes }}
+  >
+    {%- if heading != blank -%}
+      <h2 class="reco__heading reco__heading--{{ block.settings.heading_size }}">
+        {{ heading }}
+      </h2>
+    {%- endif -%}
+
+    <div class="reco__viewport">
+      <div class="reco__track" data-reco-track>
+        {{ cards }}
+      </div>
+    </div>
+
+    {%- if block.settings.layout == 'slider' -%}
+      <div class="reco__nav" data-reco-nav hidden>
+        <button
+          type="button"
+          class="reco__nav-button"
+          data-reco-prev
+          aria-label="{{ 'recommendations.previous' | t }}"
+        >
+          &#8249;
+        </button>
+        <button
+          type="button"
+          class="reco__nav-button"
+          data-reco-next
+          aria-label="{{ 'recommendations.next' | t }}"
+        >
+          &#8250;
+        </button>
+      </div>
+    {%- endif -%}
+
+    {%- comment -%} Templates the JS clones for the Ajax fallback path. {%- endcomment -%}
+    <template data-reco-card-template>
+      <div class="reco-card" data-reco-card>
+        <a class="reco-card__media" data-reco-link>
+          <img class="reco-card__image" loading="lazy" alt="">
+        </a>
+        <div class="reco-card__info">
+          {%- if block.settings.show_vendor -%}
+            <span class="reco-card__vendor" data-reco-vendor></span>
+          {%- endif -%}
+          {%- if block.settings.show_title -%}
+            <a class="reco-card__title" data-reco-link data-reco-title></a>
+          {%- endif -%}
+          {%- if block.settings.show_price -%}
+            <span class="reco-card__price">
+              <span data-reco-price></span>
+              {%- if block.settings.show_compare_price -%}
+                <s class="reco-card__compare" data-reco-compare hidden></s>
+              {%- endif -%}
+            </span>
+          {%- endif -%}
+          {%- if block.settings.show_add_to_cart -%}
+            <button
+              type="button"
+              class="reco-card__button reco-card__button--{{ block.settings.button_style }}"
+              data-reco-add
+            >
+              {{ add_label }}
+            </button>
+          {%- endif -%}
+        </div>
+      </div>
+    </template>
+  </div>
+{%- endif -%}
+
+{% schema %}
+{
+  "name": "Recommendations",
+  "target": "section",
+  "stylesheet": "reco.css",
+  "javascript": "reco.js",
+  "settings": [
+    {
+      "type": "text",
+      "id": "heading",
+      "label": "Heading",
+      "default": "You may also like"
+    },
+    {
+      "type": "select",
+      "id": "layout",
+      "label": "Layout",
+      "default": "grid",
+      "options": [
+        { "value": "grid", "label": "Grid" },
+        { "value": "slider", "label": "Slider" },
+        { "value": "list", "label": "List" }
+      ]
+    },
+    {
+      "type": "range",
+      "id": "limit",
+      "label": "Products to show",
+      "min": 2,
+      "max": 12,
+      "step": 1,
+      "default": 4
+    },
+    {
+      "type": "select",
+      "id": "intent",
+      "label": "Recommendation type",
+      "info": "Used when you have not set your own recommendations for this product.",
+      "default": "related",
+      "options": [
+        { "value": "related", "label": "Related products" },
+        { "value": "complementary", "label": "Complementary products" }
+      ]
+    },
+    {
+      "type": "header",
+      "content": "Layout"
+    },
+    {
+      "type": "range",
+      "id": "columns_desktop",
+      "label": "Columns on desktop",
+      "min": 2,
+      "max": 6,
+      "step": 1,
+      "default": 4
+    },
+    {
+      "type": "range",
+      "id": "columns_mobile",
+      "label": "Columns on mobile",
+      "min": 1,
+      "max": 3,
+      "step": 1,
+      "default": 2
+    },
+    {
+      "type": "select",
+      "id": "image_ratio",
+      "label": "Image shape",
+      "default": "square",
+      "options": [
+        { "value": "square", "label": "Square" },
+        { "value": "portrait", "label": "Portrait" },
+        { "value": "natural", "label": "Natural" }
+      ]
+    },
+    {
+      "type": "checkbox",
+      "id": "hover_image",
+      "label": "Show second image on hover",
+      "default": true
+    },
+    {
+      "type": "checkbox",
+      "id": "show_border",
+      "label": "Show card border",
+      "default": false
+    },
+    {
+      "type": "select",
+      "id": "text_align",
+      "label": "Text alignment",
+      "default": "left",
+      "options": [
+        { "value": "left", "label": "Left" },
+        { "value": "center", "label": "Centre" }
+      ]
+    },
+    {
+      "type": "select",
+      "id": "heading_size",
+      "label": "Heading size",
+      "default": "md",
+      "options": [
+        { "value": "sm", "label": "Small" },
+        { "value": "md", "label": "Medium" },
+        { "value": "lg", "label": "Large" }
+      ]
+    },
+    {
+      "type": "header",
+      "content": "Product details"
+    },
+    {
+      "type": "checkbox",
+      "id": "show_title",
+      "label": "Show product title",
+      "default": true
+    },
+    {
+      "type": "checkbox",
+      "id": "show_price",
+      "label": "Show price",
+      "default": true
+    },
+    {
+      "type": "checkbox",
+      "id": "show_compare_price",
+      "label": "Show original price when on sale",
+      "default": true
+    },
+    {
+      "type": "checkbox",
+      "id": "show_vendor",
+      "label": "Show vendor",
+      "default": false
+    },
+    {
+      "type": "checkbox",
+      "id": "show_rating",
+      "label": "Show rating",
+      "info": "Shows the product rating if a reviews app has set one.",
+      "default": false
+    },
+    {
+      "type": "header",
+      "content": "Add to cart"
+    },
+    {
+      "type": "checkbox",
+      "id": "show_add_to_cart",
+      "label": "Show add to cart button",
+      "default": true
+    },
+    {
+      "type": "text",
+      "id": "add_to_cart_label",
+      "label": "Button label",
+      "default": "Add to cart"
+    },
+    {
+      "type": "select",
+      "id": "atc_behavior",
+      "label": "After adding to cart",
+      "default": "ajax",
+      "options": [
+        { "value": "ajax", "label": "Stay on the page" },
+        { "value": "open_drawer", "label": "Open the cart drawer" },
+        { "value": "redirect_cart", "label": "Go to the cart" }
+      ]
+    },
+    {
+      "type": "select",
+      "id": "button_style",
+      "label": "Button style",
+      "default": "solid",
+      "options": [
+        { "value": "solid", "label": "Solid" },
+        { "value": "outline", "label": "Outline" },
+        { "value": "text", "label": "Text" }
+      ]
+    },
+    {
+      "type": "header",
+      "content": "Slider"
+    },
+    {
+      "type": "checkbox",
+      "id": "autoplay",
+      "label": "Auto-advance slider",
+      "default": false
+    },
+    {
+      "type": "range",
+      "id": "autoplay_speed",
+      "label": "Seconds between slides",
+      "min": 2,
+      "max": 10,
+      "step": 1,
+      "default": 4
+    },
+    {
+      "type": "header",
+      "content": "Appearance"
+    },
+    {
+      "type": "color",
+      "id": "accent_color",
+      "label": "Accent colour",
+      "default": "#1a1a1a"
+    },
+    {
+      "type": "range",
+      "id": "padding_top",
+      "label": "Top padding",
+      "min": 0,
+      "max": 100,
+      "step": 4,
+      "default": 32,
+      "unit": "px"
+    },
+    {
+      "type": "range",
+      "id": "padding_bottom",
+      "label": "Bottom padding",
+      "min": 0,
+      "max": 100,
+      "step": 4,
+      "default": 32,
+      "unit": "px"
+    }
+  ]
+}
+{% endschema %}
