@@ -9,5 +9,9 @@
     "empty": "No recommendations available right now.",
     "previous": "Previous",
     "next": "Next"
+  },
+  "popular": {
+    "heading": "Popular products",
+    "empty": "No products to show yet. Pick a collection with products in it, or clear the sold out filter."
   }
 }

@@ -61,6 +61,11 @@
     return memorySession;
   }
 
+  /** Which surface a block sits on. Absent means the PDP recommendations block. */
+  function placementOf(block) {
+    return block.getAttribute("data-reco-placement") || "pdp";
+  }
+
   // --- Beacons -------------------------------------------------------------
 
   var queue = [];
@@ -105,7 +110,10 @@
     queue.push({
       clientId: uid(),
       sessionId: sessionId(),
-      placement: "pdp",
+      // "pdp" for the recommendations block, "popular" for the merchandising
+      // one. The server keeps them apart so a home-page row never lands in a
+      // product's recommendation metrics.
+      placement: event.placement || "pdp",
       type: event.type,
       sourceProductId: String(event.sourceProductId),
       recoProductId: event.recoProductId ? String(event.recoProductId) : null,
@@ -307,6 +315,7 @@
           sourceProductId: sourceProductId,
           recoProductId: recoProductId,
           source: block.getAttribute("data-reco-source"),
+          placement: placementOf(block),
         });
         flush();
 
@@ -411,6 +420,7 @@
 
     var sourceProductId = block.getAttribute("data-reco-source-product");
     var source = block.getAttribute("data-reco-source");
+    var placement = placementOf(block);
 
     var observer = new IntersectionObserver(
       function (entries) {
@@ -423,6 +433,7 @@
             sourceProductId: sourceProductId,
             recoProductId: entry.target.getAttribute("data-reco-product-id"),
             source: source,
+            placement: placement,
           });
         });
       },
@@ -439,6 +450,7 @@
 
     var sourceProductId = block.getAttribute("data-reco-source-product");
     var source = block.getAttribute("data-reco-source");
+    var placement = placementOf(block);
 
     block.addEventListener("click", function (event) {
       var button = event.target.closest("[data-reco-add]");
@@ -457,6 +469,7 @@
         sourceProductId: sourceProductId,
         recoProductId: card && card.getAttribute("data-reco-product-id"),
         source: source,
+        placement: placement,
       });
       flush();
     });
@@ -466,7 +479,17 @@
     // One serve per widget that actually showed something. Sent from here
     // rather than the server because the override path renders in Liquid and
     // never reaches the app.
-    track({ type: "served", sourceProductId: sourceProductId, source: source });
+    //
+    // Opted out by the popular-products block: it is merchandising, not a
+    // recommendation, so it reports engagement but costs no quota.
+    if (block.getAttribute("data-reco-serve") !== "false") {
+      track({
+        type: "served",
+        sourceProductId: sourceProductId,
+        source: source,
+        placement: placement,
+      });
+    }
   }
 
   function init() {

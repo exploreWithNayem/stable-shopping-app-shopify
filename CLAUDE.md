@@ -35,6 +35,7 @@
 | Extension | Type | Placement |
 | --- | --- | --- |
 | `pdp-recommendations` | Theme app block (`extensions/theme-extension`) | PDP section block |
+| `popular-products` | Theme app block (`extensions/theme-extension`) | Any template — merchandising row |
 | `checkout-recommendations` | Checkout UI extension | `purchase.checkout.block.render`, `purchase.thank-you.block.render`, `customer-account.order-status.block.render` |
 | `reco-pixel` | Web pixel extension (optional, Phase 12) | Purchase attribution |
 
@@ -132,6 +133,11 @@ explicit id list (one page of the table), a date range, and the `(shopId, source
 index.
 
 **Event types**: `served` · `impression` · `click` · `add_to_cart` · `purchase`
+
+**Placements**: `pdp` · `checkout` · `thank_you` · `order_status` · `popular`. The last one is the
+merchandising block (§7.1), not a recommendation surface — it has no source product (sentinel `"*"`)
+and never emits `served`. Keeping it in the list rather than coercing it to `pdp` is what stops a
+home-page row landing in some product's recommendation metrics.
 
 **Attribution**: when a shopper adds to cart from a widget, attach cart line attributes
 `_reco_src` (source product ID) and `_reco_cid` (client event ID). The `orders/create` webhook
@@ -352,6 +358,7 @@ Directory: `extensions/theme-extension/` (already scaffolded; currently holds te
 extensions/theme-extension/
 ├── blocks/
 │   ├── recommendations.liquid     # the PDP app block  (target: section)
+│   ├── popular-products.liquid    # merchandising block, any template (§7.1)
 │   └── app-embed.liquid           # app embed: loads tracker JS site-wide
 ├── snippets/
 │   ├── reco-card.liquid           # single product card
@@ -401,6 +408,41 @@ Implementation notes:
 - `reco.js` must be defer-loaded, framework-free, and namespaced (`window.EasyReco`).
 - Impressions via `IntersectionObserver` at 50% visibility, fired once per card per page view.
 - Respect `prefers-reduced-motion` for the slider.
+
+### 7.1 Popular products block (`blocks/popular-products.liquid`)
+
+A second theme app block, added 2026-08-13. Same look as the recommendations block — it renders
+through the same `reco-card.liquid` snippet, `reco.css` and `reco.js` — but it is **merchandising,
+not recommendation**, and the differences all follow from that:
+
+| | Recommendations | Popular products |
+| --- | --- | --- |
+| Where it can go | `enabled_on: templates: ["product"]` | any template — home, collection, cart, page |
+| Source of products | override metafield → Shopify Ajax API | a merchant-chosen collection, in Liquid |
+| Needs a source product | yes (`product.id`) | no (sentinel `"*"`) |
+| Network at render | Ajax fallback when no override | none — fully server-rendered |
+| `served` beacon | yes | **no** (`data-reco-serve="false"`) |
+| Quota cost | 1 per render | 0 |
+| Placement | `pdp` | `popular` |
+
+**"Best selling" is the collection's own sort order.** Liquid exposes no sales figures, so the
+merchant sets the collection to Best selling once under Products → Collections and every render
+follows it. The other `sort_by` options (`newest`, `price_asc`, `price_desc`, `title`) apply Liquid's
+`sort` filter — which, without `{% paginate %}`, only sees the collection's first 50 products. Said
+plainly on the setting's `info` text rather than hidden.
+
+**Why no `served` event.** A row on the home page renders on every visit; billing it as a
+recommendation would burn a Free plan's 100/month in an afternoon (§3.3). It still reports
+`impression` / `click` / `add_to_cart`, so the merchant gets engagement numbers for free. `reco.js`
+reads `data-reco-serve` before firing the serve beacon; everything else is shared with the PDP block.
+
+**Extra settings** beyond the PDP block's: `collection`, `sort_by`, `exclude_current` (skip the
+product being viewed, for when the block is placed on a PDP), `hide_sold_out`. `limit` goes to 24
+rather than 12 — the `all_products` 20-lookup cap does not apply, since this iterates
+`collection.products` directly. `intent` is dropped (nothing to be related *to*).
+
+When the collection is empty the block renders **nothing** on the storefront, and a dashed hint in
+the theme editor only (`request.design_mode`).
 
 ---
 
@@ -704,25 +746,25 @@ one-line note. Keep `Current status` and `Next up` accurate.
 
 **Current status:** Phases 0–9 complete — the full path exists end to end, from a merchant picking
 recommendations, to a card rendering on a product page, to tracking beacons rolled up into daily
-analytics with revenue attributed from orders. 202 Vitest tests pass; lint, typecheck and build are
-clean.
+analytics with revenue attributed from orders. Plus a second theme block, **Popular products**
+(§7.1), placeable on any template. 213 Vitest tests pass; lint, typecheck and build are clean.
 
 `CRON_SECRET` needs setting in the environment before `POST /cron/rollup` will run.
 
 ⛔ **Revenue attribution is disabled in `shopify.app.toml`** pending protected customer data
 approval — see the note at the end of Phase 9. Code is written and tested; config is off.
 
-**None of the storefront code has ever run.** The Liquid has never been rendered by Shopify, the
-block has never appeared in a theme editor, and `reco.js` has never executed in a browser. The
-static tests in `extensions/theme-extension/schema.test.js` catch malformed schema JSON, out-of-
-bounds range defaults and missing translation keys — nothing more. Equally, `npm run deploy` has not
-been run, so the scopes, metafield definition and app proxy are not live, and no real Admin or
-Storefront API call has ever executed.
+**None of the storefront code has ever run.** The Liquid has never been rendered by Shopify, neither
+block has appeared in a theme editor, and `reco.js` has never executed in a browser. The static
+tests in `tests/theme-extension.test.js` catch malformed schema JSON, out-of-bounds range defaults
+and missing translation keys — nothing more. Equally, `npm run deploy` has not been run, so the
+scopes, metafield definition and app proxy are not live, and no real Admin or Storefront API call
+has ever executed.
 
 **Next up:** Phase 10 — the home dashboard, which renders what Phase 9 now computes. Still
 outstanding and still recommended first: a live pass on a dev store (`npm run deploy`, `npm run dev`,
-add the block to a product template on Dawn, walk the QA checklist in §11).
-**Last updated:** 2026-08-12
+add both blocks in the theme editor on Dawn, walk the QA checklist in §11).
+**Last updated:** 2026-08-13
 
 | Phase | Status | Completed | Notes |
 | --- | --- | --- | --- |
@@ -735,6 +777,7 @@ add the block to a product template on Dawn, walk the QA checklist in §11).
 | 6. Metafield sync | ✅ Done | 2026-08-12 | `metafields.server.js` — `syncOverrideMetafield` (set or delete via `shouldPublishToStorefront`), `deleteOverrideMetafield`, `syncAllOverrides` batched at 25 with per-batch error reporting. Wired into save/reset; failures surface a "saved, but not live yet" banner and leave `syncedAt` null. Re-sync repair action added to Settings (early, from Phase 13). 142 tests. |
 | 7. App proxy API | ✅ Done | 2026-08-12 | `proxy.recommendations.jsx` (quota gate, 30-min serve dedupe, `no-store`, degrades to `{items:[]}`) and `proxy.track.jsx` (batch cap 10, per-shop rate limit, always 204). `tracking.server.js`. 155 tests. Not yet exercised over a real proxy request. |
 | 8. Theme app block (PDP) | ✅ Done | 2026-08-12 | `blocks/recommendations.liquid` (26 settings), `snippets/reco-card.liquid`, `assets/reco.{css,js}`, app embed config, locales. Server-renders overrides from the metafield; Ajax fallback otherwise. Impressions/clicks/ATC beacons, `served` beacon drives quota. Static schema+locale test suite added. **Never rendered on a real theme.** See deviations below. |
+| 8.1 Popular products block | ✅ Done | 2026-08-13 | Second theme app block (§7.1), placeable on any template. Renders a merchant-chosen collection server-side from Liquid; reuses `reco-card.liquid`, `reco.css`, `reco.js`. New `popular` placement; no `served` beacon, so no quota cost. 213 tests. **Never rendered on a real theme.** |
 | 9. Analytics pipeline | ✅ Done | 2026-08-12 | `rollupDay`/`rollupRange` (idempotent, refuses pruned days), `getDashboardMetrics` (totals + prior-period deltas + gapless series), `getFunnel`, `WIDGET_TOTAL` sentinel; `attribution.server.js` + `orders/create` webhook with order-derived idempotency keys; `cron.rollup` route with retention pruning. 202 tests. |
 | 10. Home dashboard | ⬜ Not started | — | Widgets, top products, trend chart |
 | 11. Pricing & billing | ⬜ Not started | — | 3 plans, upgrade/downgrade flow |

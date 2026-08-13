@@ -15,7 +15,19 @@ export const EVENT_TYPES = [
   "purchase",
 ];
 
-export const PLACEMENTS = ["pdp", "checkout", "thank_you", "order_status"];
+/**
+ * `popular` is the merchandising block, which can sit on any template and has
+ * no source product. It is kept out of the recommendation placements so its
+ * engagement never lands in a product's recommendation metrics — and it never
+ * sends a `served` event, so it never costs quota.
+ */
+export const PLACEMENTS = [
+  "pdp",
+  "checkout",
+  "thank_you",
+  "order_status",
+  "popular",
+];
 
 export const SOURCES = ["shopify", "override"];
 

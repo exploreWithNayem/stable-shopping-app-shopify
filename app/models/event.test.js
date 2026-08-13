@@ -46,6 +46,17 @@ describe("normalizeEvent", () => {
     expect(row).toMatchObject({ placement: "pdp", source: "shopify" });
   });
 
+  // The popular-products theme block sits on any template and has no source
+  // product, so it beacons the sentinel. Coercing its placement to "pdp" would
+  // fold a home page row into that product's recommendation metrics.
+  test("keeps the popular placement distinct", () => {
+    const row = normalizeEvent(
+      "s",
+      click({ placement: "popular", sourceProductId: "*" }),
+    );
+    expect(row).toMatchObject({ placement: "popular", sourceProductId: "*" });
+  });
+
   test("coerces ids to strings and blanks to null", () => {
     const row = normalizeEvent("s", click({ sourceProductId: 1, recoProductId: 2 }));
     expect(row).toMatchObject({ sourceProductId: "1", recoProductId: "2" });

@@ -257,6 +257,15 @@
   display: none;
 }
 
+/* Theme-editor-only hint from the popular products block; never on a live page. */
+.reco--empty {
+  border: 1px dashed rgba(0, 0, 0, 0.25);
+  border-radius: 4px;
+  padding: 1.5rem;
+  text-align: center;
+  opacity: 0.75;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .reco--slider .reco__track {
     scroll-behavior: auto;
