@@ -1,37 +1,10 @@
-{%- comment -%}
-  Popular products — a merchandising block the merchant can drop on any page.
-
-  Unlike the Recommendations block this has no source product and no
-  personalisation: it renders a collection, server-side, in Liquid. That is why
-  it works on the home page, a collection page, the cart, or anywhere else the
-  theme accepts app blocks, and why it never touches the app's backend to
-  render.
-
-  "Best selling" means the collection's own sort order. Liquid exposes no sales
-  figures, so the merchant sets the collection to Best selling once in
-  Products → Collections and every render follows it.
-
-  Nothing here counts against the recommendation quota — see the `data-reco-serve`
-  attribute below.
-{%- endcomment -%}
-
 {%- liquid
   assign limit = block.settings.limit
-
   assign source = block.settings.collection
   if source == blank
-    assign source = collections['all']
+    assign source = collections.all
   endif
 
-  comment
-    Unpaginated, Liquid hands over the first 50 products of a collection, so the
-    re-sorts below order those 50 rather than the whole collection. Fine for a
-    row of up to 24 cards; noted on the setting.
-
-    Do not write a paginate tag out in full anywhere inside this liquid tag —
-    its closing brace ends the liquid tag early, and the error surfaces as
-    "'comment' tag was never closed".
-  endcomment
   case block.settings.sort_by
     when 'newest'
       assign candidates = source.products | sort: 'created_at' | reverse
@@ -45,66 +18,50 @@
       assign candidates = source.products
   endcase
 
-  comment
-    Not `| default: 'key' | t` — that pipes the merchant's own heading through
-    the translation filter and renders "translation missing".
-  endcomment
   assign heading = block.settings.heading
   if heading == blank
     assign heading = 'popular.heading' | t
   endif
 -%}
 
+
+
 {%- capture cards -%}
-  {%- assign rendered = 0 -%}
-  {%- for item in candidates -%}
-    {%- if rendered >= limit -%}
-      {%- break -%}
-    {%- endif -%}
+          {%- assign rendered = 0 -%}
+          {%- for item in candidates -%}
+            {%- if rendered >= limit -%}
+              {%- break -%}
+            {%- endif -%}
 
-    {%- comment -%} On a product page, don't recommend the page you are on. {%- endcomment -%}
-    {%- if block.settings.exclude_current and product and item.id == product.id -%}
-      {%- continue -%}
-    {%- endif -%}
+            {%- if block.settings.exclude_current and product and item.id == product.id -%}
+              {%- continue -%}
+            {%- endif -%}
 
-    {%- if block.settings.hide_sold_out and item.available == false -%}
-      {%- continue -%}
-    {%- endif -%}
+            {%- if block.settings.hide_sold_out and item.available == false -%}
+              {%- continue -%}
+            {%- endif -%}
 
-    {%- render 'reco-card', reco: item, block: block -%}
-    {%- assign rendered = rendered | plus: 1 -%}
-  {%- endfor -%}
+            {%- render 'reco-card', reco: item, block: block -%}
+            {%- assign rendered = rendered | plus: 1 -%}
+          {%- endfor -%}
 {%- endcapture -%}
 
-{%- comment -%}
-  Three attributes below carry the behaviour that separates this block from the
-  recommendations one. They are documented here rather than beside the
-  attributes themselves, because a whitespace-stripping comment placed between
-  two attributes eats the space holding them apart and fuses them.
 
-    data-reco-serve="false"       engagement only — reco.js sends impression,
-                                  click and add_to_cart but never `served`, so
-                                  a home page row costs no quota.
-    data-reco-server-rendered     already filled from Liquid; stops reco.js
-                                  running its Ajax fallback, which needs a
-                                  source product this block does not have.
-    data-reco-source-product="*"  the sentinel for "no one source product".
-{%- endcomment -%}
 
 {%- if cards != blank -%}
   <div
-    class="reco reco--{{ block.settings.layout }} reco--align-{{ block.settings.text_align }}"
+    class='reco reco--{{ block.settings.layout }} reco--align-{{ block.settings.text_align }}'
     data-reco-block
-    data-reco-placement="popular"
-    data-reco-serve="false"
-    data-reco-server-rendered="true"
-    data-reco-source-product="*"
-    data-reco-source="shopify"
-    data-reco-limit="{{ limit }}"
-    data-reco-atc="{{ block.settings.atc_behavior }}"
-    data-reco-autoplay="{{ block.settings.autoplay }}"
-    data-reco-autoplay-speed="{{ block.settings.autoplay_speed }}"
-    style="
+    data-reco-placement='popular'
+    data-reco-serve='false'
+    data-reco-server-rendered='true'
+    data-reco-source-product='*'
+    data-reco-source='shopify'
+    data-reco-limit='{{ limit }}'
+    data-reco-atc='{{ block.settings.atc_behavior }}'
+    data-reco-autoplay='{{ block.settings.autoplay }}'
+    data-reco-autoplay-speed='{{ block.settings.autoplay_speed }}'
+    style='
       --reco-columns-desktop: {{ block.settings.columns_desktop }};
       --reco-columns-mobile: {{ block.settings.columns_mobile }};
       --reco-accent: {{ block.settings.accent_color }};
@@ -112,36 +69,36 @@
       --reco-padding-bottom: {{ block.settings.padding_bottom }}px;
       --reco-ratio: {% case block.settings.image_ratio %}{% when 'square' %}1/1{% when 'portrait' %}3/4{% else %}auto{% endcase %};
       --reco-card-border: {% if block.settings.show_border %}1px{% else %}0px{% endif %};
-    "
+    '
     {{ block.shopify_attributes }}
   >
     {%- if heading != blank -%}
-      <h2 class="reco__heading reco__heading--{{ block.settings.heading_size }}">
+      <h2 class='reco__heading reco__heading--{{ block.settings.heading_size }}'>
         {{ heading }}
       </h2>
     {%- endif -%}
 
-    <div class="reco__viewport">
-      <div class="reco__track" data-reco-track>
+    <div class='reco__viewport'>
+      <div class='reco__track' data-reco-track>
         {{ cards }}
       </div>
     </div>
 
     {%- if block.settings.layout == 'slider' -%}
-      <div class="reco__nav" data-reco-nav hidden>
+      <div class='reco__nav' data-reco-nav hidden>
         <button
-          type="button"
-          class="reco__nav-button"
+          type='button'
+          class='reco__nav-button'
           data-reco-prev
-          aria-label="{{ 'recommendations.previous' | t }}"
+          aria-label='{{ 'recommendations.previous' | t }}'
         >
           &#8249;
         </button>
         <button
-          type="button"
-          class="reco__nav-button"
+          type='button'
+          class='reco__nav-button'
           data-reco-next
-          aria-label="{{ 'recommendations.next' | t }}"
+          aria-label='{{ 'recommendations.next' | t }}'
         >
           &#8250;
         </button>
@@ -149,11 +106,7 @@
     {%- endif -%}
   </div>
 {%- elsif request.design_mode -%}
-  {%- comment -%}
-    An empty collection renders nothing on the live storefront, but a merchant
-    staring at a blank space in the editor needs to know why.
-  {%- endcomment -%}
-  <div class="reco reco--empty" {{ block.shopify_attributes }}>
+  <div class='reco reco--empty' {{ block.shopify_attributes }}>
     <p>{{ 'popular.empty' | t }}</p>
   </div>
 {%- endif -%}

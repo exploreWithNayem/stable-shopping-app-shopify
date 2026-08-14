@@ -1,13 +1,4 @@
-{%- comment -%}
-  One recommendation card, rendered from Liquid for the override path.
 
-  Add to cart only appears for single-variant products: adding "the first
-  variant" of a product with options is a guess, and guessing wrong puts the
-  wrong size in someone's cart. Multi-variant products link to the PDP instead,
-  which is what Dawn does.
-
-  Accepts: reco (product), block
-{%- endcomment -%}
 
 {%- liquid
   assign variant = reco.selected_or_first_available_variant
@@ -26,6 +17,8 @@
     assign add_label = 'recommendations.add_to_cart' | t
   endif
 -%}
+
+
 
 <div
   class="reco-card"
