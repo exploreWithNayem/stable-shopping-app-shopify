@@ -58,6 +58,15 @@ function readLiquid(path) {
   return stripComments(readFileSync(path, "utf8"));
 }
 
+/**
+ * Matches an HTML attribute regardless of quote style — a Liquid formatter run
+ * over a block rewrites `"` to `'` and would otherwise fail these checks for a
+ * change that alters nothing.
+ */
+function hasAttribute(source, name, value) {
+  return new RegExp(`${name}=["']${value}["']`).test(source);
+}
+
 describe("block schemas", () => {
   test("every block has one", () => {
     expect(blockFiles.length).toBeGreaterThan(0);
@@ -214,14 +223,14 @@ describe("popular products block", () => {
   // Merchandising, not a recommendation — see CLAUDE.md §3.3. A home page row
   // firing `served` would burn a Free plan's monthly quota in an afternoon.
   test("opts out of the serve beacon so it costs no quota", () => {
-    expect(source).toContain('data-reco-serve="false"');
-    expect(source).toContain('data-reco-placement="popular"');
+    expect(hasAttribute(source, "data-reco-serve", "false")).toBe(true);
+    expect(hasAttribute(source, "data-reco-placement", "popular")).toBe(true);
   });
 
   // It renders in Liquid from a collection, so the JS fallback fetch (which
   // needs a source product) must never run for it.
   test("declares itself server-rendered", () => {
-    expect(source).toContain('data-reco-server-rendered="true"');
+    expect(hasAttribute(source, "data-reco-server-rendered", "true")).toBe(true);
   });
 
   // reco-card.liquid reads these off `block.settings` directly, so a missing id
@@ -234,6 +243,23 @@ describe("popular products block", () => {
     const defined = new Set((schema.settings ?? []).map((setting) => setting.id));
 
     expect([...used].filter((id) => !defined.has(id))).toEqual([]);
+  });
+
+  /*
+   * The background colour is this block's alone — a merchandising row sits on
+   * any template and often wants to be a distinct band, while the PDP block
+   * lives inside a product section that already has one. It must default to
+   * fully transparent: an opaque default would repaint every block already
+   * placed in a theme the moment the extension is redeployed. The class carries
+   * the panel's inline padding, so it stays gated on the setting too.
+   */
+  test("background colour is transparent until the merchant picks one", () => {
+    const setting = schema.settings.find((s) => s.id === "background_color");
+
+    expect(setting, "no background_color setting").toBeTruthy();
+    expect(setting.type).toBe("color");
+    expect(setting.default.replace(/\s/g, "")).toBe("rgba(0,0,0,0)");
+    expect(source).toMatch(/\{%\s*if has_background\s*%\}\s*reco--has-background/);
   });
 
   test("sort options the Liquid does not handle cannot be selected", () => {

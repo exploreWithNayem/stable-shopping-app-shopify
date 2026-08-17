@@ -437,7 +437,12 @@ recommendation would burn a Free plan's 100/month in an afternoon (§3.3). It st
 reads `data-reco-serve` before firing the serve beacon; everything else is shared with the PDP block.
 
 **Extra settings** beyond the PDP block's: `collection`, `sort_by`, `exclude_current` (skip the
-product being viewed, for when the block is placed on a PDP), `hide_sold_out`. `limit` goes to 24
+product being viewed, for when the block is placed on a PDP), `hide_sold_out`, `background_color`.
+The background is this block's alone — a merchandising row goes on any template and often wants to
+be its own colour band, while the PDP block sits inside a product section that already has one. It
+defaults to fully transparent and only applies (as `reco--has-background`, which also adds the
+panel's inline padding) when the colour's `alpha > 0`; an opaque default would repaint every
+already-placed block on the next deploy. `limit` goes to 24
 rather than 12 — the `all_products` 20-lookup cap does not apply, since this iterates
 `collection.products` directly. `intent` is dropped (nothing to be related *to*).
 

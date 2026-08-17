@@ -12,6 +12,17 @@
   padding-block: var(--reco-padding-top, 32px) var(--reco-padding-bottom, 32px);
 }
 
+/*
+ * Background is opt-in: the block only gets the class when the colour setting
+ * has a non-zero alpha, so an existing block keeps inheriting whatever the
+ * section behind it uses. The inline padding comes with the colour — without a
+ * panel there is nothing to inset the cards from.
+ */
+.reco--has-background {
+  background-color: var(--reco-background, transparent);
+  padding-inline: var(--reco-padding-inline, 1.25rem);
+}
+
 .reco__heading {
   margin: 0 0 1rem;
 }

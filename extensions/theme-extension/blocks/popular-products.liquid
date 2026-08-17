@@ -22,6 +22,12 @@
   if heading == blank
     assign heading = 'popular.heading' | t
   endif
+
+  assign background = block.settings.background_color
+  assign has_background = false
+  if background != blank and background.alpha > 0
+    assign has_background = true
+  endif
 -%}
 
 
@@ -50,7 +56,7 @@
 
 {%- if cards != blank -%}
   <div
-    class='reco reco--{{ block.settings.layout }} reco--align-{{ block.settings.text_align }}'
+    class='reco reco--{{ block.settings.layout }} reco--align-{{ block.settings.text_align }}{% if has_background %} reco--has-background{% endif %}'
     data-reco-block
     data-reco-placement='popular'
     data-reco-serve='false'
@@ -65,6 +71,7 @@
       --reco-columns-desktop: {{ block.settings.columns_desktop }};
       --reco-columns-mobile: {{ block.settings.columns_mobile }};
       --reco-accent: {{ block.settings.accent_color }};
+      {% if has_background %}--reco-background: {{ background }};{% endif %}
       --reco-padding-top: {{ block.settings.padding_top }}px;
       --reco-padding-bottom: {{ block.settings.padding_bottom }}px;
       --reco-ratio: {% case block.settings.image_ratio %}{% when 'square' %}1/1{% when 'portrait' %}3/4{% else %}auto{% endcase %};
@@ -341,10 +348,19 @@
     },
     {
       "type": "color",
+      "id": "background_color",
+      "label": "Background colour",
+      "info": "Leave transparent to inherit the section's own background.",
+      "default": "rgba(0,0,0,0)"
+    },
+
+    {
+      "type": "color",
       "id": "accent_color",
       "label": "Accent colour",
       "default": "#1a1a1a"
     },
+    
     {
       "type": "range",
       "id": "padding_top",
