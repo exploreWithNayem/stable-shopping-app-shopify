@@ -124,7 +124,14 @@ describe("block schemas", () => {
 
   test("the recommendations block loads its own assets", () => {
     const schema = readSchema("recommendations.liquid");
-    expect(schema.stylesheet).toBe("reco.css");
+    const source = readLiquid(join(BLOCKS, "recommendations.liquid"));
+
+    // The stylesheet is pulled in explicitly, not declared in the schema:
+    // Shopify does not reliably serve a block's declared assets when several
+    // blocks from one extension are on the same page, which rendered the block
+    // as unstyled markup. Asserted so nobody "tidies" it back into the schema.
+    expect(schema.stylesheet).toBeUndefined();
+    expect(source).toContain("'reco.css' | asset_url | stylesheet_tag");
     expect(schema.javascript).toBe("reco.js");
   });
 
@@ -209,7 +216,9 @@ describe("popular products block", () => {
   const schema = readSchema("popular-products.liquid");
 
   test("loads its own assets", () => {
-    expect(schema.stylesheet).toBe("reco.css");
+    // Same explicit stylesheet load as the recommendations block — see there.
+    expect(schema.stylesheet).toBeUndefined();
+    expect(source).toContain("'reco.css' | asset_url | stylesheet_tag");
     expect(schema.javascript).toBe("reco.js");
   });
 

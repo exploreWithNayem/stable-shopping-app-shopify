@@ -55,6 +55,15 @@
 
 
 {%- if cards != blank -%}
+{%- comment -%}
+  Loaded explicitly rather than through the schema's `stylesheet` key.
+  Shopify does not reliably serve a block's declared assets when more than one
+  block from the same extension is active on a page, which left this block
+  rendering as unstyled markup. asset_url is deterministic; the browser dedupes
+  the identical href when both blocks are on the same page.
+{%- endcomment -%}
+{{ 'reco.css' | asset_url | stylesheet_tag }}
+
   <div
     class='reco reco--{{ block.settings.layout }} reco--align-{{ block.settings.text_align }}{% if has_background %} reco--has-background{% endif %}'
     data-reco-block
@@ -122,7 +131,6 @@
 {
   "name": "Popular products",
   "target": "section",
-  "stylesheet": "reco.css",
   "javascript": "reco.js",
   "settings": [
     {
