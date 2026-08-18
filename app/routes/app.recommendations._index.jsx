@@ -1,42 +1,38 @@
-import { useEffect, useRef } from "react";
-import { Form, useLoaderData, useNavigation, useSearchParams, useSubmit } from "react-router";
-import { authenticate } from "../shopify.server";
-import { ensureShop } from "../models/shop.server";
+import { useEffect, useRef } from 'react';
+import { useLoaderData, useNavigate, useNavigation, useSearchParams } from 'react-router';
+import { authenticate } from '../shopify.server';
+import { ensureShop } from '../models/shop.server';
 import {
   countOverriddenProducts,
   countOverrides,
   getOverridesForProducts,
   listOverrides,
-} from "../models/override.server";
-import { getSourceProductMetrics } from "../models/event.server";
+} from '../models/override.server';
+import { getSourceProductMetrics } from '../models/event.server';
 import {
   DEFAULT_SORT,
   PAGE_SIZE,
   SORT_KEYS,
   getProductsByIds,
   listProducts,
-} from "../lib/products.server";
-import {
-  analyticsRetentionDays,
-  canAddOverride,
-  overrideLimit,
-} from "../lib/entitlements";
-import { isUnlimited } from "../lib/plans";
-import { addDays, startOfUtcDay } from "../lib/dates";
-import { formatNumber, formatPercent, rate } from "../lib/format";
-import QuotaBanner from "../components/QuotaBanner";
-import EmptyState from "../components/EmptyState";
-import ProductThumb from "../components/ProductThumb";
+} from '../lib/products.server';
+import { analyticsRetentionDays, canAddOverride, overrideLimit } from '../lib/entitlements';
+import { isUnlimited } from '../lib/plans';
+import { addDays, startOfUtcDay } from '../lib/dates';
+import { formatNumber, formatPercent, rate } from '../lib/format';
+import QuotaBanner from '../components/QuotaBanner';
+import EmptyState from '../components/EmptyState';
+import ProductThumb from '../components/ProductThumb';
 
-const SOURCES = ["all", "custom", "shopify"];
-const STATUSES = ["any", "enabled", "disabled"];
-const PLACEMENTS = ["any", "pdp", "checkout", "both"];
+const SOURCES = ['all', 'custom', 'shopify'];
+const STATUSES = ['any', 'enabled', 'disabled'];
+const PLACEMENTS = ['any', 'pdp', 'checkout', 'both'];
 
 /** Sorting by our own metrics is only offered in custom mode — see below. */
 const CUSTOM_SORTS = {
-  updated: "Recently updated",
-  served: "Most recommendations",
-  clicks: "Most clicks",
+  updated: 'Recently updated',
+  served: 'Most recommendations',
+  clicks: 'Most clicks',
 };
 
 /**
@@ -56,16 +52,16 @@ export const loader = async ({ request }) => {
 
   const url = new URL(request.url);
   const params = url.searchParams;
-  const search = (params.get("q") ?? "").trim();
-  const source = pick(params.get("source"), SOURCES, "all");
-  const status = pick(params.get("status"), STATUSES, "any");
-  const placement = pick(params.get("placement"), PLACEMENTS, "any");
-  const page = Math.max(0, Number(params.get("page") ?? 0) || 0);
+  const search = (params.get('q') ?? '').trim();
+  const source = pick(params.get('source'), SOURCES, 'all');
+  const status = pick(params.get('status'), STATUSES, 'any');
+  const placement = pick(params.get('placement'), PLACEMENTS, 'any');
+  const page = Math.max(0, Number(params.get('page') ?? 0) || 0);
 
-  const isCustomMode = source === "custom";
+  const isCustomMode = source === 'custom';
   const sort = isCustomMode
-    ? pick(params.get("sort"), Object.keys(CUSTOM_SORTS), "updated")
-    : pick(params.get("sort"), Object.keys(SORT_KEYS), DEFAULT_SORT);
+    ? pick(params.get('sort'), Object.keys(CUSTOM_SORTS), 'updated')
+    : pick(params.get('sort'), Object.keys(SORT_KEYS), DEFAULT_SORT);
 
   const windowDays = Math.min(30, analyticsRetentionDays(shop.plan));
   const from = addDays(startOfUtcDay(), -windowDays);
@@ -77,7 +73,7 @@ export const loader = async ({ request }) => {
 
   if (isCustomMode) {
     const total = await countOverrides(shop.id);
-    const wantsMetricSort = sort === "served" || sort === "clicks";
+    const wantsMetricSort = sort === 'served' || sort === 'clicks';
 
     if (wantsMetricSort && total > METRIC_SORT_CAP) {
       metricSortDowngraded = true;
@@ -88,8 +84,8 @@ export const loader = async ({ request }) => {
       const all = await listOverrides({
         shopId: shop.id,
         search: search || undefined,
-        placement: placement === "any" ? undefined : placement,
-        enabled: status === "any" ? undefined : status === "enabled",
+        placement: placement === 'any' ? undefined : placement,
+        enabled: status === 'any' ? undefined : status === 'enabled',
         take: METRIC_SORT_CAP,
       });
       const metrics = await getSourceProductMetrics(
@@ -97,11 +93,10 @@ export const loader = async ({ request }) => {
         all.map((o) => o.productId),
         { from },
       );
-      const field = sort === "served" ? "served" : "clicks";
+      const field = sort === 'served' ? 'served' : 'clicks';
       all.sort(
         (a, b) =>
-          (metrics.get(b.productId)?.[field] ?? 0) -
-          (metrics.get(a.productId)?.[field] ?? 0),
+          (metrics.get(b.productId)?.[field] ?? 0) - (metrics.get(a.productId)?.[field] ?? 0),
       );
       overrides = all.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
       pageInfo = {
@@ -112,8 +107,8 @@ export const loader = async ({ request }) => {
       overrides = await listOverrides({
         shopId: shop.id,
         search: search || undefined,
-        placement: placement === "any" ? undefined : placement,
-        enabled: status === "any" ? undefined : status === "enabled",
+        placement: placement === 'any' ? undefined : placement,
+        enabled: status === 'any' ? undefined : status === 'enabled',
         take: PAGE_SIZE + 1,
         skip: page * PAGE_SIZE,
       });
@@ -132,8 +127,8 @@ export const loader = async ({ request }) => {
     const result = await listProducts(admin, {
       search,
       sort,
-      after: params.get("after"),
-      before: params.get("before"),
+      after: params.get('after'),
+      before: params.get('before'),
     });
     products = result.products;
     pageInfo = result.pageInfo;
@@ -144,7 +139,7 @@ export const loader = async ({ request }) => {
     );
     overrides = [...map.values()];
 
-    if (source === "shopify") {
+    if (source === 'shopify') {
       // Excluding here can leave a short page — Shopify pages the catalog, and
       // it does not know which products we have overrides for.
       const overridden = new Set(map.keys());
@@ -217,21 +212,41 @@ export default function RecommendationsPage() {
     canAddOverride: canAdd,
   } = useLoaderData();
   const [searchParams] = useSearchParams();
-  const submit = useSubmit();
+  const navigate = useNavigate();
   const navigation = useNavigation();
-  const formRef = useRef(null);
+  const searchRef = useRef(null);
   const debounceRef = useRef(null);
 
-  const isLoading = navigation.state === "loading";
+  const isLoading = navigation.state === 'loading';
 
   // Debounce the search box so typing does not fire a request per keystroke.
   useEffect(() => () => clearTimeout(debounceRef.current), []);
 
-  const onSearchInput = () => {
+  /**
+   * Polaris web components are not form-associated, so `new FormData(form)`
+   * comes back without their values. Submitting a `<Form method="get">` sent an
+   * empty query string, which dropped every filter and silently reset the list
+   * to its defaults — the Sort control looked applied but never was. Read the
+   * value off the control and build the URL directly instead.
+   */
+  const applyFilter = (changes) => {
+    const next = new URLSearchParams(searchParams);
+    for (const [key, value] of Object.entries(changes)) {
+      if (value === null || value === '') next.delete(key);
+      else next.set(key, String(value));
+    }
+    // Any filter change invalidates the cursor and the offset it paged from.
+    next.delete('after');
+    next.delete('before');
+    next.delete('page');
+    navigate(`/app/recommendations?${next.toString()}`, { replace: true });
+  };
+
+  const onSearchInput = (event) => {
+    // Captured now: currentTarget is cleared before the timeout runs.
+    const value = event.currentTarget.value ?? '';
     clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
-      if (formRef.current) submit(formRef.current, { replace: true });
-    }, 300);
+    debounceRef.current = setTimeout(() => applyFilter({ q: value }), 300);
   };
 
   const pageLink = (changes) => {
@@ -251,7 +266,7 @@ export default function RecommendationsPage() {
           nothing to report. */}
       {limit !== null && (
         <s-banner
-          tone={canAdd ? "info" : "warning"}
+          tone={canAdd ? 'info' : 'warning'}
           heading={
             canAdd
               ? `${formatNumber(overrideCount)} of ${formatNumber(limit)} custom recommendations used`
@@ -263,7 +278,7 @@ export default function RecommendationsPage() {
               ? `Your plan covers custom recommendations on ${formatNumber(limit)} products — the rest keep Shopify's own. Upgrade for unlimited.`
               : "Reset a product to Shopify's defaults to free a slot, or upgrade to customise as many products as you like."}
           </s-paragraph>
-          <s-button href="/app/pricing" variant={canAdd ? "secondary" : "primary"}>
+          <s-button href="/app/pricing" variant={canAdd ? 'secondary' : 'primary'}>
             See plans
           </s-button>
         </s-banner>
@@ -272,83 +287,86 @@ export default function RecommendationsPage() {
       {metricSortDowngraded && (
         <s-banner tone="warning" heading="Sorted by recency instead">
           <s-paragraph>
-            You have more than {formatNumber(METRIC_SORT_CAP)} custom
-            recommendations, which is more than this page can rank by
-            performance. Use the Analytics page for a full ranking.
+            You have more than {formatNumber(METRIC_SORT_CAP)} custom recommendations, which is more
+            than this page can rank by performance. Use the Analytics page for a full ranking.
           </s-paragraph>
         </s-banner>
       )}
 
       <s-section>
-        <Form ref={formRef} method="get" replace>
-          {/* Any filter change resets paging, so cursors are not carried over. */}
-          <s-stack direction="block" gap="base">
-            <s-search-field
-              label="Search products"
-              name="q"
-              value={filters.search}
-              placeholder="Search by product title"
-              onInput={onSearchInput}
-            />
+        <s-stack direction="block" gap="base">
+          <s-search-field
+            ref={searchRef}
+            label="Search products"
+            name="q"
+            value={filters.search}
+            placeholder="Search by product title"
+            onInput={onSearchInput}
+          />
 
-            <s-stack direction="inline" gap="base" alignItems="end">
-              <s-select
-                label="Source"
-                name="source"
-                value={filters.source}
-                onChange={(event) => submit(event.currentTarget.form, { replace: true })}
-              >
-                <s-option value="all">All products</s-option>
-                <s-option value="custom">Custom only</s-option>
-                <s-option value="shopify">Shopify defaults only</s-option>
-              </s-select>
+          <s-stack direction="inline" gap="base" alignItems="end">
+            <s-select
+              label="Source"
+              name="source"
+              value={filters.source}
+              onChange={(event) => applyFilter({ source: event.currentTarget.value })}
+            >
+              <s-option value="all">All products</s-option>
+              <s-option value="custom">Custom only</s-option>
+              <s-option value="shopify">Shopify defaults only</s-option>
+            </s-select>
 
-              <s-select
-                label="Sort"
-                name="sort"
-                value={filters.sort}
-                onChange={(event) => submit(event.currentTarget.form, { replace: true })}
-              >
-                {sortOptions.map((option) => (
-                  <s-option key={option.value} value={option.value}>
-                    {option.label}
-                  </s-option>
-                ))}
-              </s-select>
+            <s-select
+              label="Sort"
+              name="sort"
+              value={filters.sort}
+              onChange={(event) => applyFilter({ sort: event.currentTarget.value })}
+            >
+              {sortOptions.map((option) => (
+                <s-option key={option.value} value={option.value}>
+                  {option.label}
+                </s-option>
+              ))}
+            </s-select>
 
-              {isCustomMode && (
-                <>
-                  <s-select
-                    label="Placement"
-                    name="placement"
-                    value={filters.placement}
-                    onChange={(event) => submit(event.currentTarget.form, { replace: true })}
-                  >
-                    <s-option value="any">Any placement</s-option>
-                    <s-option value="pdp">Product page</s-option>
-                    <s-option value="checkout">Checkout</s-option>
-                    <s-option value="both">Both</s-option>
-                  </s-select>
+            {isCustomMode && (
+              <>
+                <s-select
+                  label="Placement"
+                  name="placement"
+                  value={filters.placement}
+                  onChange={(event) => applyFilter({ placement: event.currentTarget.value })}
+                >
+                  <s-option value="any">Any placement</s-option>
+                  <s-option value="pdp">Product page</s-option>
+                  <s-option value="checkout">Checkout</s-option>
+                  <s-option value="both">Both</s-option>
+                </s-select>
 
-                  <s-select
-                    label="Status"
-                    name="status"
-                    value={filters.status}
-                    onChange={(event) => submit(event.currentTarget.form, { replace: true })}
-                  >
-                    <s-option value="any">Any status</s-option>
-                    <s-option value="enabled">Enabled</s-option>
-                    <s-option value="disabled">Disabled</s-option>
-                  </s-select>
-                </>
-              )}
+                <s-select
+                  label="Status"
+                  name="status"
+                  value={filters.status}
+                  onChange={(event) => applyFilter({ status: event.currentTarget.value })}
+                >
+                  <s-option value="any">Any status</s-option>
+                  <s-option value="enabled">Enabled</s-option>
+                  <s-option value="disabled">Disabled</s-option>
+                </s-select>
+              </>
+            )}
 
-              <s-button type="submit" variant="secondary">
-                Apply
-              </s-button>
-            </s-stack>
+            <s-button
+              variant="secondary"
+              onClick={() => {
+                clearTimeout(debounceRef.current);
+                applyFilter({ q: searchRef.current?.value ?? '' });
+              }}
+            >
+              Apply
+            </s-button>
           </s-stack>
-        </Form>
+        </s-stack>
       </s-section>
 
       <s-section>
@@ -356,27 +374,25 @@ export default function RecommendationsPage() {
           <EmptyState
             heading={
               filters.search
-                ? "No products match that search"
+                ? 'No products match that search'
                 : isCustomMode
-                  ? "No custom recommendations yet"
-                  : "No products found"
+                  ? 'No custom recommendations yet'
+                  : 'No products found'
             }
             description={
               isCustomMode
-                ? "Pick a product from the All products view to replace what Shopify recommends on its page."
-                : "Products from your catalogue will appear here."
+                ? 'Pick a product from the All products view to replace what Shopify recommends on its page.'
+                : 'Products from your catalogue will appear here.'
             }
             action={
               isCustomMode
-                ? { label: "Browse all products", href: "/app/recommendations?source=all" }
+                ? { label: 'Browse all products', href: '/app/recommendations?source=all' }
                 : null
             }
           />
         ) : (
           <>
-            <s-paragraph color="subdued">
-              Metrics cover the last {windowDays} days.
-            </s-paragraph>
+            <s-paragraph color="subdued">Metrics cover the last {windowDays} days.</s-paragraph>
 
             <s-table variant="auto" {...(isLoading ? { loading: true } : {})}>
               <s-table-header-row>
@@ -402,10 +418,10 @@ export default function RecommendationsPage() {
 
                     <s-table-cell>
                       {product.override ? (
-                        <s-badge tone={product.override.enabled ? "success" : "neutral"}>
+                        <s-badge tone={product.override.enabled ? 'success' : 'neutral'}>
                           {product.override.enabled
                             ? `Custom (${product.override.count})`
-                            : "Custom, off"}
+                            : 'Custom, off'}
                         </s-badge>
                       ) : (
                         <s-badge tone="neutral">Shopify</s-badge>
@@ -416,14 +432,12 @@ export default function RecommendationsPage() {
                     <s-table-cell>{formatNumber(product.metrics.impressions)}</s-table-cell>
                     <s-table-cell>{formatNumber(product.metrics.clicks)}</s-table-cell>
                     <s-table-cell>
-                      {formatPercent(
-                        rate(product.metrics.clicks, product.metrics.impressions),
-                      )}
+                      {formatPercent(rate(product.metrics.clicks, product.metrics.impressions))}
                     </s-table-cell>
 
                     <s-table-cell>
                       <s-link href={`/app/recommendations/${product.id}`}>
-                        {product.override ? "Edit" : "Customise"}
+                        {product.override ? 'Edit' : 'Customise'}
                       </s-link>
                     </s-table-cell>
                   </s-table-row>
