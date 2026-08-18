@@ -2,7 +2,7 @@
 
 client_id = "7678ebc29ace1636fc3db87257ba7629"
 name = "easy-recommendation-app"
-application_url = "https://example.com"
+application_url = "https://logan-newfoundland-literature-albums.trycloudflare.com"
 embedded = true
 
 [access_scopes]
@@ -37,7 +37,7 @@ type = "json"
 # Storefront endpoint for the theme block and checkout extension.
 # https://<shop>/apps/easy-reco/<path>  ->  <application_url>/proxy/<path>
 [app_proxy]
-url = "https://example.com/proxy"
+url = "https://logan-newfoundland-literature-albums.trycloudflare.com/proxy"
 subpath = "easy-reco"
 prefix = "apps"
 
@@ -66,7 +66,7 @@ api_version = "2026-07"
   # topics = [ "orders/create" ]
 
 [auth]
-redirect_urls = [ "https://example.com/api/auth" ]
+redirect_urls = [ "https://logan-newfoundland-literature-albums.trycloudflare.com/api/auth" ]
 
 [build]
 automatically_update_urls_on_dev = true

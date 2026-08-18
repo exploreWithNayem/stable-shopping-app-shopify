@@ -1,5 +1,11 @@
 {%- liquid
-  assign overrides = product.metafields.app.reco_overrides.value
+  comment
+    App-owned metafields live in the reserved namespace app--{app_id}. Liquid
+    reaches it through the "$app" reserved prefix used as a bracket key.
+    `metafields.app` looks for a literal namespace named "app", finds nothing,
+    and resolves to nil — silently dropping every override to the Ajax fallback.
+  endcomment
+  assign overrides = product.metafields["$app"].reco_overrides.value
   assign limit = block.settings.limit
 
   comment
