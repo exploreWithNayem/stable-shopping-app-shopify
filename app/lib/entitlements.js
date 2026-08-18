@@ -1,4 +1,4 @@
-import { getPlan, isUnlimited, planOverrideLimit } from "./plans";
+import { getPlan, isUnlimited, planOverrideLimit } from './plans';
 
 /**
  * Plan feature gates.
@@ -32,9 +32,14 @@ export function remainingOverrides(planKey, currentCount = 0) {
   return Math.max(0, limit - currentCount);
 }
 
+/** CSV export of the analytics tables — a paid feature (CLAUDE.md §5). */
+export function canExportCsv(planKey) {
+  return getPlan(planKey).key !== 'free';
+}
+
 /** The checkout / thank-you / order-status widget. */
 export function canUseCheckout(planKey) {
-  return getPlan(planKey).key !== "free";
+  return getPlan(planKey).key !== 'free';
 }
 
 /**
@@ -46,9 +51,9 @@ export function canUseCheckout(planKey) {
  */
 export function rawEventRetentionDays(planKey) {
   switch (getPlan(planKey).key) {
-    case "enterprise":
+    case 'enterprise':
       return 365;
-    case "standard":
+    case 'standard':
       return 90;
     default:
       return 30;
@@ -58,9 +63,9 @@ export function rawEventRetentionDays(planKey) {
 /** How far back the analytics pages may look. */
 export function analyticsRetentionDays(planKey) {
   switch (getPlan(planKey).key) {
-    case "enterprise":
+    case 'enterprise':
       return 365;
-    case "standard":
+    case 'standard':
       return 90;
     default:
       return 7;

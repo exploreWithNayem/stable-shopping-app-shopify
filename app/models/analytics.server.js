@@ -1,5 +1,5 @@
-import prisma from "../db.server";
-import { addDays, eachUtcDay, startOfUtcDay } from "../lib/dates";
+import prisma from '../db.server';
+import { addDays, eachUtcDay, startOfUtcDay } from '../lib/dates';
 
 /**
  * Data access for pre-aggregated daily metrics.
@@ -8,13 +8,7 @@ import { addDays, eachUtcDay, startOfUtcDay } from "../lib/dates";
  * events, plus the dashboard/funnel queries built on top, land in Phase 9.
  */
 
-export const METRIC_FIELDS = [
-  "served",
-  "impressions",
-  "clicks",
-  "addToCarts",
-  "purchases",
-];
+export const METRIC_FIELDS = ['served', 'impressions', 'clicks', 'addToCarts', 'purchases'];
 
 /**
  * Sentinel productId for widget-level metrics.
@@ -26,7 +20,7 @@ export const METRIC_FIELDS = [
  * rows are booked against "*". Product-level queries filter it out; totals
  * include it, which is what makes `served` add up.
  */
-export const WIDGET_TOTAL = "*";
+export const WIDGET_TOTAL = '*';
 
 /**
  * Add `metrics` onto one (date, product, placement) bucket.
@@ -35,14 +29,7 @@ export const WIDGET_TOTAL = "*";
  * makes it non-idempotent — re-running the rollup for a day must reset the day
  * first (Phase 9) or the numbers double.
  */
-export function incrementDaily({
-  shopId,
-  date,
-  productId,
-  placement,
-  metrics = {},
-  revenue = 0,
-}) {
+export function incrementDaily({ shopId, date, productId, placement, metrics = {}, revenue = 0 }) {
   const day = startOfUtcDay(date);
   const key = {
     shopId_date_productId_placement: {
@@ -92,7 +79,7 @@ export function getDailyRange(shopId, from, to, { placement } = {}) {
       date: { gte: startOfUtcDay(from), lte: startOfUtcDay(to) },
       ...(placement ? { placement } : {}),
     },
-    orderBy: { date: "asc" },
+    orderBy: { date: 'asc' },
   });
 }
 
@@ -125,6 +112,44 @@ export async function getTotals(shopId, from, to, { placement } = {}) {
 }
 
 /**
+ * Totals per placement — pdp vs checkout vs the merchandising block.
+ *
+ * Grouped rather than filtered so one query answers "where is the widget
+ * actually working", which is the question the analytics page opens with. The
+ * `popular` block never emits `served` (CLAUDE.md §7.1), so its served column
+ * is legitimately zero rather than missing data.
+ */
+export async function getPlacementBreakdown(shopId, from, to) {
+  const rows = await prisma.analyticsDaily.groupBy({
+    by: ['placement'],
+    where: {
+      shopId,
+      date: { gte: startOfUtcDay(from), lte: startOfUtcDay(to) },
+    },
+    _sum: {
+      served: true,
+      impressions: true,
+      clicks: true,
+      addToCarts: true,
+      purchases: true,
+      revenue: true,
+    },
+  });
+
+  return rows
+    .map((row) => ({
+      placement: row.placement,
+      served: row._sum.served ?? 0,
+      impressions: row._sum.impressions ?? 0,
+      clicks: row._sum.clicks ?? 0,
+      addToCarts: row._sum.addToCarts ?? 0,
+      purchases: row._sum.purchases ?? 0,
+      revenue: Number(row._sum.revenue ?? 0),
+    }))
+    .sort((a, b) => b.impressions - a.impressions);
+}
+
+/**
  * Top recommended products for the dashboard table.
  *
  * Ranked by impressions, not `served`: a serve belongs to the widget as a
@@ -134,7 +159,7 @@ export async function getTotals(shopId, from, to, { placement } = {}) {
  */
 export async function getTopProducts(shopId, from, to, { limit = 10 } = {}) {
   const rows = await prisma.analyticsDaily.groupBy({
-    by: ["productId"],
+    by: ['productId'],
     where: {
       shopId,
       date: { gte: startOfUtcDay(from), lte: startOfUtcDay(to) },
@@ -148,7 +173,7 @@ export async function getTopProducts(shopId, from, to, { limit = 10 } = {}) {
       purchases: true,
       revenue: true,
     },
-    orderBy: { _sum: { impressions: "desc" } },
+    orderBy: { _sum: { impressions: 'desc' } },
     take: limit,
   });
 
@@ -168,10 +193,10 @@ export async function getTopProducts(shopId, from, to, { limit = 10 } = {}) {
 // ---------------------------------------------------------------------------
 
 const PRODUCT_METRIC_BY_TYPE = {
-  impression: "impressions",
-  click: "clicks",
-  add_to_cart: "addToCarts",
-  purchase: "purchases",
+  impression: 'impressions',
+  click: 'clicks',
+  add_to_cart: 'addToCarts',
+  purchase: 'purchases',
 };
 
 /**
@@ -189,7 +214,7 @@ export async function rollupDay(shopId, date) {
 
   const [productRows, servedRows] = await Promise.all([
     prisma.recommendationEvent.groupBy({
-      by: ["recoProductId", "placement", "type"],
+      by: ['recoProductId', 'placement', 'type'],
       where: {
         shopId,
         createdAt: window,
@@ -200,8 +225,8 @@ export async function rollupDay(shopId, date) {
       _sum: { revenue: true },
     }),
     prisma.recommendationEvent.groupBy({
-      by: ["placement"],
-      where: { shopId, createdAt: window, type: "served" },
+      by: ['placement'],
+      where: { shopId, createdAt: window, type: 'served' },
       _count: { _all: true },
     }),
   ]);
@@ -229,7 +254,7 @@ export async function rollupDay(shopId, date) {
   for (const row of productRows) {
     const bucket = bucketFor(row.recoProductId, row.placement);
     bucket[PRODUCT_METRIC_BY_TYPE[row.type]] += row._count._all;
-    if (row.type === "purchase") bucket.revenue += Number(row._sum.revenue ?? 0);
+    if (row.type === 'purchase') bucket.revenue += Number(row._sum.revenue ?? 0);
   }
 
   for (const row of servedRows) {
@@ -258,10 +283,7 @@ export async function rollupDay(shopId, date) {
  * events have been pruned, so rebuilding would replace real history with
  * zeroes. Returns which days were done and which were refused.
  */
-export async function rollupRange(
-  shopId,
-  { from, to = new Date(), maxAgeDays = 90 } = {},
-) {
+export async function rollupRange(shopId, { from, to = new Date(), maxAgeDays = 90 } = {}) {
   const today = startOfUtcDay(to);
   const oldestAllowed = addDays(today, -maxAgeDays);
   const start = startOfUtcDay(from ?? addDays(today, -2));
@@ -371,11 +393,11 @@ export async function getFunnel(shopId, { days = 30, to = new Date() } = {}) {
   const totals = await getTotals(shopId, addDays(end, -(days - 1)), end);
 
   const steps = [
-    { key: "served", label: "Recommendations served", value: totals.served },
-    { key: "impressions", label: "Seen", value: totals.impressions },
-    { key: "clicks", label: "Clicked", value: totals.clicks },
-    { key: "addToCarts", label: "Added to cart", value: totals.addToCarts },
-    { key: "purchases", label: "Purchased", value: totals.purchases },
+    { key: 'served', label: 'Recommendations served', value: totals.served },
+    { key: 'impressions', label: 'Seen', value: totals.impressions },
+    { key: 'clicks', label: 'Clicked', value: totals.clicks },
+    { key: 'addToCarts', label: 'Added to cart', value: totals.addToCarts },
+    { key: 'purchases', label: 'Purchased', value: totals.purchases },
   ];
 
   return steps.map((step, index) => ({

@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   analyticsRetentionDays,
   canAddOverride,
+  canExportCsv,
   canUseCheckout,
   overrideLimit,
   remainingOverrides,
@@ -59,5 +60,18 @@ describe("override allowance", () => {
     expect(remainingOverrides("free", 4)).toBe(6);
     expect(remainingOverrides("free", 12)).toBe(0);
     expect(remainingOverrides("standard", 4)).toBeNull();
+  });
+});
+
+describe("canExportCsv", () => {
+  test("is a paid feature", () => {
+    expect(canExportCsv("free")).toBe(false);
+    expect(canExportCsv("standard")).toBe(true);
+    expect(canExportCsv("enterprise")).toBe(true);
+  });
+
+  test("treats an unknown plan as Free rather than granting the feature", () => {
+    expect(canExportCsv("nonsense")).toBe(false);
+    expect(canExportCsv(undefined)).toBe(false);
   });
 });

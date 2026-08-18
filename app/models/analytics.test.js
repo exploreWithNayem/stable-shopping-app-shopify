@@ -5,6 +5,7 @@ import {
   clearDay,
   deleteDailyBefore,
   getDailyRange,
+  getPlacementBreakdown,
   getTopProducts,
   getTotals,
   incrementDaily,
@@ -160,5 +161,32 @@ describe("maintenance", () => {
 
     await deleteDailyBefore(shopId, utc("2026-06-01"));
     expect(await prisma.analyticsDaily.count({ where: { shopId } })).toBe(1);
+  });
+});
+
+describe("getPlacementBreakdown", () => {
+  test("groups every placement separately and ranks by impressions", async () => {
+    await bump({ placement: "pdp", metrics: { impressions: 10, clicks: 3 } });
+    await bump({ placement: "popular", metrics: { impressions: 40, clicks: 1 } });
+    await bump({ placement: "checkout", metrics: { impressions: 25, clicks: 5 } });
+
+    const rows = await getPlacementBreakdown(shopId, DAY, DAY);
+
+    expect(rows.map((row) => row.placement)).toEqual(["popular", "checkout", "pdp"]);
+    expect(rows[0]).toMatchObject({ impressions: 40, clicks: 1 });
+  });
+
+  test("keeps the merchandising block's zero serves rather than dropping the row", async () => {
+    // The popular block never emits `served` (CLAUDE.md §7.1), so a zero here
+    // is real data, not a gap.
+    await bump({ placement: "popular", metrics: { impressions: 12, served: 0 } });
+
+    const [row] = await getPlacementBreakdown(shopId, DAY, DAY);
+    expect(row).toMatchObject({ placement: "popular", served: 0, impressions: 12 });
+  });
+
+  test("is empty outside the range", async () => {
+    await bump();
+    expect(await getPlacementBreakdown(shopId, utc("2026-08-11"), utc("2026-08-12"))).toEqual([]);
   });
 });
