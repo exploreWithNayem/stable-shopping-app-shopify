@@ -9,6 +9,8 @@
  */
 
 .reco {
+  --reco-nav-size: 2.25rem;
+
   padding-block: var(--reco-padding-top, 32px) var(--reco-padding-bottom, 32px);
 }
 
@@ -82,27 +84,59 @@
   }
 }
 
+/*
+ * Arrows straddle the row rather than sitting under it: an overlaid control on
+ * each edge is what a horizontal scroller reads as, and it keeps the buttons
+ * next to the thing they scroll.
+ *
+ * The bar itself is click-through so it cannot swallow taps on the cards
+ * beneath; only the buttons take pointer events.
+ */
 .reco__nav {
+  position: absolute;
+  inset-inline: 0;
+  inset-block-start: 50%;
+  transform: translateY(-50%);
   display: flex;
-  gap: 0.5rem;
-  justify-content: flex-end;
-  margin-top: 0.75rem;
+  justify-content: space-between;
+  pointer-events: none;
 }
 
-.reco--align-center .reco__nav {
-  justify-content: center;
+/*
+ * Author styles beat the [hidden] UA rule, so without this the nav stayed
+ * visible even when reco.js decided the row does not overflow.
+ */
+.reco__nav[hidden] {
+  display: none;
 }
 
 .reco__nav-button {
-  width: 2.25rem;
-  height: 2.25rem;
-  border: 1px solid currentColor;
+  pointer-events: auto;
+  width: var(--reco-nav-size);
+  height: var(--reco-nav-size);
+  border: 1px solid rgba(0, 0, 0, 0.12);
   border-radius: 50%;
-  background: transparent;
-  color: inherit;
+  /* Opaque: these sit on top of product photography. */
+  background: rgba(255, 255, 255, 0.92);
+  color: #1a1a1a;
   font-size: 1.25rem;
   line-height: 1;
   cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+}
+
+/*
+ * Pulled out by half their own width so each button straddles the edge of the
+ * row — half over the first/last card, half over the margin beside it.
+ * Expressed against --reco-nav-size so the two stay in step if the button is
+ * ever resized.
+ */
+.reco__nav-button:first-child {
+  margin-inline-start: calc(var(--reco-nav-size) / -2);
+}
+
+.reco__nav-button:last-child {
+  margin-inline-end: calc(var(--reco-nav-size) / -2);
 }
 
 .reco__nav-button[disabled] {

@@ -98,28 +98,29 @@
       <div class='reco__track' data-reco-track>
         {{ cards }}
       </div>
+
+      {%- if block.settings.layout == 'slider' -%}
+        <div class='reco__nav' data-reco-nav hidden>
+          <button
+            type='button'
+            class='reco__nav-button'
+            data-reco-prev
+            aria-label='{{ 'recommendations.previous' | t }}'
+          >
+            &#8249;
+          </button>
+          <button
+            type='button'
+            class='reco__nav-button'
+            data-reco-next
+            aria-label='{{ 'recommendations.next' | t }}'
+          >
+            &#8250;
+          </button>
+        </div>
+      {%- endif -%}
     </div>
 
-    {%- if block.settings.layout == 'slider' -%}
-      <div class='reco__nav' data-reco-nav hidden>
-        <button
-          type='button'
-          class='reco__nav-button'
-          data-reco-prev
-          aria-label='{{ 'recommendations.previous' | t }}'
-        >
-          &#8249;
-        </button>
-        <button
-          type='button'
-          class='reco__nav-button'
-          data-reco-next
-          aria-label='{{ 'recommendations.next' | t }}'
-        >
-          &#8250;
-        </button>
-      </div>
-    {%- endif -%}
   </div>
 {%- elsif request.design_mode -%}
   <div class='reco reco--empty' {{ block.shopify_attributes }}>
