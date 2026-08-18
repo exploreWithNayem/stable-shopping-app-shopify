@@ -134,61 +134,63 @@ export default function PricingPage() {
       )}
 
       <s-section>
-        <s-grid
-          gap="base"
-          gridTemplateColumns="@container (inline-size > 720px) repeat(3, 1fr), 1fr"
-        >
-          {plans.map((plan) => {
-            const isCurrent = currentPlan === plan.key;
+        <s-query-container>
+          <s-grid
+            gap="base"
+            gridTemplateColumns="@container (inline-size > 720px) 1fr 1fr 1fr, 1fr"
+          >
+            {plans.map((plan) => {
+              const isCurrent = currentPlan === plan.key;
 
-            return (
-              <s-box
-                key={plan.key}
-                padding="base"
-                borderWidth="base"
-                borderColor={isCurrent ? 'strong' : 'subdued'}
-                borderRadius="base"
-                background="base"
-              >
-                <s-stack direction="block" gap="small">
-                  <s-stack direction="inline" gap="small" alignItems="center">
-                    <s-heading>{plan.name}</s-heading>
-                    {isCurrent && <s-badge tone="success">Current plan</s-badge>}
+              return (
+                <s-box
+                  key={plan.key}
+                  padding="base"
+                  borderWidth="base"
+                  borderColor={isCurrent ? 'strong' : 'subdued'}
+                  borderRadius="base"
+                  background="base"
+                >
+                  <s-stack direction="block" gap="small">
+                    <s-stack direction="inline" gap="small" alignItems="center">
+                      <s-heading>{plan.name}</s-heading>
+                      {isCurrent && <s-badge tone="success">Current plan</s-badge>}
+                    </s-stack>
+
+                    <s-text fontVariantNumeric="tabular-nums">
+                      <s-heading>${plan.price}/month</s-heading>
+                    </s-text>
+
+                    <s-text color="subdued">
+                      {isUnlimited(plan.quota)
+                        ? 'Unlimited recommendations'
+                        : `${formatNumber(plan.quota)} recommendations per month`}
+                    </s-text>
+
+                    <s-unordered-list>
+                      {plan.features.map((feature) => (
+                        <s-list-item key={feature}>{feature}</s-list-item>
+                      ))}
+                    </s-unordered-list>
+
+                    <s-button
+                      variant={isCurrent ? 'secondary' : 'primary'}
+                      onClick={() => choose(plan.key)}
+                      {...(isBusy ? { loading: true } : {})}
+                      {...(isCurrent ? { disabled: true } : {})}
+                    >
+                      {isCurrent
+                        ? 'Current plan'
+                        : plan.price === 0
+                          ? 'Switch to Free'
+                          : `Upgrade to ${plan.name}`}
+                    </s-button>
                   </s-stack>
-
-                  <s-text fontVariantNumeric="tabular-nums">
-                    <s-heading>${plan.price}/month</s-heading>
-                  </s-text>
-
-                  <s-text color="subdued">
-                    {isUnlimited(plan.quota)
-                      ? 'Unlimited recommendations'
-                      : `${formatNumber(plan.quota)} recommendations per month`}
-                  </s-text>
-
-                  <s-unordered-list>
-                    {plan.features.map((feature) => (
-                      <s-list-item key={feature}>{feature}</s-list-item>
-                    ))}
-                  </s-unordered-list>
-
-                  <s-button
-                    variant={isCurrent ? 'secondary' : 'primary'}
-                    onClick={() => choose(plan.key)}
-                    {...(isBusy ? { loading: true } : {})}
-                    {...(isCurrent ? { disabled: true } : {})}
-                  >
-                    {isCurrent
-                      ? 'Current plan'
-                      : plan.price === 0
-                        ? 'Switch to Free'
-                        : `Upgrade to ${plan.name}`}
-                  </s-button>
-                </s-stack>
-              </s-box>
-            );
-          })}
-        </s-grid>
+                </s-box>
+              );
+            })}
+          </s-grid>
+        </s-query-container>
       </s-section>
 
       <s-section slot="aside" heading="This billing period">

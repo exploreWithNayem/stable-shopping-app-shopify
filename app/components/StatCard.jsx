@@ -3,23 +3,26 @@ import { formatNumber } from '../lib/format';
 /**
  * Responsive container for a row of StatCards.
  *
- * The s-query-container wrapper is load-bearing, not decoration: `@container`
- * values only resolve inside a containment context, and without one every
- * query silently fails and the grid falls through to its last value — one
- * full-width column at any window size. That is what made a 2000px window
- * render six stacked boxes.
+ * Three rules, each of which broke this silently at some point:
+ *
+ * 1. `@container` values only resolve inside a containment context, so the
+ *    s-query-container wrapper is required.
+ * 2. Responsive values are comma-separated, so a track list may not contain a
+ *    comma — `repeat(4, 1fr)` splits mid-function and voids the query.
+ * 3. One `@container` clause plus a fallback, which is the only form the docs
+ *    demonstrate. A chain of three never matched.
+ *
+ * `columns` is the wide-container count; below the breakpoint everything
+ * stacks.
  */
-export function StatCardGrid({ children }) {
+export function StatCardGrid({ children, columns = 4, minWidth = 700 }) {
+  const wide = Array.from({ length: columns }, () => '1fr').join(' ');
+
   return (
     <s-query-container>
       <s-grid
         gap="base"
-        gridTemplateColumns={
-          '@container (inline-size > 1040px) repeat(4, 1fr), ' +
-          '@container (inline-size > 760px) repeat(3, 1fr), ' +
-          '@container (inline-size > 380px) repeat(2, 1fr), ' +
-          '1fr'
-        }
+        gridTemplateColumns={`@container (inline-size > ${minWidth}px) ${wide}, 1fr`}
       >
         {children}
       </s-grid>

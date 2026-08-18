@@ -19,6 +19,7 @@ import EmptyState from '../components/EmptyState';
 import ProductThumb from '../components/ProductThumb';
 import TrendChart from '../components/TrendChart';
 import MeterBar from '../components/MeterBar';
+import Card from '../components/Card';
 import { useQuotaStatus } from '../lib/quota-status';
 
 const RANGES = [7, 30, 90];
@@ -109,105 +110,97 @@ export default function Index() {
 
   // Default "base" width on purpose: it matches the admin's own pages and the
   // rest of this app, and it is the only width where the aside slot renders.
+  // Equal halves via s-grid rather than slot="aside": the aside is a fixed
+  // narrow rail by design, so it can never be the same width as the main
+  // column. Page width stays at the default "base".
   return (
     <s-page heading="Easy Recommendation">
       <QuotaBanner />
 
       <s-section heading={`Last ${days} days`}>
-        <s-stack direction="block" gap="base">
-          <s-stack direction="inline" gap="base" alignItems="center">
-            {/* The whole scale stays visible; what the plan does not cover is
-                disabled rather than hidden, so a Free shop can see 30 and 90
-                exist instead of facing a lone "7 days" button. */}
-            <s-button-group gap="base">
-              {ranges.map((range) => {
-                const locked = range > retentionDays;
-                return (
-                  <s-button
-                    key={range}
-                    variant={range === days ? 'primary' : 'secondary'}
-                    onClick={() => setSearchParams({ days: String(range) }, { replace: true })}
-                    {...(locked ? { disabled: true } : {})}
-                    accessibilityLabel={
-                      locked ? `${range} days, not included in your plan` : `${range} days`
-                    }
-                  >
-                    {`${range} days`}
-                  </s-button>
-                );
-              })}
-            </s-button-group>
+        <s-stack direction="inline" gap="base" alignItems="center">
+          {/* The whole scale stays visible; what the plan does not cover is
+              disabled rather than hidden, so a Free shop can see 30 and 90
+              exist instead of facing a lone "7 days" button. */}
+          <s-button-group gap="base">
+            {ranges.map((range) => {
+              const locked = range > retentionDays;
+              return (
+                <s-button
+                  key={range}
+                  variant={range === days ? 'primary' : 'secondary'}
+                  onClick={() => setSearchParams({ days: String(range) }, { replace: true })}
+                  {...(locked ? { disabled: true } : {})}
+                  accessibilityLabel={
+                    locked ? `${range} days, not included in your plan` : `${range} days`
+                  }
+                >
+                  {`${range} days`}
+                </s-button>
+              );
+            })}
+          </s-button-group>
 
-            {retentionDays < 90 && (
-              <s-text color="subdued">
-                Your plan keeps {retentionDays} days. <s-link href="/app/pricing">Upgrade</s-link>{' '}
-                for more history.
-              </s-text>
-            )}
-          </s-stack>
-
-          <StatCardGrid>
-            <StatCard label="Recommendations served" value={totals.served} delta={deltas.served} />
-            <StatCard label="Impressions" value={totals.impressions} delta={deltas.impressions} />
-            <StatCard
-              label="Clicks"
-              value={totals.clicks}
-              delta={deltas.clicks}
-              caption={`${formatPercent(totals.clickThroughRate)} CTR`}
-            />
-            <StatCard
-              label="Add to carts"
-              value={totals.addToCarts}
-              delta={deltas.addToCarts}
-              caption={`${formatPercent(totals.addToCartRate)} of clicks`}
-            />
-            <StatCard
-              label="Attributed revenue"
-              value={formatMoney(totals.revenue, currencyCode)}
-              delta={deltas.revenue}
-              caption={`${formatNumber(totals.purchases)} purchases`}
-            />
-            <StatCard label="Products with custom lists" value={overriddenProducts} />
-          </StatCardGrid>
+          {retentionDays < 90 && (
+            <s-text color="subdued">
+              Your plan keeps {retentionDays} days. <s-link href="/app/pricing">Upgrade</s-link> for
+              more history.
+            </s-text>
+          )}
         </s-stack>
       </s-section>
 
-      {/* Chart and funnel share a row instead of stacking: the funnel is five
-          short rows and left a half-page of dead space beside it at desktop
-          widths. Collapses to one column below 760px. */}
+      {/* Metrics flex across the full width first, then the trend below —
+          six cards in a half-width column read as a stack, not a summary. */}
+      <s-section>
+        <StatCardGrid columns={4} minWidth={700}>
+          <StatCard label="Recommendations served" value={totals.served} delta={deltas.served} />
+          <StatCard label="Impressions" value={totals.impressions} delta={deltas.impressions} />
+          <StatCard
+            label="Clicks"
+            value={totals.clicks}
+            delta={deltas.clicks}
+            caption={`${formatPercent(totals.clickThroughRate)} CTR`}
+          />
+          <StatCard
+            label="Add to carts"
+            value={totals.addToCarts}
+            delta={deltas.addToCarts}
+            caption={`${formatPercent(totals.addToCartRate)} of clicks`}
+          />
+          <StatCard
+            label="Attributed revenue"
+            value={formatMoney(totals.revenue, currencyCode)}
+            delta={deltas.revenue}
+            caption={`${formatNumber(totals.purchases)} purchases`}
+          />
+          <StatCard label="Products with custom lists" value={overriddenProducts} />
+        </StatCardGrid>
+      </s-section>
+
+      <s-section heading="Served vs clicks">
+        {hasData ? (
+          <TrendChart
+            series={series}
+            seriesKeys={['served', 'clicks']}
+            labels={['Served', 'Clicks']}
+          />
+        ) : (
+          <s-paragraph color="subdued">
+            The chart fills in once the block starts serving recommendations.
+          </s-paragraph>
+        )}
+      </s-section>
+
+      {/* Row 2 — funnel left, plan and shortcuts right, equal halves. */}
       <s-section>
         <s-query-container>
-          <s-grid gap="base" gridTemplateColumns="@container (inline-size > 760px) 3fr 2fr, 1fr">
-            <s-box
-              padding="base"
-              borderWidth="base"
-              borderColor="subdued"
-              borderRadius="base"
-              background="base"
-            >
-              <s-stack direction="block" gap="base">
-                <s-heading>Served vs clicks</s-heading>
-                {hasData ? (
-                  <TrendChart
-                    series={series}
-                    seriesKeys={['served', 'clicks']}
-                    labels={['Served', 'Clicks']}
-                  />
-                ) : (
-                  <s-paragraph color="subdued">
-                    The chart fills in once the block starts serving recommendations.
-                  </s-paragraph>
-                )}
-              </s-stack>
-            </s-box>
-
-            <s-box
-              padding="base"
-              borderWidth="base"
-              borderColor="subdued"
-              borderRadius="base"
-              background="base"
-            >
+          <s-grid
+            gap="base"
+            alignItems="start"
+            gridTemplateColumns="@container (inline-size > 700px) 1fr 1fr, 1fr"
+          >
+            <Card>
               <s-stack direction="block" gap="base">
                 <s-heading>Funnel</s-heading>
                 {hasData ? (
@@ -238,7 +231,45 @@ export default function Index() {
                   </s-paragraph>
                 )}
               </s-stack>
-            </s-box>
+            </Card>
+
+            <s-stack direction="block" gap="base">
+              <Card>
+                <s-stack direction="block" gap="small">
+                  <s-heading>Your plan</s-heading>
+                  {quota && (
+                    <>
+                      <s-stack direction="inline" gap="small" alignItems="center">
+                        <s-text type="strong">{quota.planName}</s-text>
+                        <s-badge tone={quota.isOver ? 'critical' : 'neutral'}>
+                          {quota.unlimited
+                            ? 'Unlimited'
+                            : `${formatNumber(quota.used)} / ${formatNumber(quota.limit)}`}
+                        </s-badge>
+                      </s-stack>
+                      {!quota.unlimited && <MeterBar value={quota.used} max={quota.limit} />}
+                      <s-text color="subdued">
+                        {quota.unlimited
+                          ? 'No monthly limit on this plan.'
+                          : `${formatNumber(quota.remaining)} recommendations left. Resets ${formatShortDate(quota.resetsAt)}.`}
+                      </s-text>
+                      <s-button href="/app/pricing" variant="secondary">
+                        View plans
+                      </s-button>
+                    </>
+                  )}
+                </s-stack>
+              </Card>
+
+              <Card>
+                <s-stack direction="block" gap="small">
+                  <s-heading>Quick actions</s-heading>
+                  <s-link href="/app/recommendations">Manage recommendations</s-link>
+                  <s-link href="/app/analytics">Full analytics</s-link>
+                  <s-link href="/app/settings">Widget settings</s-link>
+                </s-stack>
+              </Card>
+            </s-stack>
           </s-grid>
         </s-query-container>
       </s-section>
@@ -298,39 +329,6 @@ export default function Index() {
           </s-ordered-list>
         </s-section>
       )}
-
-      <s-section slot="aside" heading="Your plan">
-        {quota && (
-          <s-stack direction="block" gap="small">
-            <s-stack direction="inline" gap="small" alignItems="center">
-              <s-text type="strong">{quota.planName}</s-text>
-              <s-badge tone={quota.isOver ? 'critical' : 'neutral'}>
-                {quota.unlimited
-                  ? 'Unlimited'
-                  : `${formatNumber(quota.used)} / ${formatNumber(quota.limit)}`}
-              </s-badge>
-            </s-stack>
-            {!quota.unlimited && <MeterBar value={quota.used} max={quota.limit} />}
-            <s-text color="subdued">
-              {quota.unlimited
-                ? 'No monthly limit on this plan.'
-                : `${formatNumber(quota.remaining)} recommendations left. Resets ${formatShortDate(quota.resetsAt)}.`}
-            </s-text>
-            <s-divider />
-            <s-button href="/app/pricing" variant="secondary">
-              View plans
-            </s-button>
-          </s-stack>
-        )}
-      </s-section>
-
-      <s-section slot="aside" heading="Quick actions">
-        <s-stack direction="block" gap="small">
-          <s-link href="/app/recommendations">Manage recommendations</s-link>
-          <s-link href="/app/analytics">Full analytics</s-link>
-          <s-link href="/app/settings">Widget settings</s-link>
-        </s-stack>
-      </s-section>
     </s-page>
   );
 }
