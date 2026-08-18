@@ -27,10 +27,12 @@ const LAZY_ROLLUP_DAYS = 3;
 /** Merchant-facing names for the placements CLAUDE.md §3.2 defines. */
 const PLACEMENT_LABELS = {
   pdp: 'Product page',
+  related: 'Related products block',
   checkout: 'Checkout',
   thank_you: 'Thank you page',
   order_status: 'Order status',
   popular: 'Popular products block',
+  collection: 'Collection products block',
   recently_viewed: 'Recently viewed block',
 };
 

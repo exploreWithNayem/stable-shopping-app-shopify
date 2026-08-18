@@ -16,17 +16,29 @@ export const EVENT_TYPES = [
 ];
 
 /**
- * `popular` is the merchandising block, which can sit on any template and has
- * no source product. It is kept out of the recommendation placements so its
- * engagement never lands in a product's recommendation metrics — and it never
- * sends a `served` event, so it never costs quota.
+ * `popular`, `collection` and `recently_viewed` are the merchandising sources of
+ * the theme block: they can sit on any template and have no source product. They
+ * are kept as placements of their own so their engagement never lands in a
+ * product's recommendation metrics — and none of them sends a `served` event, so
+ * none costs quota.
+ *
+ * `related` is the opposite case. It is a recommendation — one source product,
+ * Shopify's own answer for it — so it does bill. It gets its own placement
+ * rather than sharing `pdp` with the custom source, because a product page can
+ * carry one of each and the serve dedupe keys on placement (CLAUDE.md §3.3).
+ *
+ * An unlisted value is coerced to `pdp`, so anything the storefront sends must
+ * appear here or it silently pollutes product-page metrics.
  */
 export const PLACEMENTS = [
   "pdp",
+  "related",
   "checkout",
   "thank_you",
   "order_status",
   "popular",
+  "collection",
+  "recently_viewed",
 ];
 
 export const SOURCES = ["shopify", "override"];

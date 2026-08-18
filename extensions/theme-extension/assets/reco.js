@@ -110,9 +110,10 @@
     queue.push({
       clientId: uid(),
       sessionId: sessionId(),
-      // "pdp" for the recommendations block, "popular" for the merchandising
-      // one. The server keeps them apart so a home-page row never lands in a
-      // product's recommendation metrics.
+      // One per source: "pdp" (custom), "related", "popular",
+      // "recently_viewed". The server keeps them apart so a home-page row never
+      // lands in a product's recommendation metrics, and so two recommendation
+      // rows on one product page are not deduped into a single serve.
       placement: event.placement || "pdp",
       type: event.type,
       sourceProductId: String(event.sourceProductId),
@@ -556,8 +557,9 @@
     // rather than the server because the override path renders in Liquid and
     // never reaches the app.
     //
-    // Opted out by the popular-products block: it is merchandising, not a
-    // recommendation, so it reports engagement but costs no quota.
+    // Sent by the custom and related sources. Opted out by popular and
+    // recently viewed: those are merchandising, not recommendation, so they
+    // report engagement but cost no quota.
     if (block.getAttribute("data-reco-serve") !== "false") {
       track({
         type: "served",

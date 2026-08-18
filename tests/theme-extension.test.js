@@ -224,23 +224,25 @@ describe("liquid comments", () => {
   });
 });
 
-describe("the one block, three sources", () => {
+describe("the one block, five sources", () => {
   const file = "recommendations.liquid";
   const source = readLiquid(join(BLOCKS, file));
   const schema = readSchema(file);
   const setting = schema.settings.find((entry) => entry.id === "source");
 
   test("is the only block besides the app embed", () => {
-    // A single block is the whole point: three separate ones made merchants
-    // pick before they understood the difference.
+    // A single block is the whole point: separate ones made merchants pick
+    // before they understood the difference.
     expect(blockFiles.sort()).toEqual(["app-embed.liquid", "recommendations.liquid"]);
   });
 
-  test("offers all three sources, defaulting to custom", () => {
+  test("offers all five sources, defaulting to custom", () => {
     expect(setting.type).toBe("select");
     expect(setting.options.map((option) => option.value)).toEqual([
       "custom",
+      "related",
       "popular",
+      "collection",
       "recently_viewed",
     ]);
     // Existing placements keep behaving as they did.
@@ -251,28 +253,71 @@ describe("the one block, three sources", () => {
     const by = (id) => schema.settings.find((entry) => entry.id === id);
 
     expect(by("intent").visible_if).toContain("'custom'");
-    expect(by("sort_by").visible_if).toContain("'popular'");
-    expect(by("hide_sold_out").visible_if).toContain("'popular'");
     expect(by("exclude_current").visible_if).toContain("'recently_viewed'");
+
+    // Both collection-driven sources share the sort and stock filters.
+    for (const id of ["sort_by", "hide_sold_out", "exclude_current"]) {
+      expect(by(id).visible_if, `${id} is not scoped to popular`).toContain("'popular'");
+      expect(by(id).visible_if, `${id} is not scoped to collection`).toContain(
+        "'collection'",
+      );
+    }
 
     // `visible_if` on a resource input is rejected outright at deploy:
     //   settings: with id="collection" 'visible_if' is not a valid attribute
-    // so that one is scoped by its info text instead.
+    // Shopify calls this intentional — conditional resource settings conflict
+    // with `closest.<<resource>>` — so the picker is always on screen and is
+    // scoped by its info text instead. Both sources that read it are named
+    // there, or a merchant cannot tell when filling it in does anything.
     expect(by("collection").visible_if).toBeUndefined();
+    expect(by("collection").info).toContain("Collection products");
     expect(by("collection").info).toContain("Popular products");
   });
 
-  test("only the custom source costs quota", () => {
+  test("only the recommendation sources cost quota", () => {
     // Popular and Recently viewed render on every visit; billing those as
     // recommendations would burn a Free plan in an afternoon (CLAUDE.md 3.3).
+    // They share the one opt-out branch; Custom and Related do not set it.
     expect(hasAttribute(source, "data-reco-serve", "false")).toBe(true);
 
-    for (const placement of ["pdp", "popular", "recently_viewed"]) {
+    for (const placement of [
+      "pdp",
+      "related",
+      "popular",
+      "collection",
+      "recently_viewed",
+    ]) {
       expect(
         hasAttribute(source, "data-reco-placement", placement),
         `missing placement ${placement}`,
       ).toBe(true);
     }
+  });
+
+  test("every placement the block emits is one the server keeps", () => {
+    // An unlisted placement is coerced to "pdp" in normalizeEvent, which would
+    // fold a merchandising row into a product's recommendation metrics and let
+    // the serve dedupe swallow a second recommendation row on the same page.
+    const model = readFileSync(
+      join(EXTENSION, "..", "..", "app", "models", "event.server.js"),
+      "utf8",
+    );
+    const known = model.match(/PLACEMENTS = \[([\s\S]*?)\]/)[1].match(/"([a-z_]+)"/g);
+
+    for (const [, placement] of source.matchAll(
+      /data-reco-placement=["']([a-z_]+)["']/g,
+    )) {
+      expect(known, `${placement} is not in PLACEMENTS`).toContain(`"${placement}"`);
+    }
+  });
+
+  test("the related source never claims an override it did not read", () => {
+    // It bypasses the metafield entirely, so the attribution on every event it
+    // sends has to say shopify.
+    expect(source).toContain('data-reco-placement="related"');
+    expect(source).toMatch(
+      /data-reco-placement="related"[\s\S]{0,200}?data-reco-source="shopify"/,
+    );
   });
 
   test("the heading is a plain setting with a literal default", () => {
@@ -290,11 +335,28 @@ describe("the one block, three sources", () => {
     // theme editor, which no test of the schema alone would catch.
     for (const key of [
       "popular.empty",
+      "collection.empty",
+      "collection.needs_collection",
       "recently_viewed.empty",
       "recommendations.needs_product",
     ]) {
       expect(lookupLocale(key), `${key} has no string`).toBeTruthy();
     }
+  });
+
+  test("every translation the block asks for exists", () => {
+    // Catches a hint added to the Liquid without a matching locale entry, which
+    // renders the literal words "translation missing" in the theme editor.
+    for (const [, key] of source.matchAll(/'([a-z_]+\.[a-z_]+)'\s*\|\s*t\b/g)) {
+      expect(lookupLocale(key), `${key} has no string`).toBeTruthy();
+    }
+  });
+
+  test("only the collection source insists on a collection", () => {
+    // Popular answers "no collection" with the whole catalogue; Collection
+    // products cannot, so it renders nothing and says why in the editor.
+    expect(source).toContain("if collection_source == blank and mode == 'popular'");
+    expect(source).toContain("collection.needs_collection");
   });
 
   test("reads the override metafield through the reserved prefix", () => {

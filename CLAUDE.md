@@ -34,7 +34,7 @@
 
 | Extension | Type | Placement |
 | --- | --- | --- |
-| `recommendations` | Theme app block (`extensions/theme-extension`), shown as **Smart Recommendations** | Any template. One `source` setting picks the behaviour: `custom` (per-product lists, PDP only, the only source that costs quota) · `popular` (a collection) · `recently_viewed` (the shopper's own history) |
+| `recommendations` | Theme app block (`extensions/theme-extension`), shown as **Smart Recommendations** | Any template. One `source` setting picks the behaviour: `custom` (per-product lists, PDP only, billable) · `related` (Shopify's own recommendations, PDP only, billable) · `popular` (best sellers, collection optional) · `collection` (a required collection) · `recently_viewed` (the shopper's own history) |
 | `checkout-recommendations` | Checkout UI extension | `purchase.checkout.block.render`, `purchase.thank-you.block.render`, `customer-account.order-status.block.render` |
 | `reco-pixel` | Web pixel extension (optional, Phase 12) | Purchase attribution |
 
@@ -133,10 +133,18 @@ index.
 
 **Event types**: `served` · `impression` · `click` · `add_to_cart` · `purchase`
 
-**Placements**: `pdp` · `checkout` · `thank_you` · `order_status` · `popular` · `recently_viewed`. The last one is the
-merchandising block (§7.1), not a recommendation surface — it has no source product (sentinel `"*"`)
-and never emits `served`. Keeping it in the list rather than coercing it to `pdp` is what stops a
-home-page row landing in some product's recommendation metrics.
+**Placements**: `pdp` · `related` · `checkout` · `thank_you` · `order_status` · `popular` ·
+`collection` · `recently_viewed`. The last three are merchandising (§7.1), not recommendation
+surfaces — they have no source product (sentinel `"*"`) and never emit `served`. Keeping them in the
+list rather than coercing them to `pdp` is what stops a home-page row landing in some product's
+recommendation metrics. `related` (§7.2) is the reverse case: a real recommendation that bills, given its own
+placement because a product page can carry a Custom row *and* a Related row, and the serve dedupe
+keys on `(session, product, placement)` — sharing `pdp` would make one of the two free.
+
+The list is enforced in one place, `PLACEMENTS` in `app/models/event.server.js`. Anything absent
+from it is coerced to `pdp` silently, so a new storefront placement must be added there in the same
+change — `tests/theme-extension.test.js` asserts every `data-reco-placement` the block emits is
+known to the server.
 
 **Attribution**: when a shopper adds to cart from a widget, attach cart line attributes
 `_reco_src` (source product ID) and `_reco_cid` (client event ID). The `orders/create` webhook
@@ -418,9 +426,10 @@ Implementation notes:
 - Impressions via `IntersectionObserver` at 50% visibility, fired once per card per page view.
 - Respect `prefers-reduced-motion` for the slider.
 
-### 7.1 Popular products block (`blocks/popular-products.liquid`)
+### 7.1 Popular products source (`source: "popular"`)
 
-A second theme app block, added 2026-08-13. Same look as the recommendations block — it renders
+Added 2026-08-13 as its own block; folded into the one block as a `source` on 2026-08-18 (see 8.2 in
+§13 — `blocks/popular-products.liquid` no longer exists). Same look as the other sources — it renders
 through the same `reco-card.liquid` snippet, `reco.css` and `reco.js` — but it is **merchandising,
 not recommendation**, and the differences all follow from that:
 
@@ -457,6 +466,64 @@ rather than 12 — the `all_products` 20-lookup cap does not apply, since this i
 
 When the collection is empty the block renders **nothing** on the storefront, and a dashed hint in
 the theme editor only (`request.design_mode`).
+
+### 7.2 Related products source (`source: "related"`)
+
+Added 2026-08-19. Shopify's own product recommendations for the product being viewed, with **no
+override consulted** — the `custom` source's fallback path, promoted to a source of its own.
+
+**Why it exists when `custom` already falls back to it.** Two reasons. A merchant who never intends
+to curate lists should not have to pick something called "Custom recommendations" to get Shopify's;
+the label is the feature's discoverability. And a merchant who *does* curate can now run two rows on
+one product page — their list, plus Shopify's — which the single `custom` source made impossible.
+
+| | Custom | Related |
+| --- | --- | --- |
+| Reads the override metafield | yes | **no** |
+| Server-rendered | when an override exists | never — always the Ajax API |
+| `intent` setting | merchant picks related / complementary | fixed to `related` |
+| `source` on events | `override` or `shopify` | always `shopify` |
+| Placement | `pdp` | `related` |
+| `served` beacon / quota | yes | yes |
+
+**It bills.** It has a source product and answers "what goes with this", which is the line §7.1 draws
+between recommendation and merchandising — the same line, not a new one. `custom` on a product with
+no override already renders exactly this list and charges for it, so leaving `related` free would
+have been a quota bypass that gutted the metering model rather than a discount.
+
+**No `intent` picker.** "Related products" set to *Complementary* is a contradiction on screen. A
+merchant who wants complementary picks Custom, which exposes `intent` and falls back to Shopify
+anyway.
+
+Everything else is shared: `reco.js` needs no new code path (`fetchFallback` already reads
+`data-reco-intent` and `data-reco-source-product`), and the cards, tracking and add-to-cart wiring
+are the same as every other source.
+
+### 7.3 Collection products source (`source: "collection"`)
+
+Added 2026-08-19. The merchant picks a collection and the block renders it. Merchandising, like
+`popular`: any template, sentinel source product, no `served` beacon, placement `collection`.
+
+**It shares `popular`'s machinery deliberately.** Same Liquid branch, same `sort_by` /
+`exclude_current` / `hide_sold_out` settings, same `collection` setting. One difference, and it is
+the reason both exist: **`popular` falls back to `collections.all` when the collection is empty;
+`collection` renders nothing.** "Show my best sellers" has a sensible answer without a collection.
+"Show the collection I chose" does not, and answering it with the entire catalogue reads as a bug.
+
+The split is really about the label. `popular` was the only collection-driven source, so a merchant
+looking for "put this collection on the home page" had to find it behind the word *Popular* and
+notice the collection picker below. Naming the thing they are looking for is the feature.
+
+> ⚠️ **The Collection picker cannot be hidden when another source is selected.** `visible_if` is
+> rejected on resource inputs at deploy —
+> `settings: with id="collection" 'visible_if' is not a valid attribute`. Shopify enforced this in
+> July 2025 and calls it intentional: *"We don't allow conditional resource settings, this is an
+> intentional limitation as it conflicts with `closest.<<resource>>`"*, and a fix is
+> [not on the roadmap](https://community.shopify.dev/t/using-visible-if-to-show-hide-resource-inputs/20208).
+> Every other source-specific setting *is* scoped with `visible_if`; this one is scoped by naming
+> both consuming sources in its `info` text. The documented workaround — swapping the picker for a
+> `url` setting and parsing `shopify://collections/<handle>` out of it — was rejected: it downgrades
+> the picker and breaks every block already configured, to hide one field.
 
 ---
 
@@ -775,10 +842,12 @@ marking done.
 **Update this section every time a feature is completed.** Tick the box, set the date, and add a
 one-line note. Keep `Current status` and `Next up` accurate.
 
-**Current status:** Phases 0–9 complete — the full path exists end to end, from a merchant picking
+**Current status:** Phases 0–11 complete — the full path exists end to end, from a merchant picking
 recommendations, to a card rendering on a product page, to tracking beacons rolled up into daily
-analytics with revenue attributed from orders. Plus a second theme block, **Popular products**
-(§7.1), placeable on any template. 235 Vitest tests pass; lint, typecheck and build are clean.
+analytics with revenue attributed from orders, to a metered plan that raises the quota. The
+storefront is one theme block, **Smart Recommendations**, with five sources: Custom, Related,
+Popular, Collection and Recently viewed (§7.1–7.3). 241 Vitest tests pass; lint, typecheck and build
+are clean.
 
 Custom recommendations are no longer a paid-only feature: **Free covers 10 products** and the
 allowance is enforced in the editor's action as well as the UI (§5).
@@ -795,10 +864,10 @@ and missing translation keys — nothing more. Equally, `npm run deploy` has not
 scopes, metafield definition and app proxy are not live, and no real Admin or Storefront API call
 has ever executed.
 
-**Next up:** Phase 10 — the home dashboard, which renders what Phase 9 now computes. Still
-outstanding and still recommended first: a live pass on a dev store (`npm run deploy`, `npm run dev`,
-add both blocks in the theme editor on Dawn, walk the QA checklist in §11).
-**Last updated:** 2026-08-17
+**Next up:** Phase 12 — the checkout UI extension. Still outstanding and still recommended first: a
+live pass on a dev store (`npm run deploy`, `npm run dev`, add the block in the theme editor on Dawn
+once per source, walk the QA checklist in §11).
+**Last updated:** 2026-08-19
 
 | Phase | Status | Completed | Notes |
 | --- | --- | --- | --- |
@@ -813,6 +882,8 @@ add both blocks in the theme editor on Dawn, walk the QA checklist in §11).
 | 8. Theme app block (PDP) | ✅ Done | 2026-08-12 | `blocks/recommendations.liquid` (26 settings), `snippets/reco-card.liquid`, `assets/reco.{css,js}`, app embed config, locales. Server-renders overrides from the metafield; Ajax fallback otherwise. Impressions/clicks/ATC beacons, `served` beacon drives quota. Static schema+locale test suite added. **Never rendered on a real theme.** See deviations below. |
 | 8.1 Popular products block | ✅ Done | 2026-08-13 | Second theme app block (§7.1), placeable on any template. Renders a merchant-chosen collection server-side from Liquid; reuses `reco-card.liquid`, `reco.css`, `reco.js`. New `popular` placement; no `served` beacon, so no quota cost. 213 tests. **Never rendered on a real theme.** |
 | 8.2 One block, three sources | ✅ Done | 2026-08-18 | Collapsed to a single **Smart Recommendations** block with a `source` select: `custom` (override metafield → Ajax fallback, `pdp`, billable), `popular` (collection, Liquid-rendered), `recently_viewed` (localStorage, recorded by the app embed on every PDP, re-fetched via `/products/<handle>.js`). `popular-products.liquid` deleted. `visible_if` scopes the per-source settings; Shopify rejects it on the `collection` resource input, so that one is scoped by info text. |
+| 8.3 Related products source | ✅ Done | 2026-08-19 | Fourth `source` option (§7.2): Shopify's own recommendations with the override skipped entirely, PDP only, client-rendered, `intent` fixed to `related`. Billable like `custom`, on its own `related` placement so a Custom row and a Related row on one page are not deduped into a single serve. No `reco.js` change was needed. Fixed alongside: `recently_viewed` was missing from `PLACEMENTS` in `event.server.js`, so every event from that source had been silently recorded as `pdp` — the analytics page has had a label for it since 8.2 that could never appear. 239 tests. |
+| 8.4 Collection products source | ✅ Done | 2026-08-19 | Fifth `source` option (§7.3): the merchant picks a collection and the block renders it. Shares `popular`'s Liquid branch and its `sort_by` / `exclude_current` / `hide_sold_out` settings; the one behavioural difference is that it renders nothing without a collection where `popular` falls back to `collections.all`. New `collection` placement, no `served` beacon. The Collection picker **cannot** be hidden for the other sources — Shopify rejects `visible_if` on resource inputs by design — so it stays on screen with both consuming sources named in its `info`. 241 tests. |
 | 9. Analytics pipeline | ✅ Done | 2026-08-12 | `rollupDay`/`rollupRange` (idempotent, refuses pruned days), `getDashboardMetrics` (totals + prior-period deltas + gapless series), `getFunnel`, `WIDGET_TOTAL` sentinel; `attribution.server.js` + `orders/create` webhook with order-derived idempotency keys; `cron.rollup` route with retention pruning. 202 tests. Analytics page (`/app/analytics`) built 2026-08-18: range selector, impressions-vs-clicks trend, funnel bars, per-placement breakdown (`getPlacementBreakdown`), sortable 50-row per-product table, CSV export gated by `canExportCsv`. |
 | 10. Home dashboard | ✅ Done | 2026-08-18 | Real metrics with period deltas, 7/30/90 range (clamped to plan retention), served-vs-clicks SVG trend chart, top-10 products, funnel, onboarding checklist shown only before first data. Loader rolls up a 3-day trailing window so numbers appear without the cron. |
 | 11. Pricing & billing | ✅ Done | 2026-08-18 | `billing` config in `shopify.server.js` (paid plans only, 14-day trial, `isTest`); pricing page upgrade/downgrade actions; `app.billing.callback` verifies with `billing.check()` rather than trusting the return URL; `app_subscriptions/update` webhook drops non-active subscriptions to Free. Quota snapshot is rewritten on every plan change so the new limit applies immediately. |

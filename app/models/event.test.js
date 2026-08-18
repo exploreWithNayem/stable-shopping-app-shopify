@@ -46,15 +46,23 @@ describe("normalizeEvent", () => {
     expect(row).toMatchObject({ placement: "pdp", source: "shopify" });
   });
 
-  // The popular-products theme block sits on any template and has no source
-  // product, so it beacons the sentinel. Coercing its placement to "pdp" would
-  // fold a home page row into that product's recommendation metrics.
-  test("keeps the popular placement distinct", () => {
-    const row = normalizeEvent(
-      "s",
-      click({ placement: "popular", sourceProductId: "*" }),
-    );
-    expect(row).toMatchObject({ placement: "popular", sourceProductId: "*" });
+  // The merchandising sources sit on any template and have no source product,
+  // so they beacon the sentinel. Coercing their placement to "pdp" would fold a
+  // home page row into that product's recommendation metrics.
+  test.each(["popular", "recently_viewed"])(
+    "keeps the %s placement distinct",
+    (placement) => {
+      const row = normalizeEvent("s", click({ placement, sourceProductId: "*" }));
+      expect(row).toMatchObject({ placement, sourceProductId: "*" });
+    },
+  );
+
+  // Related shares the product page with the custom source, and the serve
+  // dedupe keys on (session, product, placement) — folding it into "pdp" would
+  // make one of the two rows free.
+  test("keeps the related placement distinct from pdp", () => {
+    const row = normalizeEvent("s", click({ placement: "related", source: "shopify" }));
+    expect(row).toMatchObject({ placement: "related", sourceProductId: "1" });
   });
 
   test("coerces ids to strings and blanks to null", () => {
