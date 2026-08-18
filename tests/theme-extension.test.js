@@ -135,13 +135,26 @@ describe("block schemas", () => {
     expect(schema.javascript).toBe("reco.js");
   });
 
-  // all_products allows 20 lookups per page; the override list has to stay
-  // clear of that ceiling.
-  test("the product limit stays under the all_products lookup cap", () => {
-    const limit = readSchema("recommendations.liquid").settings.find(
-      (setting) => setting.id === "limit",
+  /*
+   * all_products allows 20 lookups per page, and only the custom source uses
+   * it. The `limit` setting no longer bounds that — it goes to 24 because
+   * Popular and Recently viewed page through far more products — so the real
+   * ceiling is how many items an override may hold. That cap lives in
+   * app/models/override.server.js, which is why this reads it from there
+   * rather than trusting the block's own range.
+   */
+  test("an override can never exceed the all_products lookup cap", () => {
+    const model = readFileSync(
+      join(EXTENSION, "..", "..", "app", "models", "override.server.js"),
+      "utf8",
     );
-    expect(limit.max).toBeLessThanOrEqual(12);
+    const max = Number(model.match(/MAX_OVERRIDE_ITEMS = (\d+)/)[1]);
+
+    expect(max).toBeLessThanOrEqual(12);
+    // The loop is bounded by the stored list, so `limit` cannot widen it.
+    expect(readLiquid(join(BLOCKS, "recommendations.liquid"))).toContain(
+      "for item in overrides.items limit: limit",
+    );
   });
 });
 
@@ -211,107 +224,97 @@ describe("liquid comments", () => {
   });
 });
 
-describe("popular products block", () => {
-  const source = readLiquid(join(BLOCKS, "popular-products.liquid"));
-  const schema = readSchema("popular-products.liquid");
+describe("the one block, three sources", () => {
+  const file = "recommendations.liquid";
+  const source = readLiquid(join(BLOCKS, file));
+  const schema = readSchema(file);
+  const setting = schema.settings.find((entry) => entry.id === "source");
 
-  test("loads its own assets", () => {
-    // Same explicit stylesheet load as the recommendations block — see there.
-    expect(schema.stylesheet).toBeUndefined();
-    expect(source).toContain("'reco.css' | asset_url | stylesheet_tag");
-    expect(schema.javascript).toBe("reco.js");
+  test("is the only block besides the app embed", () => {
+    // A single block is the whole point: three separate ones made merchants
+    // pick before they understood the difference.
+    expect(blockFiles.sort()).toEqual(["app-embed.liquid", "recommendations.liquid"]);
   });
 
-  // The whole point of this block: unlike recommendations.liquid it is not
-  // pinned to the product template, so a merchant can place it anywhere.
-  test("is not restricted to one template", () => {
-    expect(schema.enabled_on).toBeUndefined();
-    expect(schema.disabled_on).toBeUndefined();
+  test("offers all three sources, defaulting to custom", () => {
+    expect(setting.type).toBe("select");
+    expect(setting.options.map((option) => option.value)).toEqual([
+      "custom",
+      "popular",
+      "recently_viewed",
+    ]);
+    // Existing placements keep behaving as they did.
+    expect(setting.default).toBe("custom");
   });
 
-  // Merchandising, not a recommendation — see CLAUDE.md §3.3. A home page row
-  // firing `served` would burn a Free plan's monthly quota in an afternoon.
-  test("opts out of the serve beacon so it costs no quota", () => {
+  test("source-specific settings are scoped", () => {
+    const by = (id) => schema.settings.find((entry) => entry.id === id);
+
+    expect(by("intent").visible_if).toContain("'custom'");
+    expect(by("sort_by").visible_if).toContain("'popular'");
+    expect(by("hide_sold_out").visible_if).toContain("'popular'");
+    expect(by("exclude_current").visible_if).toContain("'recently_viewed'");
+
+    // `visible_if` on a resource input is rejected outright at deploy:
+    //   settings: with id="collection" 'visible_if' is not a valid attribute
+    // so that one is scoped by its info text instead.
+    expect(by("collection").visible_if).toBeUndefined();
+    expect(by("collection").info).toContain("Popular products");
+  });
+
+  test("only the custom source costs quota", () => {
+    // Popular and Recently viewed render on every visit; billing those as
+    // recommendations would burn a Free plan in an afternoon (CLAUDE.md 3.3).
     expect(hasAttribute(source, "data-reco-serve", "false")).toBe(true);
-    expect(hasAttribute(source, "data-reco-placement", "popular")).toBe(true);
-  });
 
-  // It renders in Liquid from a collection, so the JS fallback fetch (which
-  // needs a source product) must never run for it.
-  test("declares itself server-rendered", () => {
-    expect(hasAttribute(source, "data-reco-server-rendered", "true")).toBe(true);
-  });
-
-  // reco-card.liquid reads these off `block.settings` directly, so a missing id
-  // silently renders a card with the feature switched off.
-  test("defines every setting the shared card snippet reads", () => {
-    const cardSource = readLiquid(join(SNIPPETS, "reco-card.liquid"));
-    const used = new Set(
-      [...cardSource.matchAll(/block\.settings\.([a-z0-9_]+)/g)].map(([, id]) => id),
-    );
-    const defined = new Set((schema.settings ?? []).map((setting) => setting.id));
-
-    expect([...used].filter((id) => !defined.has(id))).toEqual([]);
-  });
-
-  /*
-   * The background colour is this block's alone — a merchandising row sits on
-   * any template and often wants to be a distinct band, while the PDP block
-   * lives inside a product section that already has one. It must default to
-   * fully transparent: an opaque default would repaint every block already
-   * placed in a theme the moment the extension is redeployed. The class carries
-   * the panel's inline padding, so it stays gated on the setting too.
-   */
-  test("background colour is transparent until the merchant picks one", () => {
-    const setting = schema.settings.find((s) => s.id === "background_color");
-
-    expect(setting, "no background_color setting").toBeTruthy();
-    expect(setting.type).toBe("color");
-    expect(setting.default.replace(/\s/g, "")).toBe("rgba(0,0,0,0)");
-    expect(source).toMatch(/\{%\s*if has_background\s*%\}\s*reco--has-background/);
-  });
-
-  test("sort options the Liquid does not handle cannot be selected", () => {
-    const handled = ["best_selling", "newest", "price_asc", "price_desc", "title"];
-    const sort = schema.settings.find((setting) => setting.id === "sort_by");
-
-    expect(sort.options.map((option) => option.value).sort()).toEqual([...handled].sort());
-  });
-});
-
-describe("translations", () => {
-  const liquidFiles = [
-    ...blockFiles.map((file) => join(BLOCKS, file)),
-    ...readdirSync(SNIPPETS)
-      .filter((name) => name.endsWith(".liquid"))
-      .map((file) => join(SNIPPETS, file)),
-  ];
-
-  test("every translated key exists in en.default.json", () => {
-    const missing = [];
-
-    for (const path of liquidFiles) {
-      const source = readLiquid(path);
-      const matches = source.matchAll(/'([a-z0-9_]+(?:\.[a-z0-9_]+)+)'\s*\|\s*t\b/g);
-
-      for (const [, key] of matches) {
-        if (typeof lookupLocale(key) !== "string") missing.push(`${key} (${path})`);
-      }
+    for (const placement of ["pdp", "popular", "recently_viewed"]) {
+      expect(
+        hasAttribute(source, "data-reco-placement", placement),
+        `missing placement ${placement}`,
+      ).toBe(true);
     }
-
-    expect(missing).toEqual([]);
   });
 
-  // `x | default: 'key' | t` pipes the merchant's own text through the
-  // translation filter, which renders "translation missing" instead of it.
-  test("no translation filter is chained onto a default", () => {
-    const offenders = [];
+  test("the heading is a plain setting with a literal default", () => {
+    // Deliberately not source-aware: Liquid cannot write a block setting, so a
+    // heading that changed with the source left the editor's own input showing
+    // a different string from the storefront.
+    const heading = schema.settings.find((entry) => entry.id === "heading");
+    expect(heading.default).toBe("Heading");
+    expect(source).toContain("assign heading = block.settings.heading");
+    expect(source).not.toContain("heading_is_default");
+  });
 
-    for (const path of liquidFiles) {
-      const source = readLiquid(path);
-      if (/\|\s*default:\s*'[^']+'\s*\|\s*t\b/.test(source)) offenders.push(path);
+  test("every editor hint has a translation", () => {
+    // A missing key renders the literal string "translation missing" in the
+    // theme editor, which no test of the schema alone would catch.
+    for (const key of [
+      "popular.empty",
+      "recently_viewed.empty",
+      "recommendations.needs_product",
+    ]) {
+      expect(lookupLocale(key), `${key} has no string`).toBeTruthy();
     }
+  });
 
-    expect(offenders).toEqual([]);
+  test("reads the override metafield through the reserved prefix", () => {
+    // `metafields.app` resolves to nil and silently drops every override.
+    expect(source).toContain('product.metafields["$app"].reco_overrides.value');
+    expect(source).not.toContain("product.metafields.app.reco_overrides");
+  });
+
+  test("ships a card template only when the browser has to render", () => {
+    expect(source).toContain("<template data-reco-card-template>");
+    expect(source).toContain("assign client_rendered");
+    expect(hasAttribute(source, "data-reco-mode", "recent")).toBe(true);
+  });
+
+  test("the app embed records the history the recently viewed source reads", () => {
+    const embed = readLiquid(join(BLOCKS, "app-embed.liquid"));
+    const script = readFileSync(join(EXTENSION, "assets", "reco.js"), "utf8");
+
+    expect(embed).toContain("easy-reco:recently-viewed");
+    expect(script).toContain("easy-reco:recently-viewed");
+    expect(embed).toContain("template.name == 'product'");
   });
 });

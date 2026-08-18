@@ -34,8 +34,7 @@
 
 | Extension | Type | Placement |
 | --- | --- | --- |
-| `pdp-recommendations` | Theme app block (`extensions/theme-extension`) | PDP section block |
-| `popular-products` | Theme app block (`extensions/theme-extension`) | Any template — merchandising row |
+| `recommendations` | Theme app block (`extensions/theme-extension`), shown as **Smart Recommendations** | Any template. One `source` setting picks the behaviour: `custom` (per-product lists, PDP only, the only source that costs quota) · `popular` (a collection) · `recently_viewed` (the shopper's own history) |
 | `checkout-recommendations` | Checkout UI extension | `purchase.checkout.block.render`, `purchase.thank-you.block.render`, `customer-account.order-status.block.render` |
 | `reco-pixel` | Web pixel extension (optional, Phase 12) | Purchase attribution |
 
@@ -134,7 +133,7 @@ index.
 
 **Event types**: `served` · `impression` · `click` · `add_to_cart` · `purchase`
 
-**Placements**: `pdp` · `checkout` · `thank_you` · `order_status` · `popular`. The last one is the
+**Placements**: `pdp` · `checkout` · `thank_you` · `order_status` · `popular` · `recently_viewed`. The last one is the
 merchandising block (§7.1), not a recommendation surface — it has no source product (sentinel `"*"`)
 and never emits `served`. Keeping it in the list rather than coercing it to `pdp` is what stops a
 home-page row landing in some product's recommendation metrics.
@@ -813,6 +812,7 @@ add both blocks in the theme editor on Dawn, walk the QA checklist in §11).
 | 7. App proxy API | ✅ Done | 2026-08-12 | `proxy.recommendations.jsx` (quota gate, 30-min serve dedupe, `no-store`, degrades to `{items:[]}`) and `proxy.track.jsx` (batch cap 10, per-shop rate limit, always 204). `tracking.server.js`. 155 tests. Not yet exercised over a real proxy request. |
 | 8. Theme app block (PDP) | ✅ Done | 2026-08-12 | `blocks/recommendations.liquid` (26 settings), `snippets/reco-card.liquid`, `assets/reco.{css,js}`, app embed config, locales. Server-renders overrides from the metafield; Ajax fallback otherwise. Impressions/clicks/ATC beacons, `served` beacon drives quota. Static schema+locale test suite added. **Never rendered on a real theme.** See deviations below. |
 | 8.1 Popular products block | ✅ Done | 2026-08-13 | Second theme app block (§7.1), placeable on any template. Renders a merchant-chosen collection server-side from Liquid; reuses `reco-card.liquid`, `reco.css`, `reco.js`. New `popular` placement; no `served` beacon, so no quota cost. 213 tests. **Never rendered on a real theme.** |
+| 8.2 One block, three sources | ✅ Done | 2026-08-18 | Collapsed to a single **Smart Recommendations** block with a `source` select: `custom` (override metafield → Ajax fallback, `pdp`, billable), `popular` (collection, Liquid-rendered), `recently_viewed` (localStorage, recorded by the app embed on every PDP, re-fetched via `/products/<handle>.js`). `popular-products.liquid` deleted. `visible_if` scopes the per-source settings; Shopify rejects it on the `collection` resource input, so that one is scoped by info text. |
 | 9. Analytics pipeline | ✅ Done | 2026-08-12 | `rollupDay`/`rollupRange` (idempotent, refuses pruned days), `getDashboardMetrics` (totals + prior-period deltas + gapless series), `getFunnel`, `WIDGET_TOTAL` sentinel; `attribution.server.js` + `orders/create` webhook with order-derived idempotency keys; `cron.rollup` route with retention pruning. 202 tests. Analytics page (`/app/analytics`) built 2026-08-18: range selector, impressions-vs-clicks trend, funnel bars, per-placement breakdown (`getPlacementBreakdown`), sortable 50-row per-product table, CSV export gated by `canExportCsv`. |
 | 10. Home dashboard | ✅ Done | 2026-08-18 | Real metrics with period deltas, 7/30/90 range (clamped to plan retention), served-vs-clicks SVG trend chart, top-10 products, funnel, onboarding checklist shown only before first data. Loader rolls up a 3-day trailing window so numbers appear without the cron. |
 | 11. Pricing & billing | ✅ Done | 2026-08-18 | `billing` config in `shopify.server.js` (paid plans only, 14-day trial, `isTest`); pricing page upgrade/downgrade actions; `app.billing.callback` verifies with `billing.check()` rather than trusting the return URL; `app_subscriptions/update` webhook drops non-active subscriptions to Free. Quota snapshot is rewritten on every plan change so the new limit applies immediately. |

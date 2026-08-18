@@ -1,6 +1,5 @@
 {
   "recommendations": {
-    "heading": "You may also like",
     "add_to_cart": "Add to cart",
     "added": "Added",
     "choose_options": "Choose options",
@@ -8,10 +7,13 @@
     "error": "Try again",
     "empty": "No recommendations available right now.",
     "previous": "Previous",
-    "next": "Next"
+    "next": "Next",
+    "needs_product": "Choose Popular products or Recently viewed to use this block outside a product page."
   },
   "popular": {
-    "heading": "Popular products",
     "empty": "No products to show yet. Pick a collection with products in it, or clear the sold out filter."
+  },
+  "recently_viewed": {
+    "empty": "Products a shopper has viewed will appear here. Nothing shows in the theme editor because this preview has no browsing history — and it needs the app embed enabled under Theme settings → App embeds."
   }
 }

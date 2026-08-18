@@ -26,6 +26,36 @@
   };
 </script>
 
+{%- comment -%}
+  Recently viewed history.
+
+  Recorded here because the embed runs on every page, whereas reco.js only
+  loads where a block is placed — a shopper can browse a dozen products without
+  ever hitting one. Handles only: the Recently viewed block re-fetches live
+  product JSON, so nothing stored here can go stale.
+{%- endcomment -%}
+{%- if template.name == 'product' and product -%}
+  <script>
+    (function () {
+      try {
+        var KEY = 'easy-reco:recently-viewed';
+        var MAX = 20;
+        var handle = {{ product.handle | json }};
+        var list = JSON.parse(window.localStorage.getItem(KEY) || '[]');
+        if (!Array.isArray(list)) list = [];
+        list = list.filter(function (item) {
+          return typeof item === 'string' && item !== handle;
+        });
+        list.unshift(handle);
+        window.localStorage.setItem(KEY, JSON.stringify(list.slice(0, MAX)));
+      } catch (error) {
+        // Private browsing, a full quota, or storage disabled — the block just
+        // stays empty. Never break the page over a merchandising nicety.
+      }
+    })();
+  </script>
+{%- endif -%}
+
 {% schema %}
 {
   "name": "Easy Recommendation",

@@ -1,72 +1,159 @@
 {%- liquid
+  assign mode = block.settings.source
+  assign limit = block.settings.limit
+
   comment
+    One block, three sources.
+
+    - custom          per-product lists from the $app:reco_overrides metafield,
+                      falling back to Shopify's own recommendations in the
+                      browser. Product pages only, and the only source that
+                      costs quota.
+    - popular         a merchant-chosen collection, rendered here in Liquid.
+    - recently_viewed the shopper's own history, which only their browser
+                      knows, so reco.js fills the track from localStorage.
+
     App-owned metafields live in the reserved namespace app--{app_id}. Liquid
     reaches it through the "$app" reserved prefix used as a bracket key.
     `metafields.app` looks for a literal namespace named "app", finds nothing,
-    and resolves to nil — silently dropping every override to the Ajax fallback.
+    and resolves to nil — silently dropping every override to the fallback.
   endcomment
-  assign overrides = product.metafields["$app"].reco_overrides.value
-  assign limit = block.settings.limit
+
+  if mode == 'custom'
+    assign overrides = product.metafields["$app"].reco_overrides.value
+  endif
+
+  if mode == 'popular'
+    assign collection_source = block.settings.collection
+    if collection_source == blank
+      assign collection_source = collections.all
+    endif
+
+    case block.settings.sort_by
+      when 'newest'
+        assign candidates = collection_source.products | sort: 'created_at' | reverse
+      when 'price_asc'
+        assign candidates = collection_source.products | sort: 'price'
+      when 'price_desc'
+        assign candidates = collection_source.products | sort: 'price' | reverse
+      when 'title'
+        assign candidates = collection_source.products | sort: 'title'
+      else
+        assign candidates = collection_source.products
+    endcase
+  endif
 
   comment
     Not `| default: 'key' | t` — that pipes the merchant's own heading through
     the translation filter and renders "translation missing".
   endcomment
   assign heading = block.settings.heading
-  if heading == blank
-    assign heading = 'recommendations.heading' | t
-  endif
 
   assign add_label = block.settings.add_to_cart_label
   if add_label == blank
     assign add_label = 'recommendations.add_to_cart' | t
   endif
+
+  assign background = block.settings.background_color
+  assign has_background = false
+  if background != blank and background.alpha > 0
+    assign has_background = true
+  endif
 -%}
 
-{%- comment -%}
-  Overrides render straight from the metafield: no JS, no network, no layout
-  shift. Anything else is left to reco.js, which falls back to Shopify's Ajax
-  recommendations API in the browser.
-
-  all_products is capped at 20 lookups per page, which is why `limit` maxes at 12.
-{%- endcomment -%}
-
 {%- capture cards -%}
-  {%- if overrides.items -%}
+  {%- if mode == 'custom' and overrides.items -%}
+    {%- comment -%}
+      all_products is capped at 20 lookups per page; an override list holds at
+      most 12, so this stays clear of the ceiling.
+    {%- endcomment -%}
     {%- for item in overrides.items limit: limit -%}
       {%- assign reco = all_products[item.handle] -%}
       {%- if reco.id -%}
         {%- render 'reco-card', reco: reco, block: block -%}
       {%- endif -%}
     {%- endfor -%}
+
+  {%- elsif mode == 'popular' -%}
+    {%- assign rendered = 0 -%}
+    {%- for item in candidates -%}
+      {%- if rendered >= limit -%}
+        {%- break -%}
+      {%- endif -%}
+      {%- if block.settings.exclude_current and product and item.id == product.id -%}
+        {%- continue -%}
+      {%- endif -%}
+      {%- if block.settings.hide_sold_out and item.available == false -%}
+        {%- continue -%}
+      {%- endif -%}
+      {%- render 'reco-card', reco: item, block: block -%}
+      {%- assign rendered = rendered | plus: 1 -%}
+    {%- endfor -%}
   {%- endif -%}
 {%- endcapture -%}
 
-{%- if product -%}
-{%- comment -%}
-  Loaded explicitly rather than through the schema's `stylesheet` key.
-  Shopify does not reliably serve a block's declared assets when more than one
-  block from the same extension is active on a page, which left this block
-  rendering as unstyled markup. asset_url is deterministic; the browser dedupes
-  the identical href when both blocks are on the same page.
-{%- endcomment -%}
-{{ 'reco.css' | asset_url | stylesheet_tag }}
+{%- liquid
+  comment
+    Which sources need the browser to finish the job: custom with no override
+    falls back to Shopify's Ajax API, and recently viewed has nothing to render
+    server-side at all.
+  endcomment
+  assign client_rendered = false
+  if mode == 'recently_viewed'
+    assign client_rendered = true
+  elsif mode == 'custom' and cards == blank
+    assign client_rendered = true
+  endif
+
+  assign renderable = false
+  if mode == 'recently_viewed'
+    assign renderable = true
+  elsif mode == 'custom' and product
+    assign renderable = true
+  elsif mode == 'popular' and cards != blank
+    assign renderable = true
+  endif
+-%}
+
+{%- if renderable -%}
+  {{ 'reco.css' | asset_url | stylesheet_tag }}
 
   <div
-    class="reco reco--{{ block.settings.layout }} reco--align-{{ block.settings.text_align }}"
+    class="reco reco--{{ block.settings.layout }} reco--align-{{ block.settings.text_align }}{% if has_background %} reco--has-background{% endif %}"
     data-reco-block
-    data-reco-source-product="{{ product.id }}"
-    data-reco-source="{% if cards != blank %}override{% else %}shopify{% endif %}"
-    data-reco-server-rendered="{% if cards != blank %}true{% else %}false{% endif %}"
     data-reco-limit="{{ limit }}"
-    data-reco-intent="{{ block.settings.intent }}"
     data-reco-atc="{{ block.settings.atc_behavior }}"
     data-reco-autoplay="{{ block.settings.autoplay }}"
     data-reco-autoplay-speed="{{ block.settings.autoplay_speed }}"
+    data-reco-server-rendered="{% if client_rendered %}false{% else %}true{% endif %}"
+    {%- if mode == 'custom' %}
+      data-reco-placement="pdp"
+      data-reco-source-product="{{ product.id }}"
+      data-reco-source="{% if cards != blank %}override{% else %}shopify{% endif %}"
+      data-reco-intent="{{ block.settings.intent }}"
+    {%- else %}
+      {%- comment -%}
+        Merchandising, not recommendation: reports engagement but emits no
+        `served` beacon, so it costs no quota (CLAUDE.md 7.1).
+      {%- endcomment -%}
+      data-reco-serve="false"
+      data-reco-source-product="*"
+      {%- if mode == 'popular' %}
+        data-reco-placement="popular"
+        data-reco-source="shopify"
+      {%- else %}
+        data-reco-mode="recent"
+        data-reco-placement="recently_viewed"
+        data-reco-source="recently_viewed"
+        {% if block.settings.exclude_current and product %}data-reco-exclude="{{ product.handle }}"{% endif %}
+        {% if request.design_mode %}data-reco-design-mode="true"{% endif %}
+      {%- endif %}
+    {%- endif %}
     style="
       --reco-columns-desktop: {{ block.settings.columns_desktop }};
       --reco-columns-mobile: {{ block.settings.columns_mobile }};
       --reco-accent: {{ block.settings.accent_color }};
+      {% if has_background %}--reco-background: {{ background }};{% endif %}
       --reco-padding-top: {{ block.settings.padding_top }}px;
       --reco-padding-bottom: {{ block.settings.padding_bottom }}px;
       --reco-ratio: {% case block.settings.image_ratio %}{% when 'square' %}1/1{% when 'portrait' %}3/4{% else %}auto{% endcase %};
@@ -81,9 +168,7 @@
     {%- endif -%}
 
     <div class="reco__viewport">
-      <div class="reco__track" data-reco-track>
-        {{ cards }}
-      </div>
+      <div class="reco__track" data-reco-track>{{ cards }}</div>
 
       {%- if block.settings.layout == 'slider' -%}
         <div class="reco__nav" data-reco-nav hidden>
@@ -107,54 +192,129 @@
       {%- endif -%}
     </div>
 
-
-    {%- comment -%} Templates the JS clones for the Ajax fallback path. {%- endcomment -%}
-    <template data-reco-card-template>
-      <div class="reco-card" data-reco-card>
-        <a class="reco-card__media" data-reco-link>
-          <img class="reco-card__image" loading="lazy" alt="">
-        </a>
-        <div class="reco-card__info">
-          {%- if block.settings.show_vendor -%}
-            <span class="reco-card__vendor" data-reco-vendor></span>
-          {%- endif -%}
-          {%- if block.settings.show_title -%}
-            <a class="reco-card__title" data-reco-link data-reco-title></a>
-          {%- endif -%}
-          {%- if block.settings.show_price -%}
-            <span class="reco-card__price">
-              <span data-reco-price></span>
-              {%- if block.settings.show_compare_price -%}
-                <s class="reco-card__compare" data-reco-compare hidden></s>
-              {%- endif -%}
-            </span>
-          {%- endif -%}
-          {%- if block.settings.show_add_to_cart -%}
-            <button
-              type="button"
-              class="reco-card__button reco-card__button--{{ block.settings.button_style }}"
-              data-reco-add
-            >
-              {{ add_label }}
-            </button>
-          {%- endif -%}
-        </div>
+    {%- if mode == 'recently_viewed' and request.design_mode -%}
+      {%- comment -%} Editor only: an empty history here is normal, not a fault. {%- endcomment -%}
+      <div class="reco--empty" data-reco-design-hint>
+        <p>{{ 'recently_viewed.empty' | t }}</p>
       </div>
-    </template>
+    {%- endif -%}
+
+    {%- if client_rendered -%}
+      {%- comment -%} Cloned by reco.js for each product it loads. {%- endcomment -%}
+      <template data-reco-card-template>
+        <div class="reco-card" data-reco-card>
+          <a class="reco-card__media" data-reco-link>
+            <img class="reco-card__image" width="400" height="400" loading="lazy" alt="">
+          </a>
+          <div class="reco-card__info">
+            {%- if block.settings.show_vendor -%}
+              <span class="reco-card__vendor" data-reco-vendor></span>
+            {%- endif -%}
+            {%- if block.settings.show_title -%}
+              <a class="reco-card__title" data-reco-link data-reco-title></a>
+            {%- endif -%}
+            {%- if block.settings.show_price -%}
+              <span class="reco-card__price">
+                <span data-reco-price></span>
+                {%- if block.settings.show_compare_price -%}
+                  <s class="reco-card__compare" data-reco-compare hidden></s>
+                {%- endif -%}
+              </span>
+            {%- endif -%}
+            {%- if block.settings.show_add_to_cart -%}
+              <button
+                type="button"
+                class="reco-card__button reco-card__button--{{ block.settings.button_style }}"
+                data-reco-add
+              >
+                {{ add_label }}
+              </button>
+            {%- endif -%}
+          </div>
+        </div>
+      </template>
+    {%- endif -%}
+  </div>
+{%- elsif request.design_mode -%}
+  <div class="reco reco--empty" {{ block.shopify_attributes }}>
+    <p>
+      {%- if mode == 'custom' -%}
+        {{ 'recommendations.needs_product' | t }}
+      {%- else -%}
+        {{ 'popular.empty' | t }}
+      {%- endif -%}
+    </p>
   </div>
 {%- endif -%}
 
 {% schema %}
 {
-  "name": "Recommendations",
+  "name": "Smart Recommendations",
   "target": "section",
   "javascript": "reco.js",
   "settings": [
     {
+      "type": "select",
+      "id": "source",
+      "label": "Select Source",
+      "options": [
+        {
+          "value": "custom",
+          "label": "Custom recommendations"
+        },
+        {
+          "value": "popular",
+          "label": "Popular products"
+        },
+        {
+          "value": "recently_viewed",
+          "label": "Recently viewed products"
+        }
+      ],
+      "default": "custom",
+      "info": "Custom uses your per-product lists and falls back to Shopify's own recommendations. It only works on a product page."
+    },
+    {
       "type": "text",
       "id": "heading",
       "label": "Heading",
-      "default": "You may also like"
+      "default": "Heading"
+    },
+    {
+      "type": "collection",
+      "id": "collection",
+      "label": "Collection",
+      "info": "Leave empty to use all products. Only used when showing Popular products."
+    },
+    {
+      "type": "select",
+      "id": "sort_by",
+      "label": "Sort by",
+      "info": "Best selling follows the collection's own sort order — set it to Best selling under Products > Collections. Other options sort the first 50 products of the collection. Only used when Products to show is set to Popular products.",
+      "default": "best_selling",
+      "options": [
+        {
+          "value": "best_selling",
+          "label": "Best selling (collection order)"
+        },
+        {
+          "value": "newest",
+          "label": "Newest first"
+        },
+        {
+          "value": "price_asc",
+          "label": "Price: low to high"
+        },
+        {
+          "value": "price_desc",
+          "label": "Price: high to low"
+        },
+        {
+          "value": "title",
+          "label": "Alphabetical"
+        }
+      ],
+      "visible_if": "{{ block.settings.source == 'popular' }}"
     },
     {
       "type": "select",
@@ -162,9 +322,18 @@
       "label": "Layout",
       "default": "grid",
       "options": [
-        { "value": "grid", "label": "Grid" },
-        { "value": "slider", "label": "Slider" },
-        { "value": "list", "label": "List" }
+        {
+          "value": "grid",
+          "label": "Grid"
+        },
+        {
+          "value": "slider",
+          "label": "Slider"
+        },
+        {
+          "value": "list",
+          "label": "List"
+        }
       ]
     },
     {
@@ -172,9 +341,10 @@
       "id": "limit",
       "label": "Products to show",
       "min": 2,
-      "max": 12,
+      "max": 24,
       "step": 1,
-      "default": 4
+      "default": 4,
+      "info": "Custom lists hold up to 12 products."
     },
     {
       "type": "select",
@@ -183,9 +353,31 @@
       "info": "Used when you have not set your own recommendations for this product.",
       "default": "related",
       "options": [
-        { "value": "related", "label": "Related products" },
-        { "value": "complementary", "label": "Complementary products" }
-      ]
+        {
+          "value": "related",
+          "label": "Related products"
+        },
+        {
+          "value": "complementary",
+          "label": "Complementary products"
+        }
+      ],
+      "visible_if": "{{ block.settings.source == 'custom' }}"
+    },
+    {
+      "type": "checkbox",
+      "id": "exclude_current",
+      "label": "Hide the product being viewed",
+      "info": "Only applies when the block is placed on a product page.",
+      "default": true,
+      "visible_if": "{{ block.settings.source == 'popular' or block.settings.source == 'recently_viewed' }}"
+    },
+    {
+      "type": "checkbox",
+      "id": "hide_sold_out",
+      "label": "Hide sold out products",
+      "default": false,
+      "visible_if": "{{ block.settings.source == 'popular' }}"
     },
     {
       "type": "header",
@@ -215,9 +407,18 @@
       "label": "Image shape",
       "default": "square",
       "options": [
-        { "value": "square", "label": "Square" },
-        { "value": "portrait", "label": "Portrait" },
-        { "value": "natural", "label": "Natural" }
+        {
+          "value": "square",
+          "label": "Square"
+        },
+        {
+          "value": "portrait",
+          "label": "Portrait"
+        },
+        {
+          "value": "natural",
+          "label": "Natural"
+        }
       ]
     },
     {
@@ -238,8 +439,14 @@
       "label": "Text alignment",
       "default": "left",
       "options": [
-        { "value": "left", "label": "Left" },
-        { "value": "center", "label": "Centre" }
+        {
+          "value": "left",
+          "label": "Left"
+        },
+        {
+          "value": "center",
+          "label": "Centre"
+        }
       ]
     },
     {
@@ -248,9 +455,18 @@
       "label": "Heading size",
       "default": "md",
       "options": [
-        { "value": "sm", "label": "Small" },
-        { "value": "md", "label": "Medium" },
-        { "value": "lg", "label": "Large" }
+        {
+          "value": "sm",
+          "label": "Small"
+        },
+        {
+          "value": "md",
+          "label": "Medium"
+        },
+        {
+          "value": "lg",
+          "label": "Large"
+        }
       ]
     },
     {
@@ -310,9 +526,18 @@
       "label": "After adding to cart",
       "default": "ajax",
       "options": [
-        { "value": "ajax", "label": "Stay on the page" },
-        { "value": "open_drawer", "label": "Open the cart drawer" },
-        { "value": "redirect_cart", "label": "Go to the cart" }
+        {
+          "value": "ajax",
+          "label": "Stay on the page"
+        },
+        {
+          "value": "open_drawer",
+          "label": "Open the cart drawer"
+        },
+        {
+          "value": "redirect_cart",
+          "label": "Go to the cart"
+        }
       ]
     },
     {
@@ -321,9 +546,18 @@
       "label": "Button style",
       "default": "solid",
       "options": [
-        { "value": "solid", "label": "Solid" },
-        { "value": "outline", "label": "Outline" },
-        { "value": "text", "label": "Text" }
+        {
+          "value": "solid",
+          "label": "Solid"
+        },
+        {
+          "value": "outline",
+          "label": "Outline"
+        },
+        {
+          "value": "text",
+          "label": "Text"
+        }
       ]
     },
     {
@@ -348,6 +582,13 @@
     {
       "type": "header",
       "content": "Appearance"
+    },
+    {
+      "type": "color",
+      "id": "background_color",
+      "label": "Background colour",
+      "info": "Leave transparent to inherit the section's own background.",
+      "default": "rgba(0,0,0,0)"
     },
     {
       "type": "color",

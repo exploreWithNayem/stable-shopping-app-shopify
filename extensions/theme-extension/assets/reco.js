@@ -271,6 +271,82 @@
       });
   }
 
+
+  // --- Recently viewed -----------------------------------------------------
+
+  var RECENT_KEY = "easy-reco:recently-viewed";
+
+  function recentHandles() {
+    try {
+      var list = JSON.parse(window.localStorage.getItem(RECENT_KEY) || "[]");
+      return Array.isArray(list)
+        ? list.filter(function (handle) {
+            return typeof handle === "string" && handle;
+          })
+        : [];
+    } catch (error) {
+      return [];
+    }
+  }
+
+  /**
+   * Fill a Recently viewed block from the browser's own history.
+   *
+   * Handles are stored, not product data, so each one is re-fetched from the
+   * Ajax API — a price change or a sold-out variant is reflected immediately,
+   * and the payload matches what renderFallback already expects.
+   *
+   * A handle that 404s (product deleted or unpublished since the visit) is
+   * dropped silently rather than failing the whole row.
+   */
+  function loadRecentlyViewed(block) {
+    var limit = Number(block.getAttribute("data-reco-limit")) || 4;
+    var exclude = block.getAttribute("data-reco-exclude");
+
+    var handles = recentHandles()
+      .filter(function (handle) {
+        return handle !== exclude;
+      })
+      .slice(0, limit);
+
+    if (handles.length === 0) {
+      if (!block.hasAttribute("data-reco-design-mode")) block.hidden = true;
+      return Promise.resolve(false);
+    }
+
+    block.setAttribute("data-reco-loading", "true");
+
+    return Promise.all(
+      handles.map(function (handle) {
+        return fetch("/products/" + encodeURIComponent(handle) + ".js", {
+          headers: { Accept: "application/json" },
+        })
+          .then(function (response) {
+            return response.ok ? response.json() : null;
+          })
+          .catch(function () {
+            return null;
+          });
+      }),
+    ).then(function (results) {
+      block.removeAttribute("data-reco-loading");
+
+      // Order follows the stored history, so the most recent card comes first.
+      var products = results.filter(Boolean);
+
+      if (products.length === 0) {
+        if (!block.hasAttribute("data-reco-design-mode")) block.hidden = true;
+        return false;
+      }
+
+      var hint = block.querySelector("[data-reco-design-hint]");
+      if (hint) hint.remove();
+
+      renderFallback(block, products);
+      return true;
+    });
+  }
+
   // --- Add to cart ---------------------------------------------------------
 
   function addToCart(block, button) {
@@ -502,7 +578,12 @@
         return;
       }
 
-      fetchFallback(block).then(function (rendered) {
+      var load =
+        block.getAttribute("data-reco-mode") === "recent"
+          ? loadRecentlyViewed(block)
+          : fetchFallback(block);
+
+      load.then(function (rendered) {
         if (rendered) wire(block);
       });
     });

@@ -31,6 +31,7 @@ const PLACEMENT_LABELS = {
   thank_you: 'Thank you page',
   order_status: 'Order status',
   popular: 'Popular products block',
+  recently_viewed: 'Recently viewed block',
 };
 
 const PRODUCT_SORTS = {
