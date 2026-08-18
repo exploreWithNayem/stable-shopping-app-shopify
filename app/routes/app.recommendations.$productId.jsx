@@ -1,8 +1,8 @@
-import { useCallback, useState } from "react";
-import { useFetcher, useLoaderData } from "react-router";
-import { useAppBridge } from "@shopify/app-bridge-react";
-import { authenticate } from "../shopify.server";
-import { ensureShop } from "../models/shop.server";
+import { useCallback, useEffect, useState } from 'react';
+import { useFetcher, useLoaderData } from 'react-router';
+import { useAppBridge } from '@shopify/app-bridge-react';
+import { authenticate } from '../shopify.server';
+import { ensureShop } from '../models/shop.server';
 import {
   MAX_OVERRIDE_ITEMS,
   countOverriddenProducts,
@@ -11,19 +11,19 @@ import {
   hasOverrideForProduct,
   markOverrideSynced,
   upsertOverride,
-} from "../models/override.server";
-import {
-  deleteOverrideMetafield,
-  syncOverrideMetafield,
-} from "../lib/metafields.server";
-import { getProduct, listProducts } from "../lib/products.server";
-import { getShopifyRecommendations } from "../lib/recommendations.server";
-import { ensureStorefrontToken } from "../lib/storefront.server";
-import { canAddOverride, overrideLimit } from "../lib/entitlements";
-import { isUnlimited } from "../lib/plans";
-import { formatMoney } from "../lib/format";
-import QuotaBanner from "../components/QuotaBanner";
-import ProductThumb from "../components/ProductThumb";
+} from '../models/override.server';
+import { deleteOverrideMetafield, syncOverrideMetafield } from '../lib/metafields.server';
+import { getProduct, listProducts } from '../lib/products.server';
+import { getShopifyRecommendations } from '../lib/recommendations.server';
+import { ensureStorefrontToken } from '../lib/storefront.server';
+import { canAddOverride, overrideLimit } from '../lib/entitlements';
+import { isUnlimited } from '../lib/plans';
+import { formatMoney } from '../lib/format';
+import QuotaBanner from '../components/QuotaBanner';
+import ProductThumb from '../components/ProductThumb';
+
+/** Id the App Bridge save bar is addressed by. */
+const SAVE_BAR_ID = 'override-save-bar';
 
 export const loader = async ({ request, params }) => {
   const { admin, session } = await authenticate.admin(request);
@@ -32,13 +32,13 @@ export const loader = async ({ request, params }) => {
 
   const product = await getProduct(admin, productId);
   if (!product) {
-    throw new Response("Product not found", { status: 404 });
+    throw new Response('Product not found', { status: 404 });
   }
 
   const override = await getActiveOverride({
     shopId: shop.id,
     productId,
-    placement: "pdp",
+    placement: 'pdp',
   });
 
   // A product that is already overridden is always editable — the allowance only
@@ -78,7 +78,7 @@ export const loader = async ({ request, params }) => {
       : null,
     shopifyDefaults,
     defaultsError,
-    currencyCode: shop.currencyCode ?? "USD",
+    currencyCode: shop.currencyCode ?? 'USD',
     canOverride: alreadyOverridden || canAddOverride(shop.plan, overrideCount),
     alreadyOverridden,
     overrideCount,
@@ -94,12 +94,12 @@ export const action = async ({ request, params }) => {
   const productId = params.productId;
 
   const formData = await request.formData();
-  const intent = formData.get("intent");
+  const intent = formData.get('intent');
 
   // Catalogue search for the in-page product list. Kept server-side so choosing
   // products never depends on the App Bridge picker opening.
-  if (intent === "search") {
-    const query = String(formData.get("query") ?? "").trim();
+  if (intent === 'search') {
+    const query = String(formData.get('query') ?? '').trim();
     const { products } = await listProducts(admin, {
       search: query,
       pageSize: 10,
@@ -115,10 +115,10 @@ export const action = async ({ request, params }) => {
 
   // Removing an override is never gated — a merchant over the limit has to be
   // able to free a slot up.
-  if (intent === "reset") {
-    await deleteOverride({ shopId: shop.id, productId, placement: "pdp" });
-    await deleteOverride({ shopId: shop.id, productId, placement: "checkout" });
-    await deleteOverride({ shopId: shop.id, productId, placement: "both" });
+  if (intent === 'reset') {
+    await deleteOverride({ shopId: shop.id, productId, placement: 'pdp' });
+    await deleteOverride({ shopId: shop.id, productId, placement: 'checkout' });
+    await deleteOverride({ shopId: shop.id, productId, placement: 'both' });
 
     try {
       await deleteOverrideMetafield(admin, productId);
@@ -146,26 +146,26 @@ export const action = async ({ request, params }) => {
 
   const product = await getProduct(admin, productId);
   if (!product) {
-    return { ok: false, error: "Product not found." };
+    return { ok: false, error: 'Product not found.' };
   }
 
   let items = [];
   try {
-    items = JSON.parse(formData.get("items") ?? "[]");
+    items = JSON.parse(formData.get('items') ?? '[]');
   } catch {
-    return { ok: false, error: "Could not read the selected products." };
+    return { ok: false, error: 'Could not read the selected products.' };
   }
 
   if (items.length === 0) {
-    return { ok: false, error: "Add at least one product, or reset to defaults." };
+    return { ok: false, error: 'Add at least one product, or reset to defaults.' };
   }
 
-  const placement = formData.get("placement") ?? "pdp";
-  const enabled = formData.get("enabled") === "true";
+  const placement = formData.get('placement') ?? 'pdp';
+  const enabled = formData.get('enabled') === 'true';
 
   // Placement is part of the row's identity, so a change means the old row has
   // to go rather than leaving a duplicate behind.
-  for (const existing of ["pdp", "checkout", "both"]) {
+  for (const existing of ['pdp', 'checkout', 'both']) {
     if (existing !== placement) {
       await deleteOverride({ shopId: shop.id, productId, placement: existing });
     }
@@ -211,14 +211,41 @@ export default function OverrideEditor() {
   const searchFetcher = useFetcher();
 
   const [items, setItems] = useState(() => override?.items ?? []);
-  const [placement, setPlacement] = useState(override?.placement ?? "pdp");
+  const [placement, setPlacement] = useState(override?.placement ?? 'pdp');
   const [enabled, setEnabled] = useState(override?.enabled ?? true);
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState('');
   const [pickerError, setPickerError] = useState(null);
 
-  const isSaving = fetcher.state !== "idle";
+  const isSaving = fetcher.state !== 'idle';
   const result = fetcher.data;
-  const isSearching = searchFetcher.state !== "idle";
+
+  /**
+   * Unsaved changes drive the admin's contextual save bar (App Bridge), not an
+   * inline button. Dirtiness is derived from the loader's copy of the override
+   * rather than held in state: a successful save revalidates, the two sides
+   * match again, and the bar dismisses itself. Nothing to keep in sync.
+   */
+  const savedItemIds = (override?.items ?? []).map((item) => String(item.id)).join(',');
+  const currentItemIds = items.map((item) => String(item.id)).join(',');
+  const isDirty =
+    currentItemIds !== savedItemIds ||
+    placement !== (override?.placement ?? 'pdp') ||
+    enabled !== (override?.enabled ?? true);
+
+  const canSave = canOverride && items.length > 0;
+
+  useEffect(() => {
+    if (!shopify?.saveBar) return;
+    if (isDirty) shopify.saveBar.show(SAVE_BAR_ID);
+    else shopify.saveBar.hide(SAVE_BAR_ID);
+  }, [isDirty, shopify]);
+
+  const discard = () => {
+    setItems(override?.items ?? []);
+    setPlacement(override?.placement ?? 'pdp');
+    setEnabled(override?.enabled ?? true);
+  };
+  const isSearching = searchFetcher.state !== 'idle';
   const searchResults = searchFetcher.data?.results ?? [];
 
   const openPicker = useCallback(async () => {
@@ -227,16 +254,16 @@ export default function OverrideEditor() {
     // The picker is hosted by the admin, so it only works in the embedded app.
     // Without this check a missing API is an unhandled rejection in the console
     // and a button that appears to do nothing.
-    if (typeof shopify?.resourcePicker !== "function") {
+    if (typeof shopify?.resourcePicker !== 'function') {
       setPickerError(
-        "The product picker is not available on this page. Search for products below instead.",
+        'The product picker is not available on this page. Search for products below instead.',
       );
       return;
     }
 
     try {
       const selection = await shopify.resourcePicker({
-        type: "product",
+        type: 'product',
         multiple: maxItems,
         // Omitted rather than passed empty: the picker validates every entry,
         // and there is nothing to preselect on a first run.
@@ -253,7 +280,7 @@ export default function OverrideEditor() {
 
       setItems(
         selection.slice(0, maxItems).map((node, index) => ({
-          id: String(node.id).split("/").pop(),
+          id: String(node.id).split('/').pop(),
           handle: node.handle ?? null,
           title: node.title ?? null,
           position: index,
@@ -261,13 +288,12 @@ export default function OverrideEditor() {
       );
     } catch (error) {
       // eslint-disable-next-line no-console
-      console.error("[easy-reco] resourcePicker failed", error);
+      console.error('[easy-reco] resourcePicker failed', error);
       setPickerError(error?.message || String(error));
     }
   }, [shopify, items, maxItems]);
 
-  const runSearch = () =>
-    searchFetcher.submit({ intent: "search", query }, { method: "POST" });
+  const runSearch = () => searchFetcher.submit({ intent: 'search', query }, { method: 'POST' });
 
   const isChosen = (id) => items.some((item) => item.id === String(id));
 
@@ -293,9 +319,7 @@ export default function OverrideEditor() {
   };
 
   const remove = (index) =>
-    setItems(
-      items.filter((_, i) => i !== index).map((item, position) => ({ ...item, position })),
-    );
+    setItems(items.filter((_, i) => i !== index).map((item, position) => ({ ...item, position })));
 
   const useShopifyDefaults = () =>
     setItems(
@@ -310,22 +334,34 @@ export default function OverrideEditor() {
   const save = () => {
     fetcher.submit(
       {
-        intent: "save",
+        intent: 'save',
         items: JSON.stringify(items),
         placement,
         enabled: String(enabled),
       },
-      { method: "POST" },
+      { method: 'POST' },
     );
   };
 
   const reset = () => {
     setItems([]);
-    fetcher.submit({ intent: "reset" }, { method: "POST" });
+    fetcher.submit({ intent: 'reset' }, { method: 'POST' });
   };
 
   return (
     <s-page heading={product.title}>
+      <ui-save-bar id={SAVE_BAR_ID}>
+        <button
+          variant="primary"
+          onClick={save}
+          {...(isSaving ? { loading: '' } : {})}
+          {...(canSave ? {} : { disabled: true })}
+        >
+          Save
+        </button>
+        <button onClick={discard}>Discard</button>
+      </ui-save-bar>
+
       <QuotaBanner />
 
       {result?.error && (
@@ -336,9 +372,8 @@ export default function OverrideEditor() {
       {result?.syncWarning && (
         <s-banner tone="warning" heading="Saved, but not live yet">
           <s-paragraph>
-            Your changes are stored but could not be published to the storefront:{" "}
-            {result.syncWarning} Use “Re-sync recommendations” on the Settings
-            page to try again.
+            Your changes are stored but could not be published to the storefront:{' '}
+            {result.syncWarning} Use “Re-sync recommendations” on the Settings page to try again.
           </s-paragraph>
           <s-button href="/app/settings" variant="primary">
             Go to Settings
@@ -349,24 +384,21 @@ export default function OverrideEditor() {
         <s-banner tone="success" heading="Recommendations saved" dismissible>
           <s-paragraph>
             {result.published
-              ? "This product now shows your custom recommendations."
+              ? 'This product now shows your custom recommendations.'
               : "Saved. These are set to show in checkout only, so the product page keeps Shopify's recommendations."}
           </s-paragraph>
         </s-banner>
       )}
       {result?.reset && (
         <s-banner tone="success" heading="Reset to Shopify defaults" dismissible>
-          <s-paragraph>
-            Shopify&apos;s own recommendations are showing again.
-          </s-paragraph>
+          <s-paragraph>Shopify&apos;s own recommendations are showing again.</s-paragraph>
         </s-banner>
       )}
       {!canOverride && (
         <s-banner tone="warning" heading={`You have used all ${limit} custom recommendations`}>
           <s-paragraph>
-            Your plan covers custom recommendations on {limit} products. Reset one
-            of those products to Shopify&apos;s defaults to free a slot, or
-            upgrade for unlimited.
+            Your plan covers custom recommendations on {limit} products. Reset one of those products
+            to Shopify&apos;s defaults to free a slot, or upgrade for unlimited.
           </s-paragraph>
           <s-button href="/app/pricing" variant="primary">
             See plans
@@ -384,8 +416,8 @@ export default function OverrideEditor() {
         {items.length === 0 ? (
           <s-stack direction="block" gap="base">
             <s-paragraph color="subdued">
-              This product currently shows Shopify&apos;s own recommendations.
-              Pick your own to replace them.
+              This product currently shows Shopify&apos;s own recommendations. Pick your own to
+              replace them.
             </s-paragraph>
             <s-stack direction="inline" gap="base">
               <s-button
@@ -493,9 +525,7 @@ export default function OverrideEditor() {
           </s-stack>
 
           {searchFetcher.data?.search && searchResults.length === 0 && (
-            <s-paragraph color="subdued">
-              No products matched that search.
-            </s-paragraph>
+            <s-paragraph color="subdued">No products matched that search.</s-paragraph>
           )}
 
           {searchResults.map((product) => (
@@ -514,7 +544,7 @@ export default function OverrideEditor() {
                   ? { disabled: true }
                   : {})}
               >
-                {isChosen(product.id) ? "Added" : "Add"}
+                {isChosen(product.id) ? 'Added' : 'Add'}
               </s-button>
             </s-stack>
           ))}
@@ -528,8 +558,7 @@ export default function OverrideEditor() {
           </s-paragraph>
         ) : shopifyDefaults.length === 0 ? (
           <s-paragraph color="subdued">
-            Shopify has no recommendations for this product yet — they build up
-            from order history.
+            Shopify has no recommendations for this product yet — they build up from order history.
           </s-paragraph>
         ) : (
           <s-stack direction="block" gap="small">
@@ -565,20 +594,10 @@ export default function OverrideEditor() {
             onChange={(event) => setEnabled(Boolean(event.currentTarget.checked))}
           />
 
-          <s-button
-            variant="primary"
-            onClick={save}
-            {...(isSaving ? { loading: true } : {})}
-            {...(canOverride && items.length > 0 ? {} : { disabled: true })}
-          >
-            Save
-          </s-button>
-
           {limit !== null && (
             <s-text color="subdued">
-              {overrideCount} of {limit} products on your plan have custom
-              recommendations
-              {alreadyOverridden ? ", including this one." : "."}
+              {overrideCount} of {limit} products on your plan have custom recommendations
+              {alreadyOverridden ? ', including this one.' : '.'}
             </s-text>
           )}
 
