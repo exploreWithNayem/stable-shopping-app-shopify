@@ -14,8 +14,8 @@
     "empty": "No products to show yet. Pick a collection with products in it, or clear the sold out filter."
   },
   "collection": {
-    "needs_collection": "Choose a collection above to show its products.",
-    "empty": "That collection has no products to show. Pick another one, or clear the sold out filter."
+    "needs_collection": "This store has no collections yet. Create one under Products → Collections, then choose it above.",
+    "empty": "That collection has no products to show. Pick another one above, or clear the sold out filter."
   },
   "recently_viewed": {
     "empty": "Products a shopper has viewed will appear here. Nothing shows in the theme editor because this preview has no browsing history — and it needs the app embed enabled under Theme settings → App embeds."

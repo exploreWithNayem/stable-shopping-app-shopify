@@ -506,24 +506,60 @@ Added 2026-08-19. The merchant picks a collection and the block renders it. Merc
 
 **It shares `popular`'s machinery deliberately.** Same Liquid branch, same `sort_by` /
 `exclude_current` / `hide_sold_out` settings, same `collection` setting. One difference, and it is
-the reason both exist: **`popular` falls back to `collections.all` when the collection is empty;
-`collection` renders nothing.** "Show my best sellers" has a sensible answer without a collection.
-"Show the collection I chose" does not, and answering it with the entire catalogue reads as a bug.
+the reason both exist: **an untouched picker means `collections.all` for `popular` and the store's
+first collection for `collection`.** "Show my best sellers" has a sensible answer without a
+collection; "show the collection I chose" does not, and answering it with the entire catalogue reads
+as a bug. Neither renders empty, so a merchant who picks the source and touches nothing else still
+sees products.
+
+`collections` exposes no first/index accessor, so "first" is `for shop_collection in collections` +
+`break`. Shopify documents neither the iteration order nor whether the catch-all `all` collection is
+in the list, so the loop skips handle `all` — landing on it would make this source silently
+identical to `popular`. The `collection.needs_collection` editor hint now covers only the one case
+the fallback cannot: a store with no collections at all.
+
+> **The picker is not pre-filled — this is a render default.** Liquid cannot write a block setting,
+> so choosing the source cannot populate the field; it stays visually empty until the merchant uses
+> it, and the block renders the first collection meanwhile. `autofill: true` is the only mechanism
+> Shopify offers here and it does something different: it binds a resource setting to a *dynamic
+> source* (the parent section's resource, or the template's global one) at the moment the block is
+> added. On a collection template that would point the picker at the collection being viewed —
+> arguably an upgrade, but it applies to `popular` too and changes what an existing block renders,
+> so it is deliberately not enabled.
 
 The split is really about the label. `popular` was the only collection-driven source, so a merchant
 looking for "put this collection on the home page" had to find it behind the word *Popular* and
 notice the collection picker below. Naming the thing they are looking for is the feature.
 
-> ⚠️ **The Collection picker cannot be hidden when another source is selected.** `visible_if` is
-> rejected on resource inputs at deploy —
-> `settings: with id="collection" 'visible_if' is not a valid attribute`. Shopify enforced this in
-> July 2025 and calls it intentional: *"We don't allow conditional resource settings, this is an
-> intentional limitation as it conflicts with `closest.<<resource>>`"*, and a fix is
-> [not on the roadmap](https://community.shopify.dev/t/using-visible-if-to-show-hide-resource-inputs/20208).
-> Every other source-specific setting *is* scoped with `visible_if`; this one is scoped by naming
-> both consuming sources in its `info` text. The documented workaround — swapping the picker for a
-> `url` setting and parsing `shopify://collections/<handle>` out of it — was rejected: it downgrades
-> the picker and breaks every block already configured, to hide one field.
+> ⚠️ **The Collection picker is `"type": "collection"` and is visible for every source. Settled
+> 2026-08-19 after building all three alternatives — do not re-litigate.** Shopify offers no setting
+> type that both browses collections only *and* accepts `visible_if`:
+>
+> | | browses collections only | takes `visible_if` | one block |
+> | --- | --- | --- | --- |
+> | `"type": "collection"` ← chosen | ✅ | ❌ rejected at deploy | ✅ |
+> | `"type": "url"` | ❌ also products / pages / blogs / articles | ✅ | ✅ |
+> | separate `collection-products.liquid` block | ✅ | n/a — own schema | ❌ |
+>
+> The merchant's requirement was a field that lists the store's collections and nothing else, which
+> only the first row gives on a single block. **Its cost is an inert field on Custom, Related and
+> Recently viewed** — accepted, in preference to a picker that can return a product.
+>
+> `visible_if` on a *resource* input fails deploy with
+> `settings: with id="collection" 'visible_if' is not a valid attribute`, enforced since July 2025
+> and [intentional](https://community.shopify.dev/t/using-visible-if-to-show-hide-resource-inputs/20208):
+> *"We don't allow conditional resource settings, this is an intentional limitation as it conflicts
+> with `closest.<<resource>>`."* Not on the roadmap. `url` is a specialized input rather than a
+> resource one, so it takes `visible_if` — but nothing narrows its picker, and it stores a link
+> whose format Shopify documents only as "a string that contains the selected URL", so the handle
+> has to be parsed back out. Built, deployed, rejected on the picker. The separate-block route was
+> built and deleted the same day: it gets both, at the price of reversing the one-block design of
+> 8.2 and duplicating ~350 lines of shared schema.
+>
+> `tests/theme-extension.test.js` pins the chosen corner from both sides: `collection_url` must not
+> exist, `collection` must be `"type": "collection"`, and every *other* source-specific setting must
+> carry a `visible_if`. The picker sits directly under `source` — position is what associates the
+> two — and carries no `info` text; the schema is deliberately terse.
 
 ---
 
@@ -846,7 +882,7 @@ one-line note. Keep `Current status` and `Next up` accurate.
 recommendations, to a card rendering on a product page, to tracking beacons rolled up into daily
 analytics with revenue attributed from orders, to a metered plan that raises the quota. The
 storefront is one theme block, **Smart Recommendations**, with five sources: Custom, Related,
-Popular, Collection and Recently viewed (§7.1–7.3). 241 Vitest tests pass; lint, typecheck and build
+Popular, Collection and Recently viewed (§7.1–7.3). 244 Vitest tests pass; lint, typecheck and build
 are clean.
 
 Custom recommendations are no longer a paid-only feature: **Free covers 10 products** and the
@@ -883,7 +919,7 @@ once per source, walk the QA checklist in §11).
 | 8.1 Popular products block | ✅ Done | 2026-08-13 | Second theme app block (§7.1), placeable on any template. Renders a merchant-chosen collection server-side from Liquid; reuses `reco-card.liquid`, `reco.css`, `reco.js`. New `popular` placement; no `served` beacon, so no quota cost. 213 tests. **Never rendered on a real theme.** |
 | 8.2 One block, three sources | ✅ Done | 2026-08-18 | Collapsed to a single **Smart Recommendations** block with a `source` select: `custom` (override metafield → Ajax fallback, `pdp`, billable), `popular` (collection, Liquid-rendered), `recently_viewed` (localStorage, recorded by the app embed on every PDP, re-fetched via `/products/<handle>.js`). `popular-products.liquid` deleted. `visible_if` scopes the per-source settings; Shopify rejects it on the `collection` resource input, so that one is scoped by info text. |
 | 8.3 Related products source | ✅ Done | 2026-08-19 | Fourth `source` option (§7.2): Shopify's own recommendations with the override skipped entirely, PDP only, client-rendered, `intent` fixed to `related`. Billable like `custom`, on its own `related` placement so a Custom row and a Related row on one page are not deduped into a single serve. No `reco.js` change was needed. Fixed alongside: `recently_viewed` was missing from `PLACEMENTS` in `event.server.js`, so every event from that source had been silently recorded as `pdp` — the analytics page has had a label for it since 8.2 that could never appear. 239 tests. |
-| 8.4 Collection products source | ✅ Done | 2026-08-19 | Fifth `source` option (§7.3): the merchant picks a collection and the block renders it. Shares `popular`'s Liquid branch and its `sort_by` / `exclude_current` / `hide_sold_out` settings; the one behavioural difference is that it renders nothing without a collection where `popular` falls back to `collections.all`. New `collection` placement, no `served` beacon. The Collection picker **cannot** be hidden for the other sources — Shopify rejects `visible_if` on resource inputs by design — so it stays on screen with both consuming sources named in its `info`. 241 tests. |
+| 8.4 Collection products source | ✅ Done | 2026-08-19 | Fifth `source` option (§7.3): the merchant picks a collection and the block renders it. Shares `popular`'s Liquid branch and its `sort_by` / `exclude_current` / `hide_sold_out` settings; the one behavioural difference is what an untouched picker falls back to — the store's first collection here, `collections.all` for `popular`. New `collection` placement, no `served` beacon. The Collection picker sits directly under Select Source and is a real `"type": "collection"` picker — it browses the store's collections and nothing else. All three shapes were built before settling: `url` + `visible_if` hides the field but its picker also returns products and pages; a separate block gets both but splits the one-block design of 8.2. The accepted cost is an inert Collection field on the three sources that ignore it, which Shopify will not let a resource input hide. See §7.3 — settled, with tests blocking each dead end. |
 | 9. Analytics pipeline | ✅ Done | 2026-08-12 | `rollupDay`/`rollupRange` (idempotent, refuses pruned days), `getDashboardMetrics` (totals + prior-period deltas + gapless series), `getFunnel`, `WIDGET_TOTAL` sentinel; `attribution.server.js` + `orders/create` webhook with order-derived idempotency keys; `cron.rollup` route with retention pruning. 202 tests. Analytics page (`/app/analytics`) built 2026-08-18: range selector, impressions-vs-clicks trend, funnel bars, per-placement breakdown (`getPlacementBreakdown`), sortable 50-row per-product table, CSV export gated by `canExportCsv`. |
 | 10. Home dashboard | ✅ Done | 2026-08-18 | Real metrics with period deltas, 7/30/90 range (clamped to plan retention), served-vs-clicks SVG trend chart, top-10 products, funnel, onboarding checklist shown only before first data. Loader rolls up a 3-day trailing window so numbers appear without the cron. |
 | 11. Pricing & billing | ✅ Done | 2026-08-18 | `billing` config in `shopify.server.js` (paid plans only, 14-day trial, `isTest`); pricing page upgrade/downgrade actions; `app.billing.callback` verifies with `billing.check()` rather than trusting the return URL; `app_subscriptions/update` webhook drops non-active subscriptions to Free. Quota snapshot is rewritten on every plan change so the new limit applies immediately. |

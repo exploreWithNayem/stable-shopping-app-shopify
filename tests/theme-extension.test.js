@@ -263,15 +263,81 @@ describe("the one block, five sources", () => {
       );
     }
 
-    // `visible_if` on a resource input is rejected outright at deploy:
-    //   settings: with id="collection" 'visible_if' is not a valid attribute
-    // Shopify calls this intentional — conditional resource settings conflict
-    // with `closest.<<resource>>` — so the picker is always on screen and is
-    // scoped by its info text instead. Both sources that read it are named
-    // there, or a merchant cannot tell when filling it in does anything.
-    expect(by("collection").visible_if).toBeUndefined();
-    expect(by("collection").info).toContain("Collection products");
-    expect(by("collection").info).toContain("Popular products");
+    for (const id of ["sort_by", "hide_sold_out"]) {
+      expect(by(id).visible_if, `${id} is not scoped to popular`).toContain("'popular'");
+      expect(by(id).visible_if, `${id} is not scoped to collection`).toContain(
+        "'collection'",
+      );
+    }
+  });
+
+  /*
+   * The collection picker browses collections and nothing else, which is what
+   * `"type": "collection"` buys and what it costs: `visible_if` on a resource
+   * input is rejected outright at deploy —
+   *   settings: with id="collection" 'visible_if' is not a valid attribute
+   * — so this one field cannot be hidden for the sources that ignore it.
+   *
+   * All three shapes were built on 2026-08-19 (CLAUDE.md §7.3). A `url` setting
+   * does take visible_if, but nothing narrows its picker to collections; a
+   * separate block gets both but splits the one-block design. This is the
+   * chosen corner, not an oversight.
+   */
+  test("the collection picker is a real collection picker", () => {
+    expect(schema.settings.find((entry) => entry.id === "collection_url")).toBeUndefined();
+    expect(schema.settings.find((entry) => entry.id === "collection").type).toBe("collection");
+
+    // So the Liquid reads a collection object rather than parsing a link.
+    expect(source).toContain("assign collection_source = block.settings.collection");
+    expect(source).not.toContain("split: '/collections/'");
+  });
+
+  test("no setting is left permanently on screen", () => {
+    // A field that shows for a source it does nothing for is the defect this
+    // block keeps regressing on. Heading, layout and the presentation settings
+    // apply to every source; everything source-specific must be scoped —
+    // except `collection`, which Shopify refuses to make conditional.
+    const global = new Set([
+      "source",
+      "collection",
+      "heading",
+      "layout",
+      "limit",
+      "columns_desktop",
+      "columns_mobile",
+      "image_ratio",
+      "hover_image",
+      "show_border",
+      "text_align",
+      "heading_size",
+      "show_title",
+      "show_price",
+      "show_compare_price",
+      "show_vendor",
+      "show_rating",
+      "show_add_to_cart",
+      "add_to_cart_label",
+      "atc_behavior",
+      "button_style",
+      "autoplay",
+      "autoplay_speed",
+      "background_color",
+      "accent_color",
+      "padding_top",
+      "padding_bottom",
+    ]);
+
+    for (const setting of schema.settings) {
+      if (!setting.id || global.has(setting.id)) continue;
+      expect(setting.visible_if, `${setting.id} is always visible`).toBeTruthy();
+    }
+  });
+
+  test("the collection picker sits directly under the source select", () => {
+    // It is the only setting that qualifies the source, so it belongs next to
+    // it — not below Heading, where it read as a global.
+    const ids = schema.settings.map((entry) => entry.id);
+    expect(ids[ids.indexOf("source") + 1]).toBe("collection");
   });
 
   test("only the recommendation sources cost quota", () => {
@@ -352,12 +418,24 @@ describe("the one block, five sources", () => {
     }
   });
 
-  test("only the collection source insists on a collection", () => {
+  test("neither collection-driven source renders empty on an untouched picker", () => {
+    // A merchant who picks the source and nothing else still sees products.
     // Popular answers "no collection" with the whole catalogue; Collection
-    // products cannot, so it renders nothing and says why in the editor.
-    expect(source).toContain("if collection_source == blank and mode == 'popular'");
+    // products answers it with the store's first collection, which is only
+    // reachable by iterating — `collections` has no first/index accessor, and
+    // Liquid cannot write the setting itself.
+    expect(source).toContain("assign collection_source = collections.all");
+    expect(source).toContain("for shop_collection in collections");
+    // Landing on the catch-all would make the source identical to Popular.
+    expect(source).toContain("shop_collection.handle != 'all'");
+
+    // The hint is for a store with no collections at all, the one case the
+    // fallback cannot cover.
     expect(source).toContain("collection.needs_collection");
+    expect(lookupLocale("collection.needs_collection")).toContain("no collections");
   });
+
+
 
   test("reads the override metafield through the reserved prefix", () => {
     // `metafields.app` resolves to nil and silently drops every override.

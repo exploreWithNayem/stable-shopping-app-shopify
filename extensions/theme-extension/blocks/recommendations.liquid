@@ -14,8 +14,8 @@
     - popular         best sellers, rendered here in Liquid. Falls back to the
                       whole catalogue when no collection is picked.
     - collection      the picked collection, rendered here in Liquid. Same
-                      machinery as popular, but a collection is required — "the
-                      collection I chose" has no answer without one.
+                      machinery as popular; falls back to the store's first
+                      collection instead of to everything.
     - recently_viewed the shopper's own history, which only their browser
                       knows, so reco.js fills the track from localStorage.
 
@@ -34,15 +34,43 @@
   endif
 
   if mode == 'popular' or mode == 'collection'
+    comment
+      A real collection picker: it browses the store's collections and nothing
+      else. The cost is that it cannot be hidden for the three sources that
+      ignore it — Shopify rejects visible_if on resource inputs by design, and a
+      `url` setting that does take visible_if has no way to restrict its picker
+      to collections. All three shapes were built; this one keeps the picker
+      honest at the cost of an inert field elsewhere (CLAUDE.md 7.3).
+    endcomment
     assign collection_source = block.settings.collection
 
     comment
-      Only popular falls back to the whole catalogue. Doing the same for the
-      collection source would answer "show my chosen collection" with every
-      product in the shop, which reads as a bug rather than a default.
+      Neither source renders empty just because the picker was never touched.
+      Popular means the whole catalogue; Collection products stands in the
+      store's first collection, which the merchant then swaps for the one they
+      actually want — answering that one with every product in the shop would
+      read as a bug rather than a default.
+
+      A render-time default, not a pre-filled field: Liquid cannot write a block
+      setting, so the picker itself stays empty until the merchant uses it.
     endcomment
-    if collection_source == blank and mode == 'popular'
-      assign collection_source = collections.all
+    if collection_source == blank
+      if mode == 'popular'
+        assign collection_source = collections.all
+      else
+        comment
+          `collections` exposes no first/index accessor, so the first one has to
+          be iterated to. Shopify documents neither the order nor whether the
+          catch-all `all` collection is in the list — it is skipped because
+          landing on it would make this source identical to Popular.
+        endcomment
+        for shop_collection in collections
+          if shop_collection.handle != 'all'
+            assign collection_source = shop_collection
+            break
+          endif
+        endfor
+      endif
     endif
 
     if collection_source != blank
@@ -277,7 +305,7 @@
     <p>
       {%- if mode == 'custom' or mode == 'related' -%}
         {{ 'recommendations.needs_product' | t }}
-      {%- elsif mode == 'collection' and block.settings.collection == blank -%}
+      {%- elsif mode == 'collection' and collection_source == blank -%}
         {{ 'collection.needs_collection' | t }}
       {%- elsif mode == 'collection' -%}
         {{ 'collection.empty' | t }}
@@ -323,22 +351,21 @@
       "default": "custom"
     },
     {
+      "type": "collection",
+      "id": "collection",
+      "label": "Collection"
+    },
+    {
       "type": "text",
       "id": "heading",
       "label": "Heading",
       "default": "Heading"
     },
     {
-      "type": "collection",
-      "id": "collection",
-      "label": "Collection",
-      "info": "Used by Collection products, which needs one, and by Popular products, which falls back to all products when it is empty. Ignored by the other sources."
-    },
-    {
       "type": "select",
       "id": "sort_by",
       "label": "Sort by",
-      "info": "Best selling follows the collection's own sort order — set it to Best selling under Products > Collections. Other options sort the first 50 products of the collection. Only used by Popular products and Collection products.",
+      "info": "Best selling follows the collection's own sort order — set it to Best selling under Products > Collections. Other options sort the first 50 products of the collection.",
       "default": "best_selling",
       "options": [
         {
