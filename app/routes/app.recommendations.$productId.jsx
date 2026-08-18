@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useFetcher, useLoaderData } from 'react-router';
 import { useAppBridge } from '@shopify/app-bridge-react';
 import { authenticate } from '../shopify.server';
@@ -214,6 +214,7 @@ export default function OverrideEditor() {
   const [placement, setPlacement] = useState(override?.placement ?? 'pdp');
   const [enabled, setEnabled] = useState(override?.enabled ?? true);
   const [query, setQuery] = useState('');
+  const searchDebounceRef = useRef(null);
   const [pickerError, setPickerError] = useState(null);
 
   const isSaving = fetcher.state !== 'idle';
@@ -233,6 +234,20 @@ export default function OverrideEditor() {
     enabled !== (override?.enabled ?? true);
 
   const canSave = canOverride && items.length > 0;
+
+  /**
+   * One badge answers the question the page exists to answer: is this product
+   * showing my list or Shopify's? `syncedAt` is what separates "saved" from
+   * "actually rendering", so an unsynced override reads as a warning rather
+   * than a success.
+   */
+  const status = !override
+    ? { label: 'Shopify defaults', tone: 'neutral' }
+    : !override.enabled
+      ? { label: 'Disabled', tone: 'neutral' }
+      : override.syncedAt
+        ? { label: 'Live on storefront', tone: 'success' }
+        : { label: 'Not synced yet', tone: 'warning' };
 
   useEffect(() => {
     if (!shopify?.saveBar) return;
@@ -293,7 +308,29 @@ export default function OverrideEditor() {
     }
   }, [shopify, items, maxItems]);
 
-  const runSearch = () => searchFetcher.submit({ intent: 'search', query }, { method: 'POST' });
+  /**
+   * Search as the merchant types. Debounced so a word costs one request rather
+   * than one per keystroke, and skipped entirely when the field is empty or the
+   * plan has no slot left — there would be nothing to add the results to.
+   */
+  const runSearch = useCallback(
+    (value) => {
+      const term = value.trim();
+      if (!term || !canOverride) return;
+      searchFetcher.submit({ intent: 'search', query: term }, { method: 'POST' });
+    },
+    [canOverride, searchFetcher],
+  );
+
+  const onSearchInput = (event) => {
+    // Read now: currentTarget is cleared before the timeout fires.
+    const value = event.currentTarget.value ?? '';
+    setQuery(value);
+    clearTimeout(searchDebounceRef.current);
+    searchDebounceRef.current = setTimeout(() => runSearch(value), 300);
+  };
+
+  useEffect(() => () => clearTimeout(searchDebounceRef.current), []);
 
   const isChosen = (id) => items.some((item) => item.id === String(id));
 
@@ -412,6 +449,29 @@ export default function OverrideEditor() {
         </s-banner>
       )}
 
+      {/* The page heading lives in the admin title bar, far from the content.
+          Repeat the product here, with the status badge, so both "which
+          product" and "what is it doing right now" are answered above the fold. */}
+      <s-section>
+        <s-stack direction="inline" gap="base" alignItems="center" justifyContent="space-between">
+          <s-stack direction="inline" gap="base" alignItems="center">
+            <s-thumbnail
+              src={product.image ?? undefined}
+              alt={product.imageAlt ?? product.title}
+              size="large"
+            />
+            <s-stack direction="block" gap="none">
+              <s-heading>{product.title}</s-heading>
+              <s-link href={`shopify://admin/products/${product.id}`}>View product</s-link>
+            </s-stack>
+          </s-stack>
+
+          <s-badge tone={status.tone} size="large">
+            {status.label}
+          </s-badge>
+        </s-stack>
+      </s-section>
+
       <s-section heading="Your recommendations">
         {items.length === 0 ? (
           <s-stack direction="block" gap="base">
@@ -444,7 +504,7 @@ export default function OverrideEditor() {
               <s-table-header-row>
                 <s-table-header listSlot="kicker">#</s-table-header>
                 <s-table-header listSlot="primary">Product</s-table-header>
-                <s-table-header>Order</s-table-header>
+                <s-table-header>Reorder</s-table-header>
                 <s-table-header>Remove</s-table-header>
               </s-table-header-row>
               <s-table-body>
@@ -455,7 +515,7 @@ export default function OverrideEditor() {
                       <ProductThumb title={item.title ?? `Product ${item.id}`} />
                     </s-table-cell>
                     <s-table-cell>
-                      <s-button-group gap="small">
+                      <s-button-group gap="base">
                         <s-button
                           variant="tertiary"
                           icon="arrow-up"
@@ -504,50 +564,40 @@ export default function OverrideEditor() {
         <s-stack direction="block" gap="base">
           <s-search-field
             label="Search your products"
+            labelAccessibilityVisibility="exclusive"
             placeholder="Search by product title"
             value={query}
-            onInput={(event) => setQuery(event.currentTarget.value)}
-            onChange={(event) => setQuery(event.currentTarget.value)}
+            onInput={onSearchInput}
+            onChange={onSearchInput}
           />
 
-          <s-stack direction="inline" gap="base" alignItems="center">
-            <s-button
-              variant="secondary"
-              onClick={runSearch}
-              {...(isSearching ? { loading: true } : {})}
-              {...(canOverride ? {} : { disabled: true })}
-            >
-              Search
-            </s-button>
-            <s-text color="subdued">
-              {items.length} of {maxItems} slots used
-            </s-text>
-          </s-stack>
+          {isSearching && <s-text color="subdued">Searching…</s-text>}
 
-          {searchFetcher.data?.search && searchResults.length === 0 && (
+          {query.trim() && searchFetcher.data?.search && searchResults.length === 0 && (
             <s-paragraph color="subdued">No products matched that search.</s-paragraph>
           )}
 
-          {searchResults.map((product) => (
-            <s-stack
-              key={product.id}
-              direction="inline"
-              gap="base"
-              alignItems="center"
-              justifyContent="space-between"
-            >
-              <ProductThumb title={product.title} image={product.image} />
-              <s-button
-                variant="secondary"
-                onClick={() => addItem(product)}
-                {...(isChosen(product.id) || items.length >= maxItems || !canOverride
-                  ? { disabled: true }
-                  : {})}
+          {query.trim() &&
+            searchResults.map((product) => (
+              <s-stack
+                key={product.id}
+                direction="inline"
+                gap="base"
+                alignItems="center"
+                justifyContent="space-between"
               >
-                {isChosen(product.id) ? 'Added' : 'Add'}
-              </s-button>
-            </s-stack>
-          ))}
+                <ProductThumb title={product.title} image={product.image} />
+                <s-button
+                  variant="secondary"
+                  onClick={() => addItem(product)}
+                  {...(isChosen(product.id) || items.length >= maxItems || !canOverride
+                    ? { disabled: true }
+                    : {})}
+                >
+                  {isChosen(product.id) ? 'Added' : 'Add'}
+                </s-button>
+              </s-stack>
+            ))}
         </s-stack>
       </s-section>
 
@@ -561,15 +611,25 @@ export default function OverrideEditor() {
             Shopify has no recommendations for this product yet — they build up from order history.
           </s-paragraph>
         ) : (
-          <s-stack direction="block" gap="small">
-            {shopifyDefaults.map((node) => (
-              <ProductThumb
-                key={node.id}
-                title={node.title}
-                image={node.image}
-                subtitle={formatMoney(node.price, node.currencyCode ?? currencyCode)}
-              />
-            ))}
+          <s-stack direction="block" gap="base">
+            <s-stack direction="block" gap="small">
+              {shopifyDefaults.map((node) => (
+                <ProductThumb
+                  key={node.id}
+                  title={node.title}
+                  image={node.image}
+                  subtitle={formatMoney(node.price, node.currencyCode ?? currencyCode)}
+                />
+              ))}
+            </s-stack>
+
+            <s-button
+              variant="secondary"
+              onClick={useShopifyDefaults}
+              {...(canOverride ? {} : { disabled: true })}
+            >
+              Use this list as a starting point
+            </s-button>
           </s-stack>
         )}
       </s-section>
@@ -595,16 +655,22 @@ export default function OverrideEditor() {
           />
 
           {limit !== null && (
-            <s-text color="subdued">
-              {overrideCount} of {limit} products on your plan have custom recommendations
-              {alreadyOverridden ? ', including this one.' : '.'}
-            </s-text>
+            <>
+              <s-divider />
+              <s-text color="subdued">
+                {overrideCount} of {limit} products on your plan have custom recommendations
+                {alreadyOverridden ? ', including this one.' : '.'}
+              </s-text>
+            </>
           )}
 
           {override && (
-            <s-button variant="secondary" tone="critical" onClick={reset}>
-              Reset to Shopify defaults
-            </s-button>
+            <>
+              <s-divider />
+              <s-button variant="secondary" tone="critical" onClick={reset}>
+                Reset to Shopify defaults
+              </s-button>
+            </>
           )}
         </s-stack>
       </s-section>

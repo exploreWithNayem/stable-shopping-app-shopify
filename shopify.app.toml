@@ -52,6 +52,12 @@ api_version = "2026-07"
   uri = "/webhooks/app/scopes_update"
   topics = [ "app/scopes_update" ]
 
+  # Keeps Shop.plan in sync when a subscription changes outside the app —
+  # cancelled from the admin, payment failed, charge expired.
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/app/subscriptions_update"
+  topics = [ "app_subscriptions/update" ]
+
   # Closes the attribution loop: reads the _reco_* line properties the theme
   # block attaches, and books the revenue against the recommendation.
   #

@@ -593,7 +593,9 @@ marking done.
 
 ### Phase 8 — Theme app block (PDP)
 1. Create `blocks/recommendations.liquid` with the full settings schema from Section 7.
-2. Server-render from `product.metafields.app.reco_overrides` when present
+2. Server-render from `product.metafields["$app"].reco_overrides` when present
+   (**not** `metafields.app.…` — that looks for a literal namespace named `app`, resolves to
+   nil, and drops every override to the Ajax fallback without an error)
    (`all_products[handle]` lookups, capped at 12).
 3. `assets/reco.js` handles: Shopify Ajax fallback fetch, IntersectionObserver impressions,
    click beacons, add-to-cart with `_reco_src` / `_reco_cid` line properties, slider scroll-snap nav.
@@ -812,8 +814,8 @@ add both blocks in the theme editor on Dawn, walk the QA checklist in §11).
 | 8. Theme app block (PDP) | ✅ Done | 2026-08-12 | `blocks/recommendations.liquid` (26 settings), `snippets/reco-card.liquid`, `assets/reco.{css,js}`, app embed config, locales. Server-renders overrides from the metafield; Ajax fallback otherwise. Impressions/clicks/ATC beacons, `served` beacon drives quota. Static schema+locale test suite added. **Never rendered on a real theme.** See deviations below. |
 | 8.1 Popular products block | ✅ Done | 2026-08-13 | Second theme app block (§7.1), placeable on any template. Renders a merchant-chosen collection server-side from Liquid; reuses `reco-card.liquid`, `reco.css`, `reco.js`. New `popular` placement; no `served` beacon, so no quota cost. 213 tests. **Never rendered on a real theme.** |
 | 9. Analytics pipeline | ✅ Done | 2026-08-12 | `rollupDay`/`rollupRange` (idempotent, refuses pruned days), `getDashboardMetrics` (totals + prior-period deltas + gapless series), `getFunnel`, `WIDGET_TOTAL` sentinel; `attribution.server.js` + `orders/create` webhook with order-derived idempotency keys; `cron.rollup` route with retention pruning. 202 tests. |
-| 10. Home dashboard | ⬜ Not started | — | Widgets, top products, trend chart |
-| 11. Pricing & billing | ⬜ Not started | — | 3 plans, upgrade/downgrade flow |
+| 10. Home dashboard | ✅ Done | 2026-08-18 | Real metrics with period deltas, 7/30/90 range (clamped to plan retention), served-vs-clicks SVG trend chart, top-10 products, funnel, onboarding checklist shown only before first data. Loader rolls up a 3-day trailing window so numbers appear without the cron. |
+| 11. Pricing & billing | ✅ Done | 2026-08-18 | `billing` config in `shopify.server.js` (paid plans only, 14-day trial, `isTest`); pricing page upgrade/downgrade actions; `app.billing.callback` verifies with `billing.check()` rather than trusting the return URL; `app_subscriptions/update` webhook drops non-active subscriptions to Free. Quota snapshot is rewritten on every plan change so the new limit applies immediately. |
 | 12. Checkout extension | ⬜ Not started | — | Checkout / thank-you / order status |
 | 13. Settings page | ⬜ Not started | — | Global defaults, re-sync, deep links |
 | 14. Webhooks & privacy | ⬜ Not started | — | GDPR, orders/create, hardening |
