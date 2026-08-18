@@ -3,6 +3,7 @@ import { Form, useLoaderData, useNavigation, useSearchParams, useSubmit } from "
 import { authenticate } from "../shopify.server";
 import { ensureShop } from "../models/shop.server";
 import {
+  countOverriddenProducts,
   countOverrides,
   getOverridesForProducts,
   listOverrides,
@@ -15,7 +16,12 @@ import {
   getProductsByIds,
   listProducts,
 } from "../lib/products.server";
-import { analyticsRetentionDays, canUseOverrides } from "../lib/entitlements";
+import {
+  analyticsRetentionDays,
+  canAddOverride,
+  overrideLimit,
+} from "../lib/entitlements";
+import { isUnlimited } from "../lib/plans";
 import { addDays, startOfUtcDay } from "../lib/dates";
 import { formatNumber, formatPercent, rate } from "../lib/format";
 import QuotaBanner from "../components/QuotaBanner";
@@ -159,6 +165,11 @@ export const loader = async ({ request }) => {
     { from },
   );
 
+  // Counted per product, not per row: the plan allowance is "how many products
+  // carry custom recommendations".
+  const overrideCount = await countOverriddenProducts(shop.id);
+  const limit = overrideLimit(shop.plan);
+
   // Sort options are built here, not in the component: SORT_KEYS lives in a
   // .server module and must never be referenced from client code.
   const sortOptions = isCustomMode
@@ -185,7 +196,10 @@ export const loader = async ({ request }) => {
     isCustomMode,
     metricSortDowngraded,
     windowDays,
-    canOverride: canUseOverrides(shop.plan),
+    overrideCount,
+    // Unlimited serialises as null — loaders are JSON-encoded (CLAUDE.md §10).
+    overrideLimit: isUnlimited(limit) ? null : limit,
+    canAddOverride: canAddOverride(shop.plan, overrideCount),
   };
 };
 
@@ -198,7 +212,9 @@ export default function RecommendationsPage() {
     isCustomMode,
     metricSortDowngraded,
     windowDays,
-    canOverride,
+    overrideCount,
+    overrideLimit: limit,
+    canAddOverride: canAdd,
   } = useLoaderData();
   const [searchParams] = useSearchParams();
   const submit = useSubmit();
@@ -231,13 +247,23 @@ export default function RecommendationsPage() {
     <s-page heading="Recommendations">
       <QuotaBanner />
 
-      {!canOverride && (
-        <s-banner tone="info" heading="Custom recommendations are a paid feature">
+      {/* Only limited plans get a banner — on an unlimited plan there is
+          nothing to report. */}
+      {limit !== null && (
+        <s-banner
+          tone={canAdd ? "info" : "warning"}
+          heading={
+            canAdd
+              ? `${formatNumber(overrideCount)} of ${formatNumber(limit)} custom recommendations used`
+              : `You have used all ${formatNumber(limit)} custom recommendations`
+          }
+        >
           <s-paragraph>
-            On the Free plan your product pages show Shopify&apos;s own
-            recommendations. Upgrade to replace them with your own picks.
+            {canAdd
+              ? `Your plan covers custom recommendations on ${formatNumber(limit)} products — the rest keep Shopify's own. Upgrade for unlimited.`
+              : "Reset a product to Shopify's defaults to free a slot, or upgrade to customise as many products as you like."}
           </s-paragraph>
-          <s-button href="/app/pricing" variant="primary">
+          <s-button href="/app/pricing" variant={canAdd ? "secondary" : "primary"}>
             See plans
           </s-button>
         </s-banner>

@@ -5,8 +5,10 @@ import { authenticate } from "../shopify.server";
 import { ensureShop } from "../models/shop.server";
 import {
   MAX_OVERRIDE_ITEMS,
+  countOverriddenProducts,
   deleteOverride,
   getActiveOverride,
+  hasOverrideForProduct,
   markOverrideSynced,
   upsertOverride,
 } from "../models/override.server";
@@ -14,10 +16,11 @@ import {
   deleteOverrideMetafield,
   syncOverrideMetafield,
 } from "../lib/metafields.server";
-import { getProduct } from "../lib/products.server";
+import { getProduct, listProducts } from "../lib/products.server";
 import { getShopifyRecommendations } from "../lib/recommendations.server";
 import { ensureStorefrontToken } from "../lib/storefront.server";
-import { canUseOverrides } from "../lib/entitlements";
+import { canAddOverride, overrideLimit } from "../lib/entitlements";
+import { isUnlimited } from "../lib/plans";
 import { formatMoney } from "../lib/format";
 import QuotaBanner from "../components/QuotaBanner";
 import ProductThumb from "../components/ProductThumb";
@@ -37,6 +40,14 @@ export const loader = async ({ request, params }) => {
     productId,
     placement: "pdp",
   });
+
+  // A product that is already overridden is always editable — the allowance only
+  // gates adding a new one.
+  const [overrideCount, alreadyOverridden] = await Promise.all([
+    countOverriddenProducts(shop.id),
+    hasOverrideForProduct(shop.id, productId),
+  ]);
+  const limit = overrideLimit(shop.plan);
 
   // Shown as a starting point so the merchant can see what they are replacing.
   // Provisioning happens here because this is an admin context — the storefront
@@ -68,7 +79,11 @@ export const loader = async ({ request, params }) => {
     shopifyDefaults,
     defaultsError,
     currencyCode: shop.currencyCode ?? "USD",
-    canOverride: canUseOverrides(shop.plan),
+    canOverride: alreadyOverridden || canAddOverride(shop.plan, overrideCount),
+    alreadyOverridden,
+    overrideCount,
+    // Unlimited serialises as null — loaders are JSON-encoded (CLAUDE.md §10).
+    overrideLimit: isUnlimited(limit) ? null : limit,
     maxItems: MAX_OVERRIDE_ITEMS,
   };
 };
@@ -81,11 +96,25 @@ export const action = async ({ request, params }) => {
   const formData = await request.formData();
   const intent = formData.get("intent");
 
-  // Enforced here as well as in the UI — a hidden button is not a control.
-  if (!canUseOverrides(shop.plan)) {
-    return { ok: false, error: "Custom recommendations require a paid plan." };
+  // Catalogue search for the in-page product list. Kept server-side so choosing
+  // products never depends on the App Bridge picker opening.
+  if (intent === "search") {
+    const query = String(formData.get("query") ?? "").trim();
+    const { products } = await listProducts(admin, {
+      search: query,
+      pageSize: 10,
+    });
+
+    return {
+      ok: true,
+      search: true,
+      // The source product is never a valid recommendation for itself.
+      results: products.filter((candidate) => candidate.id !== String(productId)),
+    };
   }
 
+  // Removing an override is never gated — a merchant over the limit has to be
+  // able to free a slot up.
   if (intent === "reset") {
     await deleteOverride({ shopId: shop.id, productId, placement: "pdp" });
     await deleteOverride({ shopId: shop.id, productId, placement: "checkout" });
@@ -100,6 +129,19 @@ export const action = async ({ request, params }) => {
     }
 
     return { ok: true, reset: true };
+  }
+
+  // Enforced here as well as in the UI — a disabled button is not a control.
+  // Editing an existing override occupies no new slot, so only new ones count.
+  if (!(await hasOverrideForProduct(shop.id, productId))) {
+    const overrideCount = await countOverriddenProducts(shop.id);
+    if (!canAddOverride(shop.plan, overrideCount)) {
+      return {
+        ok: false,
+        limitReached: true,
+        error: `Your plan covers custom recommendations on ${overrideLimit(shop.plan)} products, and all of them are in use. Remove one, or upgrade for unlimited.`,
+      };
+    }
   }
 
   const product = await getProduct(admin, productId);
@@ -159,38 +201,88 @@ export default function OverrideEditor() {
     defaultsError,
     currencyCode,
     canOverride,
+    alreadyOverridden,
+    overrideCount,
+    overrideLimit: limit,
     maxItems,
   } = useLoaderData();
   const shopify = useAppBridge();
   const fetcher = useFetcher();
+  const searchFetcher = useFetcher();
 
   const [items, setItems] = useState(() => override?.items ?? []);
   const [placement, setPlacement] = useState(override?.placement ?? "pdp");
   const [enabled, setEnabled] = useState(override?.enabled ?? true);
+  const [query, setQuery] = useState("");
+  const [pickerError, setPickerError] = useState(null);
 
   const isSaving = fetcher.state !== "idle";
   const result = fetcher.data;
+  const isSearching = searchFetcher.state !== "idle";
+  const searchResults = searchFetcher.data?.results ?? [];
 
   const openPicker = useCallback(async () => {
-    const selection = await shopify.resourcePicker({
-      type: "product",
-      multiple: maxItems,
-      selectionIds: items.map((item) => ({
-        id: `gid://shopify/Product/${item.id}`,
-      })),
-    });
+    setPickerError(null);
 
-    if (!selection) return;
+    // The picker is hosted by the admin, so it only works in the embedded app.
+    // Without this check a missing API is an unhandled rejection in the console
+    // and a button that appears to do nothing.
+    if (typeof shopify?.resourcePicker !== "function") {
+      setPickerError(
+        "The product picker is not available on this page. Search for products below instead.",
+      );
+      return;
+    }
 
-    setItems(
-      selection.slice(0, maxItems).map((node, index) => ({
-        id: String(node.id).split("/").pop(),
-        handle: node.handle ?? null,
-        title: node.title ?? null,
-        position: index,
-      })),
-    );
+    try {
+      const selection = await shopify.resourcePicker({
+        type: "product",
+        multiple: maxItems,
+        // Omitted rather than passed empty: the picker validates every entry,
+        // and there is nothing to preselect on a first run.
+        ...(items.length > 0
+          ? {
+              selectionIds: items.map((item) => ({
+                id: `gid://shopify/Product/${item.id}`,
+              })),
+            }
+          : {}),
+      });
+
+      if (!selection) return;
+
+      setItems(
+        selection.slice(0, maxItems).map((node, index) => ({
+          id: String(node.id).split("/").pop(),
+          handle: node.handle ?? null,
+          title: node.title ?? null,
+          position: index,
+        })),
+      );
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error("[easy-reco] resourcePicker failed", error);
+      setPickerError(error?.message || String(error));
+    }
   }, [shopify, items, maxItems]);
+
+  const runSearch = () =>
+    searchFetcher.submit({ intent: "search", query }, { method: "POST" });
+
+  const isChosen = (id) => items.some((item) => item.id === String(id));
+
+  const addItem = (product) => {
+    if (items.length >= maxItems || isChosen(product.id)) return;
+    setItems([
+      ...items,
+      {
+        id: String(product.id),
+        handle: product.handle ?? null,
+        title: product.title ?? null,
+        position: items.length,
+      },
+    ]);
+  };
 
   const move = (index, delta) => {
     const next = [...items];
@@ -270,13 +362,21 @@ export default function OverrideEditor() {
         </s-banner>
       )}
       {!canOverride && (
-        <s-banner tone="info" heading="Upgrade to customise">
+        <s-banner tone="warning" heading={`You have used all ${limit} custom recommendations`}>
           <s-paragraph>
-            Custom recommendations are available on the Standard plan and above.
+            Your plan covers custom recommendations on {limit} products. Reset one
+            of those products to Shopify&apos;s defaults to free a slot, or
+            upgrade for unlimited.
           </s-paragraph>
           <s-button href="/app/pricing" variant="primary">
             See plans
           </s-button>
+        </s-banner>
+      )}
+
+      {pickerError && (
+        <s-banner tone="warning" heading="The product picker did not open">
+          <s-paragraph>{pickerError}</s-paragraph>
         </s-banner>
       )}
 
@@ -366,6 +466,61 @@ export default function OverrideEditor() {
         )}
       </s-section>
 
+      {/* Searching the catalogue here needs nothing from App Bridge, so picking
+          products keeps working even when the hosted picker does not open. */}
+      <s-section heading="Add products by search">
+        <s-stack direction="block" gap="base">
+          <s-search-field
+            label="Search your products"
+            placeholder="Search by product title"
+            value={query}
+            onInput={(event) => setQuery(event.currentTarget.value)}
+            onChange={(event) => setQuery(event.currentTarget.value)}
+          />
+
+          <s-stack direction="inline" gap="base" alignItems="center">
+            <s-button
+              variant="secondary"
+              onClick={runSearch}
+              {...(isSearching ? { loading: true } : {})}
+              {...(canOverride ? {} : { disabled: true })}
+            >
+              Search
+            </s-button>
+            <s-text color="subdued">
+              {items.length} of {maxItems} slots used
+            </s-text>
+          </s-stack>
+
+          {searchFetcher.data?.search && searchResults.length === 0 && (
+            <s-paragraph color="subdued">
+              No products matched that search.
+            </s-paragraph>
+          )}
+
+          {searchResults.map((product) => (
+            <s-stack
+              key={product.id}
+              direction="inline"
+              gap="base"
+              alignItems="center"
+              justifyContent="space-between"
+            >
+              <ProductThumb title={product.title} image={product.image} />
+              <s-button
+                variant="secondary"
+                onClick={() => addItem(product)}
+                {...(isChosen(product.id) || items.length >= maxItems || !canOverride
+                  ? { disabled: true }
+                  : {})}
+              >
+                {isChosen(product.id) ? "Added" : "Add"}
+              </s-button>
+            </s-stack>
+          ))}
+        </s-stack>
+      </s-section>
+
       <s-section heading="What Shopify recommends">
         {defaultsError ? (
           <s-paragraph color="subdued">
@@ -418,6 +573,14 @@ export default function OverrideEditor() {
           >
             Save
           </s-button>
+
+          {limit !== null && (
+            <s-text color="subdued">
+              {overrideCount} of {limit} products on your plan have custom
+              recommendations
+              {alreadyOverridden ? ", including this one." : "."}
+            </s-text>
+          )}
 
           {override && (
             <s-button variant="secondary" tone="critical" onClick={reset}>

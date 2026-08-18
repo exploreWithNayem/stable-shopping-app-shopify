@@ -7,14 +7,23 @@ import {
   getPlan,
   isPaidPlan,
   isUnlimited,
+  planOverrideLimit,
   planQuota,
 } from "./plans";
 
 describe("plan definitions", () => {
   test("match the published pricing", () => {
-    expect(PLANS.free).toMatchObject({ price: 0, quota: 100 });
-    expect(PLANS.standard).toMatchObject({ price: 29, quota: 1000 });
-    expect(PLANS.enterprise).toMatchObject({ price: 59, quota: UNLIMITED });
+    expect(PLANS.free).toMatchObject({ price: 0, quota: 100, overrideLimit: 10 });
+    expect(PLANS.standard).toMatchObject({
+      price: 29,
+      quota: 1000,
+      overrideLimit: UNLIMITED,
+    });
+    expect(PLANS.enterprise).toMatchObject({
+      price: 59,
+      quota: UNLIMITED,
+      overrideLimit: UNLIMITED,
+    });
   });
 
   test("every key is self-consistent and listed in display order", () => {
@@ -44,6 +53,12 @@ describe("quota helpers", () => {
     expect(isUnlimited(planQuota("enterprise"))).toBe(true);
     expect(isUnlimited(planQuota("standard"))).toBe(false);
     expect(isUnlimited(planQuota("free"))).toBe(false);
+  });
+
+  test("planOverrideLimit reads through to the definition", () => {
+    expect(planOverrideLimit("free")).toBe(10);
+    expect(planOverrideLimit("standard")).toBe(UNLIMITED);
+    expect(planOverrideLimit("bogus")).toBe(10);
   });
 
   test("free is the only unpaid plan", () => {

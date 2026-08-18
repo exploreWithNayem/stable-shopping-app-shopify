@@ -2,10 +2,13 @@ import { afterAll, beforeEach, describe, expect, test } from "vitest";
 import prisma from "../db.server";
 import {
   MAX_OVERRIDE_ITEMS,
+  countOverriddenProducts,
+  countOverrides,
   deleteOverride,
   deleteOverridesForProduct,
   getOverride,
   getOverridesForProducts,
+  hasOverrideForProduct,
   listOverrides,
   listUnsyncedOverrides,
   markOverrideSynced,
@@ -131,6 +134,31 @@ describe("queries", () => {
     const drifted = await listUnsyncedOverrides(shopId);
     expect(drifted).toHaveLength(1);
     expect(drifted[0].productId).toBe("2");
+  });
+});
+
+describe("counting against the plan allowance", () => {
+  // The allowance is per product; placement rows must not double-count it.
+  test("countOverriddenProducts counts products, countOverrides counts rows", async () => {
+    await save(1, [{ id: 9 }], { placement: "pdp" });
+    await save(1, [{ id: 9 }], { placement: "checkout" });
+    await save(2, [{ id: 9 }]);
+
+    expect(await countOverrides(shopId)).toBe(3);
+    expect(await countOverriddenProducts(shopId)).toBe(2);
+  });
+
+  test("countOverriddenProducts is zero for a shop with none", async () => {
+    expect(await countOverriddenProducts(shopId)).toBe(0);
+  });
+
+  // A disabled override still occupies its slot — the row is still there.
+  test("hasOverrideForProduct ignores placement and enabled state", async () => {
+    await save(1, [{ id: 9 }], { placement: "checkout", enabled: false });
+
+    expect(await hasOverrideForProduct(shopId, 1)).toBe(true);
+    expect(await hasOverrideForProduct(shopId, "1")).toBe(true);
+    expect(await hasOverrideForProduct(shopId, 2)).toBe(false);
   });
 });
 

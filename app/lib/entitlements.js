@@ -1,4 +1,4 @@
-import { getPlan } from "./plans";
+import { getPlan, isUnlimited, planOverrideLimit } from "./plans";
 
 /**
  * Plan feature gates.
@@ -8,9 +8,28 @@ import { getPlan } from "./plans";
  * billing lands.
  */
 
-/** Custom recommendations that replace Shopify's list. */
-export function canUseOverrides(planKey) {
-  return getPlan(planKey).key !== "free";
+/**
+ * Custom recommendations that replace Shopify's list.
+ *
+ * Free is allowed a fixed number of overridden products rather than none, so the
+ * gate is a count, not a plan check. Everything is counted per *product*: a
+ * product with an override for both PDP and checkout is one, not two.
+ */
+export function overrideLimit(planKey) {
+  return planOverrideLimit(planKey);
+}
+
+/** True when the shop may override one more product than it already has. */
+export function canAddOverride(planKey, currentCount = 0) {
+  const limit = overrideLimit(planKey);
+  return isUnlimited(limit) || currentCount < limit;
+}
+
+/** Overrides left on the plan, or null when there is no ceiling. */
+export function remainingOverrides(planKey, currentCount = 0) {
+  const limit = overrideLimit(planKey);
+  if (isUnlimited(limit)) return null;
+  return Math.max(0, limit - currentCount);
 }
 
 /** The checkout / thank-you / order-status widget. */

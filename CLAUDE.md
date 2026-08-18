@@ -288,22 +288,32 @@ Re-run `npm run seed` after a test run if you want the dev fixture back.
 
 ## 5. Plans & billing
 
-| Plan | Price | Monthly quota | Features |
-| --- | --- | --- | --- |
-| **Free** | $0 | 100 recommendations | PDP widget, Shopify recommendations, basic analytics (7 days) |
-| **Standard** | $29/mo | 1,000 recommendations | + manual overrides, checkout widget, 90-day analytics, CSV export |
-| **Enterprise** | $59/mo | Unlimited | + unlimited overrides, full history, priority support |
+| Plan | Price | Monthly quota | Custom recommendations | Features |
+| --- | --- | --- | --- | --- |
+| **Free** | $0 | 100 recommendations | **10 products** | PDP widget, Shopify recommendations, basic analytics (7 days) |
+| **Standard** | $29/mo | 1,000 recommendations | unlimited | + checkout widget, 90-day analytics, CSV export |
+| **Enterprise** | $59/mo | Unlimited | unlimited | + full history, priority support |
 
 Implementation: `billing` config in `app/shopify.server.js` using the
 [Billing API](https://shopify.dev/docs/api/shopify-app-react-router/apis/billing).
 
 ```js
 export const PLANS = {
-  free:       { key: "free",       name: "Free",       price: 0,  quota: 100 },
-  standard:   { key: "standard",   name: "Standard",   price: 29, quota: 1000 },
-  enterprise: { key: "enterprise", name: "Enterprise", price: 59, quota: -1 },
+  free:       { key: "free",       name: "Free",       price: 0,  quota: 100,  overrideLimit: 10 },
+  standard:   { key: "standard",   name: "Standard",   price: 29, quota: 1000, overrideLimit: -1 },
+  enterprise: { key: "enterprise", name: "Enterprise", price: 59, quota: -1,   overrideLimit: -1 },
 };
 ```
+
+**Free gets a real override allowance, not zero** (changed 2026-08-17). Overrides are the app's
+whole point, so locking them away entirely gives a Free merchant nothing to evaluate. Ten products
+is enough to prove the feature on a store's best sellers and small enough that a catalogue-wide
+rollout needs a paid plan.
+
+`overrideLimit` counts **products**, not rows: a product with a `pdp` row and a `checkout` row is
+one against the allowance (`countOverriddenProducts()`, not `countOverrides()`). Editing or
+disabling an existing override is never gated — only adding the (limit + 1)th product is — and
+"Reset to Shopify defaults" is always allowed, since it is how a merchant at the limit frees a slot.
 
 - Free plan needs **no** Shopify subscription — it is the local default.
 - Paid plans: `billing.request({ plan, isTest: true, returnUrl })` → confirmation URL → redirect
@@ -539,7 +549,8 @@ marking done.
    - Per-product placement selector (PDP / checkout / both), enable toggle.
    - Save → `upsertOverride()` → triggers the metafield sync (Phase 6).
    - "Reset to Shopify defaults" deletes the override *and* the metafield.
-3. Gate override creation behind the Standard plan; on Free, show an upgrade card.
+3. Cap override creation at the plan's `overrideLimit` (§5) — Free stops at 10 products and both
+   pages show the allowance used, with an upgrade CTA when it runs out.
 
 **Deviations made while building (2026-08-12):**
 - **Two list modes, not one.** Shopify pages the catalogue, and it has no idea which products carry
@@ -552,6 +563,12 @@ marking done.
 - **Reorder is up/down buttons, not HTML5 drag-and-drop.** Dragging rows inside `<s-table>` is
   fiddly and inaccessible; buttons work with a keyboard and need no library.
 - **Bulk actions are not built.** Per-row edit and reset only — deferred.
+- **Two ways to choose products, not one** (added 2026-08-17). Alongside the App Bridge resource
+  picker, the editor has an "Add products by search" section: `intent: "search"` on the route's
+  action runs `listProducts()` and each result gets an Add button. The picker is admin-hosted, so
+  when it fails to open there is nothing the app can do about it and no other way to build a list —
+  search needs only the Admin API. `openPicker` also catches its own failures now and shows them in
+  a banner instead of leaving an unhandled rejection in the console.
 - `app/lib/entitlements.js` was created here rather than in Phase 11, because the plan gate is
   needed now. Phase 11 extends it.
 - Saving writes to Prisma only. **The storefront still shows Shopify's list until Phase 6 mirrors
@@ -665,7 +682,8 @@ marking done.
 3. `app/routes/app.billing.callback.jsx` — verify the charge, persist plan + `subscriptionId`,
    create a fresh `UsagePeriod` snapshot, redirect to `/app` with a success toast.
 4. `app_subscriptions/update` webhook → keep `Shop.plan` in sync on Shopify-side changes.
-5. Enforcement helper `app/lib/entitlements.js` → `canUseOverrides(plan)`, `canUseCheckout(plan)`,
+5. Enforcement helper `app/lib/entitlements.js` → `overrideLimit(plan)`,
+   `canAddOverride(plan, count)`, `remainingOverrides(plan, count)`, `canUseCheckout(plan)`,
    `analyticsRetentionDays(plan)`. Enforce **server-side** in every loader/action, not just the UI.
 6. Test with `isTest: true` on a dev store; verify upgrade, downgrade, and quota reset.
 
@@ -706,6 +724,11 @@ marking done.
 
 - **Route files**: `app.<page>.jsx` for admin, `proxy.<endpoint>.jsx` for app-proxy,
   `webhooks.<topic>.jsx` for webhooks (flat routes — dots are path separators).
+- **A page with sub-routes must be `<page>._index.jsx`, not `<page>.jsx`.** In flat routes
+  `app.recommendations.jsx` becomes the *layout* of `app.recommendations.$productId.jsx`, so unless it
+  renders an `<Outlet />` the child route silently never appears — its loader runs, then the parent
+  renders instead. This cost the override editor a whole day of being unreachable (fixed 2026-08-17);
+  `app/routes.test.js` now asserts every parent route renders an Outlet.
 - **No Prisma in routes** — always go through `app/models/*.server.js`.
 - **`.server.js` suffix** for any module touching the DB, secrets, or the Admin API.
 - **GraphQL**: inline template literals tagged with `#graphql` (matches the template + codegen).
@@ -725,6 +748,8 @@ marking done.
 - [ ] Override replaces the Shopify list on the PDP within seconds of saving
 - [ ] "Reset to defaults" restores the Shopify list and removes the metafield
 - [ ] Quota increments once per widget render, not per product
+- [ ] On Free, the 10th custom recommendation saves and an 11th product is refused; resetting one
+      frees the slot again
 - [ ] At 100% quota: Shopify defaults still render, banner shows, tracking stops
 - [ ] Upgrade → quota raised immediately; downgrade → reverts
 - [ ] Dashboard numbers match the raw event table for a known test session
@@ -752,7 +777,10 @@ one-line note. Keep `Current status` and `Next up` accurate.
 **Current status:** Phases 0–9 complete — the full path exists end to end, from a merchant picking
 recommendations, to a card rendering on a product page, to tracking beacons rolled up into daily
 analytics with revenue attributed from orders. Plus a second theme block, **Popular products**
-(§7.1), placeable on any template. 213 Vitest tests pass; lint, typecheck and build are clean.
+(§7.1), placeable on any template. 235 Vitest tests pass; lint, typecheck and build are clean.
+
+Custom recommendations are no longer a paid-only feature: **Free covers 10 products** and the
+allowance is enforced in the editor's action as well as the UI (§5).
 
 `CRON_SECRET` needs setting in the environment before `POST /cron/rollup` will run.
 
@@ -769,7 +797,7 @@ has ever executed.
 **Next up:** Phase 10 — the home dashboard, which renders what Phase 9 now computes. Still
 outstanding and still recommended first: a live pass on a dev store (`npm run deploy`, `npm run dev`,
 add both blocks in the theme editor on Dawn, walk the QA checklist in §11).
-**Last updated:** 2026-08-13
+**Last updated:** 2026-08-17
 
 | Phase | Status | Completed | Notes |
 | --- | --- | --- | --- |
@@ -778,7 +806,7 @@ add both blocks in the theme editor on Dawn, walk the QA checklist in §11).
 | 2. Plan & quota service | ✅ Done | 2026-08-12 | `app/lib/plans.js`; billing-window/quota service in `usage.server.js` (`getBillingWindow`, `getCurrentPeriod`, `getQuotaStatus`, `canServe`, `recordServed`). Vitest added — 78 tests across 7 files. Rollover needs no job; the window is derived from the anchor. |
 | 3. Admin shell | ✅ Done | 2026-08-12 | 5-item nav; `/app` loader bootstraps the shop and exposes quota via `useQuotaStatus()`; `QuotaBanner`, `StatCard`(+`StatCardGrid`), `EmptyState`, `ProductThumb`; placeholder routes for Recommendations/Analytics/Pricing/Settings so no nav link 404s. Polaris markup validated against the App Home validator. |
 | 4. Recommendation engine | ✅ Done | 2026-08-12 | `recommendations.server.js` (`resolveRecommendations`, `getShopifyRecommendations`, `hydrateOverrideItems`, normaliser, 60s LRU) + `storefront.server.js`. **Plan corrected: the Admin API has no `productRecommendations`** — switched to the Storefront API, added `Shop.storefrontToken` and the `unauthenticated_read_product_listings` scope. 104 tests. |
-| 5. Recommendations page | ✅ Done | 2026-08-12 | List (catalog + custom modes, cursor/offset paging, debounced search, source/placement/status filters, per-source metrics) and the override editor (resource picker, reorder, placement, enable, reset). `products.server.js`, `entitlements.js`, `getSourceProductMetrics`. 126 tests. **Overrides do not reach the storefront until Phase 6 syncs the metafield.** See deviations below. |
+| 5. Recommendations page | ✅ Done | 2026-08-12 | List (catalog + custom modes, cursor/offset paging, debounced search, source/placement/status filters, per-source metrics) and the override editor (resource picker, reorder, placement, enable, reset). `products.server.js`, `entitlements.js`, `getSourceProductMetrics`. 126 tests. **Overrides do not reach the storefront until Phase 6 syncs the metafield.** See deviations below. Plan gate revised 2026-08-17: Free allows 10 overridden products instead of none (§5). |
 | 6. Metafield sync | ✅ Done | 2026-08-12 | `metafields.server.js` — `syncOverrideMetafield` (set or delete via `shouldPublishToStorefront`), `deleteOverrideMetafield`, `syncAllOverrides` batched at 25 with per-batch error reporting. Wired into save/reset; failures surface a "saved, but not live yet" banner and leave `syncedAt` null. Re-sync repair action added to Settings (early, from Phase 13). 142 tests. |
 | 7. App proxy API | ✅ Done | 2026-08-12 | `proxy.recommendations.jsx` (quota gate, 30-min serve dedupe, `no-store`, degrades to `{items:[]}`) and `proxy.track.jsx` (batch cap 10, per-shop rate limit, always 204). `tracking.server.js`. 155 tests. Not yet exercised over a real proxy request. |
 | 8. Theme app block (PDP) | ✅ Done | 2026-08-12 | `blocks/recommendations.liquid` (26 settings), `snippets/reco-card.liquid`, `assets/reco.{css,js}`, app embed config, locales. Server-renders overrides from the metafield; Ajax fallback otherwise. Impressions/clicks/ATC beacons, `served` beacon drives quota. Static schema+locale test suite added. **Never rendered on a real theme.** See deviations below. |

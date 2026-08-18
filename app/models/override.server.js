@@ -42,6 +42,29 @@ export function countOverrides(shopId) {
   return prisma.override.count({ where: { shopId } });
 }
 
+/**
+ * Distinct products carrying an override — the unit the plan limit counts.
+ *
+ * Not the same as countOverrides(): placement is part of a row's identity, so
+ * one product can hold a `pdp` row and a `checkout` row. Charging that as two
+ * against the allowance would be wrong.
+ */
+export async function countOverriddenProducts(shopId) {
+  const rows = await prisma.override.groupBy({
+    by: ["productId"],
+    where: { shopId },
+  });
+  return rows.length;
+}
+
+/** Whether this product already counts against the limit. */
+export async function hasOverrideForProduct(shopId, productId) {
+  const rows = await prisma.override.count({
+    where: { shopId, productId: String(productId) },
+  });
+  return rows > 0;
+}
+
 export function getOverride({ shopId, productId, placement = "pdp" }) {
   return prisma.override.findUnique({
     where: {
