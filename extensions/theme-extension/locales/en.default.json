@@ -8,7 +8,7 @@
     "empty": "No recommendations available right now.",
     "previous": "Previous",
     "next": "Next",
-    "needs_product": "Choose Popular products or Recently viewed to use this block outside a product page."
+    "needs_product": "This block needs a product — add it to a product page. To show a collection, best sellers or recently viewed products anywhere, use the Product Showcase block."
   },
   "popular": {
     "empty": "No products to show yet. Pick a collection with products in it, or clear the sold out filter."

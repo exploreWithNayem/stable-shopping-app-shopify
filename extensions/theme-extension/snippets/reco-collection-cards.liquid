@@ -1,0 +1,29 @@
+{%- comment -%}
+  The merchandising card loop, used by the `popular` and `collection` sources of
+  `product-showcase.liquid`.
+
+  Both walk a collection's products in Liquid and apply the same three merchant
+  filters, so the loop lives here rather than being written twice. The
+  recommendation sources do not use it — `custom` walks the override list, and
+  `related` / `recently_viewed` are filled in by `reco.js`.
+
+  Accepts:
+    block      - the block object, for exclude_current / hide_sold_out
+    candidates - the sorted product list to walk
+    limit      - how many cards to render
+{%- endcomment -%}
+
+{%- assign rendered = 0 -%}
+{%- for item in candidates -%}
+  {%- if rendered >= limit -%}
+    {%- break -%}
+  {%- endif -%}
+  {%- if block.settings.exclude_current and product and item.id == product.id -%}
+    {%- continue -%}
+  {%- endif -%}
+  {%- if block.settings.hide_sold_out and item.available == false -%}
+    {%- continue -%}
+  {%- endif -%}
+  {%- render 'reco-card', reco: item, block: block -%}
+  {%- assign rendered = rendered | plus: 1 -%}
+{%- endfor -%}

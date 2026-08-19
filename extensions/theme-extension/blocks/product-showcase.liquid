@@ -1,0 +1,441 @@
+{%- liquid
+  assign mode = block.settings.source
+  assign limit = block.settings.limit
+
+  comment
+    One block, three merchandising sources — any template, no source product.
+
+    - popular         best sellers, rendered here in Liquid. Narrowed by the
+                      Collection picker when one is set, the whole catalogue
+                      when it is not.
+    - collection      the picked collection, rendered here in Liquid. Same
+                      machinery as popular; falls back to the store's first
+                      collection rather than to everything.
+    - recently_viewed the shopper's own history, which only their browser knows,
+                      so reco.js fills the track from localStorage.
+
+    None of the three answers "what goes with this product", so none emits a
+    `served` beacon and none costs quota — they report impressions, clicks and
+    add-to-carts only (CLAUDE.md 7.1). Custom and Related, which do, live in
+    `recommendations.liquid`; that block is PDP-only and this one is not, which
+    is the reason they are separate blocks.
+
+    The Collection picker is a real "type": "collection" input — it browses the
+    store's collections and nothing else. Shopify rejects visible_if on resource
+    inputs by design (it conflicts with closest.<<resource>>), so it cannot hide
+    for Recently viewed. Two of three sources use it, which is what makes that
+    affordable here and was not on a five-source block (CLAUDE.md 7.3).
+  endcomment
+
+  if mode == 'popular' or mode == 'collection'
+    assign collection_source = block.settings.collection
+
+    comment
+      Neither source renders empty just because the picker was never touched.
+      Popular means the whole catalogue; Collection products stands in the
+      store's first collection, which the merchant then swaps for the one they
+      actually want — answering that one with every product in the shop would
+      read as a bug rather than a default.
+
+      A render-time default, not a pre-filled field: Liquid cannot write a block
+      setting, so the picker itself stays empty until the merchant uses it.
+    endcomment
+    if collection_source == blank
+      if mode == 'popular'
+        assign collection_source = collections.all
+      else
+        comment
+          `collections` exposes no first/index accessor, so the first one has to
+          be iterated to. Shopify documents neither the order nor whether the
+          catch-all `all` collection is in the list — it is skipped because
+          landing on it would make this source identical to Popular.
+        endcomment
+        for shop_collection in collections
+          if shop_collection.handle != 'all'
+            assign collection_source = shop_collection
+            break
+          endif
+        endfor
+      endif
+    endif
+
+    if collection_source != blank
+      case block.settings.sort_by
+        when 'newest'
+          assign candidates = collection_source.products | sort: 'created_at' | reverse
+        when 'price_asc'
+          assign candidates = collection_source.products | sort: 'price'
+        when 'price_desc'
+          assign candidates = collection_source.products | sort: 'price' | reverse
+        when 'title'
+          assign candidates = collection_source.products | sort: 'title'
+        else
+          assign candidates = collection_source.products
+      endcase
+    endif
+  endif
+
+  assign collection_blank = false
+  if mode == 'collection' and collection_source == blank
+    assign collection_blank = true
+  endif
+-%}
+
+{%- capture cards -%}
+  {%- if mode == 'popular' or mode == 'collection' -%}
+    {%- render 'reco-collection-cards', block: block, candidates: candidates, limit: limit -%}
+  {%- endif -%}
+{%- endcapture -%}
+
+{%- render 'reco-panel', block: block, mode: mode, cards: cards, collection_blank: collection_blank -%}
+
+{% schema %}
+{
+  "name": "Product Showcase",
+  "target": "section",
+  "javascript": "reco.js",
+  "settings": [
+    {
+      "type": "select",
+      "id": "source",
+      "label": "Select Source",
+      "options": [
+        {
+          "value": "popular",
+          "label": "Popular products"
+        },
+        {
+          "value": "collection",
+          "label": "Collection products"
+        },
+        {
+          "value": "recently_viewed",
+          "label": "Recently viewed products"
+        }
+      ],
+      "default": "popular"
+    },
+    {
+      "type": "collection",
+      "id": "collection",
+      "label": "Select Collection"
+    },
+    {
+      "type": "text",
+      "id": "heading",
+      "label": "Heading",
+      "default": "Heading"
+    },
+    {
+      "type": "select",
+      "id": "sort_by",
+      "label": "Sort by",
+      "info": "Best selling follows the collection's own sort order — set it to Best selling under Products > Collections. Other options sort the first 50 products of the collection.",
+      "default": "best_selling",
+      "options": [
+        {
+          "value": "best_selling",
+          "label": "Best selling (collection order)"
+        },
+        {
+          "value": "newest",
+          "label": "Newest first"
+        },
+        {
+          "value": "price_asc",
+          "label": "Price: low to high"
+        },
+        {
+          "value": "price_desc",
+          "label": "Price: high to low"
+        },
+        {
+          "value": "title",
+          "label": "Alphabetical"
+        }
+      ],
+      "visible_if": "{{ block.settings.source == 'popular' or block.settings.source == 'collection' }}"
+    },
+    {
+      "type": "select",
+      "id": "layout",
+      "label": "Layout",
+      "default": "grid",
+      "options": [
+        {
+          "value": "grid",
+          "label": "Grid"
+        },
+        {
+          "value": "slider",
+          "label": "Slider"
+        },
+        {
+          "value": "list",
+          "label": "List"
+        }
+      ]
+    },
+    {
+      "type": "range",
+      "id": "limit",
+      "label": "Products to show",
+      "min": 2,
+      "max": 24,
+      "step": 1,
+      "default": 4
+    },
+    {
+      "type": "checkbox",
+      "id": "exclude_current",
+      "label": "Hide the product being viewed",
+      "info": "Only applies when the block is placed on a product page.",
+      "default": true
+    },
+    {
+      "type": "checkbox",
+      "id": "hide_sold_out",
+      "label": "Hide sold out products",
+      "default": false,
+      "visible_if": "{{ block.settings.source == 'popular' or block.settings.source == 'collection' }}"
+    },
+    {
+      "type": "header",
+      "content": "Layout"
+    },
+    {
+      "type": "range",
+      "id": "columns_desktop",
+      "label": "Columns on desktop",
+      "min": 2,
+      "max": 6,
+      "step": 1,
+      "default": 4
+    },
+    {
+      "type": "range",
+      "id": "columns_mobile",
+      "label": "Columns on mobile",
+      "min": 1,
+      "max": 3,
+      "step": 1,
+      "default": 2
+    },
+    {
+      "type": "select",
+      "id": "image_ratio",
+      "label": "Image shape",
+      "default": "square",
+      "options": [
+        {
+          "value": "square",
+          "label": "Square"
+        },
+        {
+          "value": "portrait",
+          "label": "Portrait"
+        },
+        {
+          "value": "natural",
+          "label": "Natural"
+        }
+      ]
+    },
+    {
+      "type": "checkbox",
+      "id": "hover_image",
+      "label": "Show second image on hover",
+      "default": true
+    },
+    {
+      "type": "checkbox",
+      "id": "show_border",
+      "label": "Show card border",
+      "default": false
+    },
+    {
+      "type": "select",
+      "id": "text_align",
+      "label": "Text alignment",
+      "default": "left",
+      "options": [
+        {
+          "value": "left",
+          "label": "Left"
+        },
+        {
+          "value": "center",
+          "label": "Centre"
+        }
+      ]
+    },
+    {
+      "type": "select",
+      "id": "heading_size",
+      "label": "Heading size",
+      "default": "md",
+      "options": [
+        {
+          "value": "sm",
+          "label": "Small"
+        },
+        {
+          "value": "md",
+          "label": "Medium"
+        },
+        {
+          "value": "lg",
+          "label": "Large"
+        }
+      ]
+    },
+    {
+      "type": "header",
+      "content": "Product details"
+    },
+    {
+      "type": "checkbox",
+      "id": "show_title",
+      "label": "Show product title",
+      "default": true
+    },
+    {
+      "type": "checkbox",
+      "id": "show_price",
+      "label": "Show price",
+      "default": true
+    },
+    {
+      "type": "checkbox",
+      "id": "show_compare_price",
+      "label": "Show original price when on sale",
+      "default": true
+    },
+    {
+      "type": "checkbox",
+      "id": "show_vendor",
+      "label": "Show vendor",
+      "default": false
+    },
+    {
+      "type": "checkbox",
+      "id": "show_rating",
+      "label": "Show rating",
+      "info": "Shows the product rating if a reviews app has set one.",
+      "default": false
+    },
+    {
+      "type": "header",
+      "content": "Add to cart"
+    },
+    {
+      "type": "checkbox",
+      "id": "show_add_to_cart",
+      "label": "Show add to cart button",
+      "default": true
+    },
+    {
+      "type": "text",
+      "id": "add_to_cart_label",
+      "label": "Button label",
+      "default": "Add to cart"
+    },
+    {
+      "type": "select",
+      "id": "atc_behavior",
+      "label": "After adding to cart",
+      "default": "ajax",
+      "options": [
+        {
+          "value": "ajax",
+          "label": "Stay on the page"
+        },
+        {
+          "value": "open_drawer",
+          "label": "Open the cart drawer"
+        },
+        {
+          "value": "redirect_cart",
+          "label": "Go to the cart"
+        }
+      ]
+    },
+    {
+      "type": "select",
+      "id": "button_style",
+      "label": "Button style",
+      "default": "solid",
+      "options": [
+        {
+          "value": "solid",
+          "label": "Solid"
+        },
+        {
+          "value": "outline",
+          "label": "Outline"
+        },
+        {
+          "value": "text",
+          "label": "Text"
+        }
+      ]
+    },
+    {
+      "type": "header",
+      "content": "Slider"
+    },
+    {
+      "type": "checkbox",
+      "id": "autoplay",
+      "label": "Auto-advance slider",
+      "default": false
+    },
+    {
+      "type": "range",
+      "id": "autoplay_speed",
+      "label": "Seconds between slides",
+      "min": 2,
+      "max": 10,
+      "step": 1,
+      "default": 4
+    },
+    {
+      "type": "header",
+      "content": "Appearance"
+    },
+    {
+      "type": "color",
+      "id": "background_color",
+      "label": "Background colour",
+      "info": "Leave transparent to inherit the section's own background.",
+      "default": "rgba(0,0,0,0)"
+    },
+    {
+      "type": "color",
+      "id": "accent_color",
+      "label": "Accent colour",
+      "default": "#1a1a1a"
+    },
+    {
+      "type": "range",
+      "id": "padding_top",
+      "label": "Top padding",
+      "min": 0,
+      "max": 100,
+      "step": 4,
+      "default": 32,
+      "unit": "px"
+    },
+    {
+      "type": "range",
+      "id": "padding_bottom",
+      "label": "Bottom padding",
+      "min": 0,
+      "max": 100,
+      "step": 4,
+      "default": 32,
+      "unit": "px"
+    }
+  ]
+}
+{% endschema %}

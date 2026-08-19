@@ -27,6 +27,18 @@ const BLOCKS = join(EXTENSION, "blocks");
 const SNIPPETS = join(EXTENSION, "snippets");
 
 const blockFiles = readdirSync(BLOCKS).filter((name) => name.endsWith(".liquid"));
+
+/**
+ * Two product blocks, split along the one line that actually divides them: the
+ * recommendation sources need a product and can therefore declare
+ * `enabled_on: templates: ["product"]`; the merchandising sources go anywhere
+ * and own the Collection picker (CLAUDE.md 7.3). They share their markup
+ * through `reco-panel`, so a check on what a block *renders* has to read the
+ * snippet with it — only the schema is per-block.
+ */
+const RECOMMENDATIONS = "recommendations.liquid";
+const SHOWCASE = "product-showcase.liquid";
+const PANEL = join(SNIPPETS, "reco-panel.liquid");
 const locales = JSON.parse(
   readFileSync(join(EXTENSION, "locales", "en.default.json"), "utf8"),
 );
@@ -122,17 +134,26 @@ describe("block schemas", () => {
     }
   });
 
-  test("the recommendations block loads its own assets", () => {
-    const schema = readSchema("recommendations.liquid");
-    const source = readLiquid(join(BLOCKS, "recommendations.liquid"));
-
+  test("both product blocks load their own assets", () => {
     // The stylesheet is pulled in explicitly, not declared in the schema:
     // Shopify does not reliably serve a block's declared assets when several
     // blocks from one extension are on the same page, which rendered the block
     // as unstyled markup. Asserted so nobody "tidies" it back into the schema.
-    expect(schema.stylesheet).toBeUndefined();
-    expect(source).toContain("'reco.css' | asset_url | stylesheet_tag");
-    expect(schema.javascript).toBe("reco.js");
+    // It lives in the shared panel, so one assertion covers both blocks.
+    expect(readLiquid(PANEL)).toContain("'reco.css' | asset_url | stylesheet_tag");
+
+    for (const file of [RECOMMENDATIONS, SHOWCASE]) {
+      expect(readSchema(file).stylesheet, file).toBeUndefined();
+      expect(readSchema(file).javascript, file).toBe("reco.js");
+    }
+  });
+
+  test("only the recommendation block is pinned to product templates", () => {
+    // Custom and Related both need `product`, and a block carrying Popular or
+    // Recently viewed could never declare this — which is the reason the two
+    // are separate blocks at all.
+    expect(readSchema(RECOMMENDATIONS).enabled_on).toEqual({ templates: ["product"] });
+    expect(readSchema(SHOWCASE).enabled_on).toBeUndefined();
   });
 
   /*
@@ -224,82 +245,111 @@ describe("liquid comments", () => {
   });
 });
 
-describe("the one block, five sources", () => {
-  const file = "recommendations.liquid";
-  const source = readLiquid(join(BLOCKS, file));
-  const schema = readSchema(file);
+describe("two blocks, five sources", () => {
+  // Markup assertions have to see the shared panel, which is where it lives.
+  const panel = readLiquid(PANEL);
+  const source = readLiquid(join(BLOCKS, RECOMMENDATIONS)) + panel;
+  const showcase = readLiquid(join(BLOCKS, SHOWCASE)) + panel;
+  const schema = readSchema(RECOMMENDATIONS);
+  const showcaseSchema = readSchema(SHOWCASE);
   const setting = schema.settings.find((entry) => entry.id === "source");
 
-  test("is the only block besides the app embed", () => {
-    // A single block is the whole point: separate ones made merchants pick
-    // before they understood the difference.
-    expect(blockFiles.sort()).toEqual(["app-embed.liquid", "recommendations.liquid"]);
+  test("the five sources are split across exactly two blocks", () => {
+    expect(blockFiles.sort()).toEqual(
+      ["app-embed.liquid", RECOMMENDATIONS, SHOWCASE].sort(),
+    );
   });
 
-  test("offers all five sources, defaulting to custom", () => {
+  test("the recommendation block offers Custom and Related, defaulting to custom", () => {
     expect(setting.type).toBe("select");
-    expect(setting.options.map((option) => option.value)).toEqual([
-      "custom",
-      "related",
+    expect(setting.options.map((option) => option.value)).toEqual(["custom", "related"]);
+    expect(setting.default).toBe("custom");
+  });
+
+  test("the showcase block offers the three merchandising sources", () => {
+    const split = showcaseSchema.settings.find((entry) => entry.id === "source");
+    expect(split.options.map((option) => option.value)).toEqual([
       "popular",
       "collection",
       "recently_viewed",
     ]);
-    // Existing placements keep behaving as they did.
-    expect(setting.default).toBe("custom");
+    expect(split.default).toBe("popular");
+
+    // No source appears in both blocks, and between them they cover all five.
+    const all = [
+      ...setting.options.map((o) => o.value),
+      ...split.options.map((o) => o.value),
+    ];
+    expect(new Set(all).size).toBe(5);
   });
 
   test("source-specific settings are scoped", () => {
     const by = (id) => schema.settings.find((entry) => entry.id === id);
+    const byShowcase = (id) => showcaseSchema.settings.find((entry) => entry.id === id);
 
-    expect(by("intent").visible_if).toContain("'custom'");
-    expect(by("exclude_current").visible_if).toContain("'recently_viewed'");
+    // The intent picker is gone: both sources ask Shopify for `related`, and
+    // neither block may bring the setting back (CLAUDE.md 7.2).
+    expect(by("intent")).toBeUndefined();
+    expect(byShowcase("intent")).toBeUndefined();
+    expect(panel).not.toContain("block.settings.intent");
 
-    // Both collection-driven sources share the sort and stock filters.
-    for (const id of ["sort_by", "hide_sold_out", "exclude_current"]) {
-      expect(by(id).visible_if, `${id} is not scoped to popular`).toContain("'popular'");
-      expect(by(id).visible_if, `${id} is not scoped to collection`).toContain(
-        "'collection'",
-      );
-    }
-
+    // The sort and stock filters belong to the two collection-driven sources.
     for (const id of ["sort_by", "hide_sold_out"]) {
-      expect(by(id).visible_if, `${id} is not scoped to popular`).toContain("'popular'");
-      expect(by(id).visible_if, `${id} is not scoped to collection`).toContain(
+      expect(byShowcase(id).visible_if, `${id} is not scoped to popular`).toContain(
+        "'popular'",
+      );
+      expect(byShowcase(id).visible_if, `${id} is not scoped to collection`).toContain(
         "'collection'",
       );
     }
+
+    // exclude_current applies to all three showcase sources, so it is not
+    // scoped there — and has no meaning in the PDP block at all.
+    expect(byShowcase("exclude_current").visible_if).toBeUndefined();
+    expect(by("exclude_current")).toBeUndefined();
   });
 
   /*
-   * The collection picker browses collections and nothing else, which is what
-   * `"type": "collection"` buys and what it costs: `visible_if` on a resource
-   * input is rejected outright at deploy —
+   * The Collection picker is a real resource input: it browses the store's
+   * collections and nothing else. That is only possible on a block where it
+   * does not have to hide, because `visible_if` on a resource input is rejected
+   * outright at deploy —
    *   settings: with id="collection" 'visible_if' is not a valid attribute
-   * — so this one field cannot be hidden for the sources that ignore it.
+   * — which Shopify calls an intentional limitation (it conflicts with
+   * `closest.<<resource>>`).
    *
-   * All three shapes were built on 2026-08-19 (CLAUDE.md §7.3). A `url` setting
-   * does take visible_if, but nothing narrows its picker to collections; a
-   * separate block gets both but splits the one-block design. This is the
-   * chosen corner, not an oversight.
+   * A `"type": "url"` field was built as the alternative and rejected: it hides
+   * correctly, but its picker also lists Products, Pages, Blogs and Policies
+   * with no attribute to filter them, and it stores a link whose handle has to
+   * be parsed back out. Keeping the picker honest and putting it on the block
+   * where two of three sources use it is the settled shape (CLAUDE.md §7.3).
    */
-  test("the collection picker is a real collection picker", () => {
-    expect(schema.settings.find((entry) => entry.id === "collection_url")).toBeUndefined();
-    expect(schema.settings.find((entry) => entry.id === "collection").type).toBe("collection");
+  test("the collection picker is a real collection picker, on the showcase block", () => {
+    const picker = showcaseSchema.settings.find((entry) => entry.id === "collection");
+    expect(picker.type).toBe("collection");
+    // It must NOT carry visible_if — that is what fails deploy.
+    expect(picker.visible_if).toBeUndefined();
 
-    // So the Liquid reads a collection object rather than parsing a link.
-    expect(source).toContain("assign collection_source = block.settings.collection");
-    expect(source).not.toContain("split: '/collections/'");
+    // The url experiment must not come back: no link parsing anywhere.
+    expect(showcaseSchema.settings.find((e) => e.id === "collection_url")).toBeUndefined();
+    expect(showcase).not.toContain("split: '/collections/'");
+    expect(showcase).toContain("assign collection_source = block.settings.collection");
+  });
+
+  test("the recommendation block has no collection field at all", () => {
+    // Neither of its sources reads a collection, so neither field belongs here.
+    for (const id of ["collection", "collection_url", "sort_by", "hide_sold_out"]) {
+      expect(schema.settings.find((entry) => entry.id === id), id).toBeUndefined();
+    }
   });
 
   test("no setting is left permanently on screen", () => {
     // A field that shows for a source it does nothing for is the defect this
     // block keeps regressing on. Heading, layout and the presentation settings
-    // apply to every source; everything source-specific must be scoped —
-    // except `collection`, which Shopify refuses to make conditional.
+    // apply to every source; everything source-specific must be scoped, the
+    // collection picker included — which is what cost it its resource type.
     const global = new Set([
       "source",
-      "collection",
       "heading",
       "layout",
       "limit",
@@ -336,8 +386,53 @@ describe("the one block, five sources", () => {
   test("the collection picker sits directly under the source select", () => {
     // It is the only setting that qualifies the source, so it belongs next to
     // it — not below Heading, where it read as a global.
-    const ids = schema.settings.map((entry) => entry.id);
+    const ids = showcaseSchema.settings.map((entry) => entry.id);
     expect(ids[ids.indexOf("source") + 1]).toBe("collection");
+  });
+
+  /*
+   * The price of two blocks is two copies of the settings JSON — Liquid has no
+   * way to share a schema. Everything else is shared for real through
+   * `reco-panel` and `reco-collection-cards`, so this is the only place the two
+   * can drift, and drift here shows up as one block quietly missing an option
+   * the other has.
+   */
+  test("the two schemas agree on every setting they share", () => {
+    const byId = (s) => new Map(s.settings.map((e) => [e.id, e]));
+    const a = byId(schema);
+    const b = byId(showcaseSchema);
+
+    // Settings that belong to one block only, by design.
+    const pdpOnly = new Set();
+    const showcaseOnly = new Set([
+      "collection",
+      "sort_by",
+      "hide_sold_out",
+      "exclude_current",
+      "background_color",
+    ]);
+    // `source` differs by construction; `limit` differs by ceiling — 12 on the
+    // PDP block, where an override list is capped by all_products, and 24 on
+    // the showcase block, which iterates collection.products directly.
+    const differsByDesign = new Set(["source", "limit"]);
+
+    const strip = (setting) =>
+      Object.fromEntries(
+        Object.entries(setting).filter(([key]) => key !== "visible_if" && key !== "info"),
+      );
+
+    for (const [id, entry] of a) {
+      if (pdpOnly.has(id) || differsByDesign.has(id)) continue;
+      expect(b.has(id), `${id} is missing from ${SHOWCASE}`).toBe(true);
+      expect(strip(b.get(id)), `${id} differs between the blocks`).toEqual(strip(entry));
+    }
+    for (const id of b.keys()) {
+      if (showcaseOnly.has(id) || differsByDesign.has(id)) continue;
+      expect(a.has(id), `${id} is missing from ${RECOMMENDATIONS}`).toBe(true);
+    }
+
+    expect(a.get("limit").max).toBe(12);
+    expect(b.get("limit").max).toBe(24);
   });
 
   test("only the recommendation sources cost quota", () => {
@@ -424,14 +519,14 @@ describe("the one block, five sources", () => {
     // products answers it with the store's first collection, which is only
     // reachable by iterating — `collections` has no first/index accessor, and
     // Liquid cannot write the setting itself.
-    expect(source).toContain("assign collection_source = collections.all");
-    expect(source).toContain("for shop_collection in collections");
+    expect(showcase).toContain("assign collection_source = collections.all");
+    expect(showcase).toContain("for shop_collection in collections");
     // Landing on the catch-all would make the source identical to Popular.
-    expect(source).toContain("shop_collection.handle != 'all'");
+    expect(showcase).toContain("shop_collection.handle != 'all'");
 
     // The hint is for a store with no collections at all, the one case the
     // fallback cannot cover.
-    expect(source).toContain("collection.needs_collection");
+    expect(panel).toContain("collection.needs_collection");
     expect(lookupLocale("collection.needs_collection")).toContain("no collections");
   });
 
