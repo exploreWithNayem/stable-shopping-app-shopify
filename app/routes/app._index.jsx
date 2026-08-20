@@ -9,7 +9,6 @@ import { addDays, startOfUtcDay } from '../lib/dates';
 import { formatNumber, formatPercent, formatShortDate } from '../lib/format';
 import QuotaBanner from '../components/QuotaBanner';
 import StatCard, { StatCardGrid } from '../components/StatCard';
-import TrendChart from '../components/TrendChart';
 import MeterBar from '../components/MeterBar';
 import Card from '../components/Card';
 import { useQuotaStatus } from '../lib/quota-status';
@@ -71,12 +70,38 @@ export default function Index() {
   const { days, metrics, lastServedDay, unsyncedCount, overriddenProducts } = useLoaderData();
   const quota = useQuotaStatus();
 
-  const { totals, deltas, series } = metrics;
+  const { totals, deltas } = metrics;
   // "Has this app ever done anything" — decides checklist vs dashboard.
   const hasData = totals.served > 0 || totals.impressions > 0;
 
   return (
     <s-page heading="Easy Recommendation">
+      {/*
+        In the content column, not the `primary-action` slot. That slot hoists the
+        button into the Shopify admin's own top bar next to the "..." menu, which
+        puts it outside the app's frame entirely and a long way from the content
+        it acts on.
+
+        An offer is a product plus the products to recommend alongside it, so
+        there is no "new offer" route to send this to — it opens the product list,
+        where a product is chosen and its complementary products picked inline.
+
+        Deliberately never disabled. The product allowance is a limit on *new*
+        offers, and the list page enforces it there with its own banner; greying
+        this out would also block a merchant at the limit from editing the offers
+        they already have, which is the wrong door to close.
+      */}
+      <s-stack
+        direction="inline"
+        justifyContent="end"
+        paddingBlockStart="base"
+        paddingBlockEnd="base"
+      >
+        <s-button variant="primary" href="/app/recommendations">
+          Create offer
+        </s-button>
+      </s-stack>
+
       <QuotaBanner />
 
       {/* Headline numbers only. Range switching, the funnel and the full
@@ -99,20 +124,6 @@ export default function Index() {
             caption={`${formatPercent(totals.addToCartRate)} of clicks`}
           />
         </StatCardGrid>
-      </s-section>
-
-      <s-section heading="Served vs clicks">
-        {hasData ? (
-          <TrendChart
-            series={series}
-            seriesKeys={['served', 'clicks']}
-            labels={['Served', 'Clicks']}
-          />
-        ) : (
-          <s-paragraph color="subdued">
-            The chart fills in once the block starts serving recommendations.
-          </s-paragraph>
-        )}
       </s-section>
 
       <s-section>

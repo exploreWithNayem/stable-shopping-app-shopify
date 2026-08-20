@@ -29,5 +29,11 @@
     "add_many": "Add [count] items to cart",
     "total": "Total for [count] items",
     "needs_product": "Add this block to a product page — it bundles the product being viewed with its recommendations."
+  },
+  "complementary": {
+    "empty": "No complementary products yet. Shopify only suggests these for products you have linked in the Search & Discovery app — open a product there, add its complementary products, and they will appear here. Nothing shows on your live storefront until then."
+  },
+  "related": {
+    "empty": "Shopify has no recommendations for this product yet. It builds them from your order history, so a new product or a new store can come back empty."
   }
 }

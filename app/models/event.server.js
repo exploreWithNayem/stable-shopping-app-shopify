@@ -22,10 +22,12 @@ export const EVENT_TYPES = [
  * product's recommendation metrics — and none of them sends a `served` event, so
  * none costs quota.
  *
- * `related` is the opposite case. It is a recommendation — one source product,
- * Shopify's own answer for it — so it does bill. It gets its own placement
- * rather than sharing `pdp` with the custom source, because a product page can
- * carry one of each and the serve dedupe keys on placement (CLAUDE.md §3.3).
+ * `related` and `complementary` are the opposite case. Both are recommendations
+ * — one source product, Shopify's own answer for it — so both bill. Each gets
+ * its own placement rather than sharing `pdp` with the custom source, because a
+ * product page can carry one of each and the serve dedupe keys on placement
+ * (CLAUDE.md §3.3). The two differ only in the `intent` asked of Shopify:
+ * "like this" versus "bought with this".
  *
  * An unlisted value is coerced to `pdp`, so anything the storefront sends must
  * appear here or it silently pollutes product-page metrics.
@@ -33,6 +35,7 @@ export const EVENT_TYPES = [
 export const PLACEMENTS = [
   "pdp",
   "related",
+  "complementary",
   "upsell",
   "checkout",
   "thank_you",

@@ -16,7 +16,8 @@
 
   Accepts:
     block            - the block object (required)
-    mode             - custom | related | popular | collection | recently_viewed
+    mode             - custom | related | complementary | popular | collection |
+                       recently_viewed
     cards            - the captured server-rendered card markup
     collection_blank - true when a collection-driven mode resolved to nothing,
                        which separates "no collections in this store" from
@@ -52,7 +53,7 @@
     viewed has nothing to render server-side at all.
   endcomment
   assign client_rendered = false
-  if mode == 'recently_viewed' or mode == 'related'
+  if mode == 'recently_viewed' or mode == 'related' or mode == 'complementary'
     assign client_rendered = true
   elsif mode == 'custom' and cards == blank
     assign client_rendered = true
@@ -64,6 +65,8 @@
   elsif mode == 'custom' and product
     assign renderable = true
   elsif mode == 'related' and product
+    assign renderable = true
+  elsif mode == 'complementary' and product
     assign renderable = true
   elsif mode == 'popular' and cards != blank
     assign renderable = true
@@ -113,6 +116,23 @@
       data-reco-source-product="{{ product.id }}"
       data-reco-source="shopify"
       data-reco-intent="related"
+      {% if request.design_mode %}data-reco-design-mode="true"{% endif %}
+    {%- elsif mode == 'complementary' %}
+      {%- comment -%}
+        The same request as Related with one word changed — `intent` is the only
+        difference, and reco.js already reads it, so no new code path exists for
+        this source. Shopify answers "bought with this" rather than "like this".
+
+        Its own placement for the §3.2 reason: one product page can carry a
+        Custom row, a Related row and a Complementary row, and the 30-minute
+        serve dedupe keys on (session, product, placement) — sharing one would
+        make all but the first free.
+      {%- endcomment -%}
+      data-reco-placement="complementary"
+      data-reco-source-product="{{ product.id }}"
+      data-reco-source="shopify"
+      data-reco-intent="complementary"
+      {% if request.design_mode %}data-reco-design-mode="true"{% endif %}
     {%- else %}
       {%- comment -%}
         Merchandising, not recommendation: reports engagement but emits no
@@ -177,11 +197,30 @@
       {%- endif -%}
     </div>
 
-    {%- if mode == 'recently_viewed' and request.design_mode -%}
-      {%- comment -%} Editor only: an empty history here is normal, not a fault. {%- endcomment -%}
-      <div class="reco--empty" data-reco-design-hint>
-        <p>{{ 'recently_viewed.empty' | t }}</p>
-      </div>
+    {%- if request.design_mode -%}
+      {%- comment -%}
+        Editor-only explanations for a row that legitimately renders empty.
+        reco.js unhides the matching one when its fetch comes back with nothing,
+        instead of hiding the whole block as it does on the live storefront.
+
+        Complementary is the one that needs saying out loud: Shopify only answers
+        that intent for products a merchant has linked in the Search & Discovery
+        app, so an untouched store gets an empty list and the row silently
+        disappeared with no clue why.
+      {%- endcomment -%}
+      {%- if mode == 'recently_viewed' -%}
+        <div class="reco--empty" data-reco-design-hint>
+          <p>{{ 'recently_viewed.empty' | t }}</p>
+        </div>
+      {%- elsif mode == 'complementary' -%}
+        <div class="reco--empty" data-reco-design-hint hidden>
+          <p>{{ 'complementary.empty' | t }}</p>
+        </div>
+      {%- elsif mode == 'related' or mode == 'custom' -%}
+        <div class="reco--empty" data-reco-design-hint hidden>
+          <p>{{ 'related.empty' | t }}</p>
+        </div>
+      {%- endif -%}
     {%- endif -%}
 
     {%- if client_rendered -%}
@@ -223,7 +262,7 @@
 {%- elsif request.design_mode -%}
   <div class="reco reco--empty" {{ block.shopify_attributes }}>
     <p>
-      {%- if mode == 'custom' or mode == 'related' -%}
+      {%- if mode == 'custom' or mode == 'related' or mode == 'complementary' -%}
         {{ 'recommendations.needs_product' | t }}
       {%- elsif mode == 'collection' and collection_blank -%}
         {{ 'collection.needs_collection' | t }}

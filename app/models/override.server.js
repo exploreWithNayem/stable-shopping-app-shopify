@@ -57,6 +57,20 @@ export async function countOverriddenProducts(shopId) {
   return rows.length;
 }
 
+/**
+ * Every override row for one product, whatever its placement.
+ *
+ * The inline editor on the list page needs this: it edits the items and must
+ * leave the placement alone, so it has to know which row already exists rather
+ * than assuming `pdp` and creating a duplicate beside a `checkout` row.
+ */
+export function getProductOverrides(shopId, productId) {
+  return prisma.override.findMany({
+    where: { shopId, productId: String(productId) },
+    orderBy: { updatedAt: "desc" },
+  });
+}
+
 /** Whether this product already counts against the limit. */
 export async function hasOverrideForProduct(shopId, productId) {
   const rows = await prisma.override.count({

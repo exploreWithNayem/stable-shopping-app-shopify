@@ -3,18 +3,22 @@
   assign limit = block.settings.limit
 
   comment
-    One block, two sources — both recommendations, both product-page only.
+    One block, three sources — all recommendations, all product-page only.
 
-    - custom   per-product lists from the $app:reco_overrides metafield,
-               falling back to Shopify's own recommendations in the browser.
-    - related  Shopify's own recommendations, always — no override is consulted,
-               and nothing renders here: reco.js fetches the list from the Ajax
-               API.
+    - custom         per-product lists from the $app:reco_overrides metafield,
+                     falling back to Shopify's own recommendations in the
+                     browser.
+    - related        Shopify's own recommendations, always — no override is
+                     consulted, and nothing renders here: reco.js fetches the
+                     list from the Ajax API.
+    - complementary  the same, asking Shopify for `complementary` instead of
+                     `related`: products bought *with* this one rather than
+                     products like it.
 
-    Both answer "what goes with this product", so both beacon `served` and cost
-    quota (CLAUDE.md 3.3). Both need `product`, which is why this block can
-    declare enabled_on templates: ["product"] and never offer itself on a
-    template where it cannot work. The merchandising sources — Popular,
+    All three answer "what goes with this product", so all three beacon `served`
+    and cost quota (CLAUDE.md 3.3). All three need `product`, which is why this
+    block can declare enabled_on templates: ["product"] and never offer itself
+    on a template where it cannot work. The merchandising sources — Popular,
     Collection products, Recently viewed — live in `product-showcase.liquid`,
     which goes on any template and owns the Collection picker.
 
@@ -69,6 +73,10 @@
         {
           "value": "related",
           "label": "Related products"
+        },
+        {
+          "value": "complementary",
+          "label": "Complementary products"
         }
       ],
       "default": "custom"

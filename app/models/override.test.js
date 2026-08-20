@@ -8,6 +8,7 @@ import {
   deleteOverridesForProduct,
   getOverride,
   getOverridesForProducts,
+  getProductOverrides,
   hasOverrideForProduct,
   listOverrides,
   listUnsyncedOverrides,
@@ -177,5 +178,93 @@ describe("deletion", () => {
 
     await deleteOverridesForProduct(shopId, 999);
     expect(await prisma.override.count({ where: { shopId } })).toBe(0);
+  });
+});
+
+/*
+ * The inline editor on the list page edits a product's items and must leave the
+ * placement alone. A product can hold a `pdp` row and a `checkout` row, so
+ * assuming `pdp` would write a second row beside an existing one rather than
+ * editing it — the merchant would see their list unchanged on the storefront
+ * and a duplicate against the plan's product allowance.
+ */
+describe("getProductOverrides", () => {
+  const save = (placement, items) =>
+    upsertOverride({
+      shopId,
+      productId: 900,
+      productTitle: "Source",
+      productHandle: "source",
+      placement,
+      items,
+    });
+
+  test("returns every placement for one product", async () => {
+    await save("pdp", [{ id: "1" }]);
+    await save("checkout", [{ id: "2" }]);
+
+    const rows = await getProductOverrides(shopId, 900);
+    expect(rows.map((row) => row.placement).sort()).toEqual(["checkout", "pdp"]);
+  });
+
+  test("is empty for a product with no list", async () => {
+    expect(await getProductOverrides(shopId, 901)).toEqual([]);
+  });
+
+  test("accepts a numeric or string product id", async () => {
+    await save("pdp", [{ id: "1" }]);
+    expect(await getProductOverrides(shopId, "900")).toHaveLength(1);
+    expect(await getProductOverrides(shopId, 900)).toHaveLength(1);
+  });
+
+  test("never reaches another shop's rows", async () => {
+    const other = await prisma.shop.create({
+      data: { domain: "vitest-override-other.myshopify.com" },
+    });
+    await upsertOverride({
+      shopId: other.id,
+      productId: 900,
+      productTitle: "Theirs",
+      productHandle: "theirs",
+      items: [{ id: "9" }],
+    });
+    await save("pdp", [{ id: "1" }]);
+
+    const rows = await getProductOverrides(shopId, 900);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].productTitle).toBe("Source");
+
+    await prisma.shop.delete({ where: { id: other.id } });
+  });
+
+  test("reusing the found placement edits the row instead of duplicating it", async () => {
+    // This is the sequence the inline action performs.
+    await save("checkout", [{ id: "1" }]);
+    const [existing] = await getProductOverrides(shopId, 900);
+
+    await upsertOverride({
+      shopId,
+      productId: 900,
+      productTitle: "Source",
+      productHandle: "source",
+      placement: existing.placement,
+      items: [{ id: "2" }, { id: "3" }],
+    });
+
+    const rows = await getProductOverrides(shopId, 900);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].placement).toBe("checkout");
+    expect(rows[0].items.map((item) => item.id)).toEqual(["2", "3"]);
+    // Still one product against the plan allowance.
+    expect(await countOverriddenProducts(shopId)).toBe(1);
+  });
+
+  test("defaulting to pdp instead would have duplicated the row", async () => {
+    // Guards the bug the placement lookup exists to prevent.
+    await save("checkout", [{ id: "1" }]);
+    await save("pdp", [{ id: "2" }]);
+
+    expect(await getProductOverrides(shopId, 900)).toHaveLength(2);
+    expect(await countOverrides(shopId)).toBe(2);
   });
 });

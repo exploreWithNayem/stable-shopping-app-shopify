@@ -373,6 +373,94 @@ describe("the Ajax fallback", () => {
   });
 });
 
+describe("the complementary source", () => {
+  /*
+   * It differs from Related in exactly one attribute, and the point of these is
+   * that no new code path was needed for it: fetchFallback already reads
+   * data-reco-intent, so the whole source is Liquid plus a placement key.
+   */
+  const complementaryAttrs = `data-reco-placement="complementary" data-reco-source-product="1001" data-reco-source="shopify" data-reco-intent="complementary"`;
+
+  test("asks Shopify for complementary, not related", async () => {
+    fetchRoutes.set("/recommendations/products.json", { products: [ajaxProduct(9101)] });
+    boot(panel({ attrs: complementaryAttrs, serverRendered: false }), { enabled: true });
+    await tick(1000);
+
+    const url = window.fetch.mock.calls
+      .map(([called]) => String(called))
+      .find((called) => called.startsWith("/recommendations/products.json"));
+
+    expect(url).toContain("intent=complementary");
+    expect(url).toContain("product_id=1001");
+  });
+
+  test("bills, on its own placement", async () => {
+    // Sharing `related` would let the 30-minute serve dedupe swallow one of two
+    // rows on the same product page.
+    fetchRoutes.set("/recommendations/products.json", { products: [ajaxProduct(9102)] });
+    boot(panel({ attrs: complementaryAttrs, serverRendered: false }), { enabled: true });
+    await tick(1000);
+
+    const served = await typesOf("served");
+    expect(served).toHaveLength(1);
+    expect(served[0].placement).toBe("complementary");
+    expect(served[0].source).toBe("shopify");
+  });
+
+  test("an empty answer hides the row and costs nothing", async () => {
+    fetchRoutes.set("/recommendations/products.json", { products: [] });
+    boot(panel({ attrs: complementaryAttrs, serverRendered: false }), { enabled: true });
+    await tick(1000);
+
+    expect(document.querySelector("[data-reco-block]").hidden).toBe(true);
+    expect(await events()).toHaveLength(0);
+  });
+
+  /*
+   * Shopify answers this intent only for products linked in the Search &
+   * Discovery app, so an untouched store gets nothing back — and a row that
+   * removes itself silently reads as a broken source. In the editor it explains
+   * itself instead.
+   */
+  test("in the theme editor an empty row shows the hint instead of vanishing", async () => {
+    fetchRoutes.set("/recommendations/products.json", { products: [] });
+    boot(
+      panel({
+        attrs: complementaryAttrs + ' data-reco-design-mode="true"',
+        serverRendered: false,
+      }).replace(
+        "<div class=\"reco__viewport\">",
+        '<div class="reco--empty" data-reco-design-hint hidden><p>Set these up in Search &amp; Discovery.</p></div><div class="reco__viewport">',
+      ),
+      { enabled: true },
+    );
+    await tick(1000);
+
+    expect(document.querySelector("[data-reco-block]").hidden).toBe(false);
+    expect(document.querySelector("[data-reco-design-hint]").hidden).toBe(false);
+    // Still not a serve — nothing was shown to a shopper.
+    expect(await typesOf("served")).toHaveLength(0);
+  });
+
+  test("the hint is removed once the row does fill", async () => {
+    fetchRoutes.set("/recommendations/products.json", { products: [ajaxProduct(9103)] });
+    boot(
+      panel({
+        attrs: complementaryAttrs + ' data-reco-design-mode="true"',
+        serverRendered: false,
+      }).replace(
+        "<div class=\"reco__viewport\">",
+        '<div class="reco--empty" data-reco-design-hint hidden><p>hint</p></div><div class="reco__viewport">',
+      ),
+      { enabled: true },
+    );
+    await tick(1000);
+
+    expect(document.querySelector("[data-reco-design-hint]")).toBeNull();
+    expect(document.querySelectorAll("[data-reco-card]")).toHaveLength(1);
+  });
+});
+
 describe("add to cart", () => {
   test("tags the line so the order can be attributed", async () => {
     boot(panel({ attrs: customAttrs, cards: card(9001, 91) }), { enabled: true });

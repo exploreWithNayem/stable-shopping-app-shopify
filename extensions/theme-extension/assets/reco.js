@@ -303,10 +303,28 @@
         block.removeAttribute("data-reco-loading");
 
         if (products.length === 0) {
-          // Nothing to show beats an empty heading floating on the page.
+          /*
+           * In the theme editor, say why. An empty list here is usually not a
+           * fault: Shopify answers `complementary` only for products a merchant
+           * has linked in the Search & Discovery app, so an untouched store gets
+           * nothing back — and a row that silently removed itself looks like the
+           * source is broken.
+           *
+           * On the live storefront it still just goes: nothing to show beats an
+           * empty heading floating on the page.
+           */
+          if (block.hasAttribute("data-reco-design-mode")) {
+            var emptyHint = block.querySelector("[data-reco-design-hint]");
+            if (emptyHint) emptyHint.hidden = false;
+            return false;
+          }
+
           block.hidden = true;
           return false;
         }
+
+        var hint = block.querySelector("[data-reco-design-hint]");
+        if (hint) hint.remove();
 
         renderFallback(block, products);
         return true;

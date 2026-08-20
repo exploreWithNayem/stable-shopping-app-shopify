@@ -260,7 +260,7 @@ describe("liquid comments", () => {
   });
 });
 
-describe("two blocks, five sources", () => {
+describe("two blocks, six sources", () => {
   // Markup assertions have to see the shared panel, which is where it lives.
   const panel = readLiquid(PANEL);
   const source = readLiquid(join(BLOCKS, RECOMMENDATIONS)) + panel;
@@ -269,7 +269,7 @@ describe("two blocks, five sources", () => {
   const showcaseSchema = readSchema(SHOWCASE);
   const setting = schema.settings.find((entry) => entry.id === "source");
 
-  test("the five sources are split across exactly two blocks", () => {
+  test("the six sources are split across exactly two blocks", () => {
     // Upsell is a third block but not a sixth source — it is the same Custom
     // list in bundle form, so it does not belong to this split (CLAUDE.md 7.4).
     expect(blockFiles.sort()).toEqual(
@@ -277,10 +277,22 @@ describe("two blocks, five sources", () => {
     );
   });
 
-  test("the recommendation block offers Custom and Related, defaulting to custom", () => {
+  test("the recommendation block offers the three product-page sources", () => {
     expect(setting.type).toBe("select");
-    expect(setting.options.map((option) => option.value)).toEqual(["custom", "related"]);
+    expect(setting.options.map((option) => option.value)).toEqual([
+      "custom",
+      "related",
+      "complementary",
+    ]);
     expect(setting.default).toBe("custom");
+
+    // The label is the feature's discoverability — a merchant looking for
+    // "bought with this" has to recognise it in the list.
+    expect(setting.options.map((option) => option.label)).toEqual([
+      "Custom recommendations",
+      "Related products",
+      "Complementary products",
+    ]);
   });
 
   test("the showcase block offers the three merchandising sources", () => {
@@ -292,12 +304,76 @@ describe("two blocks, five sources", () => {
     ]);
     expect(split.default).toBe("popular");
 
-    // No source appears in both blocks, and between them they cover all five.
+    // No source appears in both blocks, and between them they cover all six.
     const all = [
       ...setting.options.map((o) => o.value),
       ...split.options.map((o) => o.value),
     ];
-    expect(new Set(all).size).toBe(5);
+    expect(new Set(all).size).toBe(6);
+  });
+
+  /*
+   * Complementary is Related with one word changed: it asks Shopify for
+   * `complementary` instead of `related` — products bought *with* this one
+   * rather than products like it. reco.js needed no new code path, because
+   * fetchFallback already reads data-reco-intent.
+   *
+   * §12 Q2 asked whether this belonged in Settings as a store-wide default
+   * instead. It is a per-block source so one product page can carry a Related
+   * row *and* a Complementary row, which a global switch makes impossible.
+   */
+  test("an empty complementary row explains itself in the editor", () => {
+    /*
+     * Shopify answers `complementary` only for products a merchant has linked in
+     * the Search & Discovery app, so an untouched store gets an empty list — and
+     * the row removing itself silently looks exactly like a broken source. The
+     * hint is design-mode only; the live storefront still just hides the row.
+     */
+    expect(panel).toContain("complementary.empty");
+    expect(panel).toContain("data-reco-design-hint");
+    // reco.js needs the flag to know it is in the editor.
+    const branch = panel.slice(
+      panel.indexOf("elsif mode == 'complementary'"),
+      panel.indexOf("{%- else %}", panel.indexOf("elsif mode == 'complementary'")),
+    );
+    expect(branch).toContain("request.design_mode");
+  });
+
+  test("the complementary source asks Shopify for a different intent", () => {
+    expect(hasAttribute(source, "data-reco-intent", "complementary")).toBe(true);
+    expect(hasAttribute(source, "data-reco-placement", "complementary")).toBe(true);
+
+    // Never reads the override — that is the custom source's job.
+    expect(panel).toContain("elsif mode == 'complementary'");
+    expect(source).not.toContain("mode == 'complementary' and overrides");
+  });
+
+  test("complementary bills like every other recommendation source", () => {
+    /*
+     * It has a source product and answers "what goes with this", which is the
+     * line §7.1 draws between recommendation and merchandising. Its own
+     * placement because the 30-minute serve dedupe keys on
+     * (session, product, placement): sharing `related` would make one of the two
+     * rows on a page free.
+     */
+    const branch = panel.slice(
+      panel.indexOf("elsif mode == 'complementary'"),
+      panel.indexOf("{%- else %}", panel.indexOf("elsif mode == 'complementary'")),
+    );
+    expect(branch).not.toContain('data-reco-serve="false"');
+    expect(branch).toContain('data-reco-source-product="{{ product.id }}"');
+    // Shopify's own list, so never the override source.
+    expect(branch).toContain('data-reco-source="shopify"');
+  });
+
+  test("it is a product-page source, so it stays on the PDP block", () => {
+    // enabled_on is only declarable because every source on this block needs a
+    // product; complementary must not weaken that.
+    expect(schema.enabled_on).toEqual({ templates: ["product"] });
+    const showcaseSources = showcaseSchema.settings
+      .find((entry) => entry.id === "source")
+      .options.map((option) => option.value);
+    expect(showcaseSources).not.toContain("complementary");
   });
 
   test("source-specific settings are scoped", () => {
@@ -463,6 +539,7 @@ describe("two blocks, five sources", () => {
     for (const placement of [
       "pdp",
       "related",
+      "complementary",
       "popular",
       "collection",
       "recently_viewed",
@@ -568,6 +645,8 @@ describe("two blocks, five sources", () => {
       "collection.needs_collection",
       "recently_viewed.empty",
       "recommendations.needs_product",
+      "complementary.empty",
+      "related.empty",
     ]) {
       expect(lookupLocale(key), `${key} has no string`).toBeTruthy();
     }

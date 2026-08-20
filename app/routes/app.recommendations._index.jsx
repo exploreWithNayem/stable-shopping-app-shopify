@@ -1,46 +1,67 @@
-import { useEffect, useRef } from 'react';
-import { useLoaderData, useNavigate, useNavigation, useSearchParams } from 'react-router';
+import { useEffect, useRef, useState } from 'react';
+import {
+  useFetcher,
+  useLoaderData,
+  useNavigate,
+  useNavigation,
+  useSearchParams,
+} from 'react-router';
 import { authenticate } from '../shopify.server';
 import { ensureShop } from '../models/shop.server';
 import {
+  MAX_OVERRIDE_ITEMS,
   countOverriddenProducts,
-  countOverrides,
   getOverridesForProducts,
+  getProductOverrides,
+  hasOverrideForProduct,
   listOverrides,
+  markOverrideSynced,
+  upsertOverride,
 } from '../models/override.server';
-import { getSourceProductMetrics } from '../models/event.server';
 import {
-  DEFAULT_SORT,
   PAGE_SIZE,
-  SORT_KEYS,
+  getProduct,
   getProductsByIds,
   listProducts,
 } from '../lib/products.server';
-import { analyticsRetentionDays, canAddOverride, overrideLimit } from '../lib/entitlements';
+import { syncOverrideMetafield } from '../lib/metafields.server';
+import { canAddOverride, overrideLimit } from '../lib/entitlements';
 import { isUnlimited } from '../lib/plans';
-import { addDays, startOfUtcDay } from '../lib/dates';
-import { formatNumber, formatPercent, rate } from '../lib/format';
+import { formatNumber } from '../lib/format';
 import QuotaBanner from '../components/QuotaBanner';
 import EmptyState from '../components/EmptyState';
 import ProductThumb from '../components/ProductThumb';
+import ComplementaryCell from '../components/ComplementaryCell';
 
 const SOURCES = ['all', 'custom', 'shopify'];
-const STATUSES = ['any', 'enabled', 'disabled'];
-const PLACEMENTS = ['any', 'pdp', 'checkout', 'both'];
 
-/** Sorting by our own metrics is only offered in custom mode — see below. */
-const CUSTOM_SORTS = {
-  updated: 'Recently updated',
-  served: 'Most recommendations',
-  clicks: 'Most clicks',
-};
+/*
+ * Ordering is fixed to most-recent-first, and there is no Sort control
+ * (2026-08-20). The page had picked up three rounds of sort options that each
+ * outlived their reason: the metric sorts ("Most recommendations", "Most clicks")
+ * ranked by numbers the table no longer displays and cost a full override scan
+ * plus a raw-event aggregation per page load; the title sorts were only added so
+ * the control would not be left with a single option. Recent-first is what a
+ * merchant curating lists actually wants — the product they just touched is at
+ * the top — and ranking by performance belongs on /app/analytics, which shows
+ * the numbers it sorts by.
+ *
+ * The two modes reach it differently: catalogue mode passes Shopify's
+ * UPDATED_AT sort key, custom mode orders the Override table by its own
+ * updatedAt, which is when the merchant last edited the list rather than when
+ * Shopify last touched the product.
+ */
+const CATALOG_SORT = 'updated';
+const CUSTOM_ORDER_BY = { updatedAt: 'desc' };
 
 /**
- * Metric sorting needs every override's numbers in memory. Overrides are
- * merchant-curated so this is small in practice; past the cap we sort by
- * recency instead and say so rather than silently sorting one page.
+ * Thumbnails shown per row before collapsing into "+N".
+ *
+ * A row can hold up to MAX_OVERRIDE_ITEMS (12), and 12 chips in a table cell is
+ * unreadable. It also bounds the image lookup: one page is 25 rows, so this is
+ * at most 100 ids in a single nodes(ids:) call rather than 300.
  */
-const METRIC_SORT_CAP = 1000;
+const MAX_CHIPS = 4;
 
 function pick(value, allowed, fallback) {
   return allowed.includes(value) ? value : fallback;
@@ -54,70 +75,30 @@ export const loader = async ({ request }) => {
   const params = url.searchParams;
   const search = (params.get('q') ?? '').trim();
   const source = pick(params.get('source'), SOURCES, 'all');
-  const status = pick(params.get('status'), STATUSES, 'any');
-  const placement = pick(params.get('placement'), PLACEMENTS, 'any');
   const page = Math.max(0, Number(params.get('page') ?? 0) || 0);
 
   const isCustomMode = source === 'custom';
-  const sort = isCustomMode
-    ? pick(params.get('sort'), Object.keys(CUSTOM_SORTS), 'updated')
-    : pick(params.get('sort'), Object.keys(SORT_KEYS), DEFAULT_SORT);
-
-  const windowDays = Math.min(30, analyticsRetentionDays(shop.plan));
-  const from = addDays(startOfUtcDay(), -windowDays);
 
   let products = [];
   let pageInfo = { hasNextPage: false, hasPreviousPage: false };
   let overrides = [];
-  let metricSortDowngraded = false;
 
   if (isCustomMode) {
-    const total = await countOverrides(shop.id);
-    const wantsMetricSort = sort === 'served' || sort === 'clicks';
-
-    if (wantsMetricSort && total > METRIC_SORT_CAP) {
-      metricSortDowngraded = true;
-    }
-
-    if (wantsMetricSort && !metricSortDowngraded) {
-      // Rank every override, then page the ranked list.
-      const all = await listOverrides({
-        shopId: shop.id,
-        search: search || undefined,
-        placement: placement === 'any' ? undefined : placement,
-        enabled: status === 'any' ? undefined : status === 'enabled',
-        take: METRIC_SORT_CAP,
-      });
-      const metrics = await getSourceProductMetrics(
-        shop.id,
-        all.map((o) => o.productId),
-        { from },
-      );
-      const field = sort === 'served' ? 'served' : 'clicks';
-      all.sort(
-        (a, b) =>
-          (metrics.get(b.productId)?.[field] ?? 0) - (metrics.get(a.productId)?.[field] ?? 0),
-      );
-      overrides = all.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
-      pageInfo = {
-        hasNextPage: (page + 1) * PAGE_SIZE < all.length,
-        hasPreviousPage: page > 0,
-      };
-    } else {
-      overrides = await listOverrides({
-        shopId: shop.id,
-        search: search || undefined,
-        placement: placement === 'any' ? undefined : placement,
-        enabled: status === 'any' ? undefined : status === 'enabled',
-        take: PAGE_SIZE + 1,
-        skip: page * PAGE_SIZE,
-      });
-      pageInfo = {
-        hasNextPage: overrides.length > PAGE_SIZE,
-        hasPreviousPage: page > 0,
-      };
-      overrides = overrides.slice(0, PAGE_SIZE);
-    }
+    // One extra row is fetched to answer hasNextPage without a second count.
+    overrides = await listOverrides({
+      shopId: shop.id,
+      search: search || undefined,
+      // No placement or status filter: both controls were removed on
+      // 2026-08-20. listOverrides still accepts them for other callers.
+      orderBy: CUSTOM_ORDER_BY,
+      take: PAGE_SIZE + 1,
+      skip: page * PAGE_SIZE,
+    });
+    pageInfo = {
+      hasNextPage: overrides.length > PAGE_SIZE,
+      hasPreviousPage: page > 0,
+    };
+    overrides = overrides.slice(0, PAGE_SIZE);
 
     products = await getProductsByIds(
       admin,
@@ -126,7 +107,7 @@ export const loader = async ({ request }) => {
   } else {
     const result = await listProducts(admin, {
       search,
-      sort,
+      sort: CATALOG_SORT,
       after: params.get('after'),
       before: params.get('before'),
     });
@@ -147,17 +128,65 @@ export const loader = async ({ request }) => {
     }
   }
 
-  const overrideByProduct = Object.fromEntries(
-    overrides.map((o) => [
-      o.productId,
-      { placement: o.placement, enabled: o.enabled, count: (o.items ?? []).length },
+  /*
+   * The stored items hold id/handle/title but no image — the picker never gave
+   * us one and the metafield does not need it. So the thumbnails are hydrated
+   * here, in one call for the whole page, and only for the chips that will
+   * actually be drawn.
+   */
+  // Only for rows that survive to the page. In "Shopify defaults only" mode the
+  // overridden products were just filtered out, and fetching images for rows
+  // nobody will see is a wasted Admin call on every page load.
+  const visibleIds = new Set(products.map((p) => p.id));
+
+  const chipIds = [
+    ...new Set(
+      overrides
+        .filter((o) => visibleIds.has(o.productId))
+        .flatMap((o) =>
+          (o.items ?? []).slice(0, MAX_CHIPS).map((item) => String(item.id)),
+        ),
+    ),
+  ];
+
+  const chipImages = new Map(
+    (chipIds.length > 0 ? await getProductsByIds(admin, chipIds) : []).map((p) => [
+      p.id,
+      { title: p.title, image: p.image, imageAlt: p.imageAlt },
     ]),
   );
 
-  const metrics = await getSourceProductMetrics(
-    shop.id,
-    products.map((p) => p.id),
-    { from },
+  const overrideByProduct = Object.fromEntries(
+    overrides.map((o) => {
+      const items = o.items ?? [];
+      return [
+        o.productId,
+        {
+          placement: o.placement,
+          enabled: o.enabled,
+          count: items.length,
+          // Everything the inline picker needs to reopen preselected.
+          items: items.map((item) => ({
+            id: String(item.id),
+            handle: item.handle ?? null,
+            title: item.title ?? null,
+          })),
+          chips: items.slice(0, MAX_CHIPS).map((item) => {
+            const hydrated = chipImages.get(String(item.id));
+            return {
+              id: String(item.id),
+              // A deleted or unpublished product resolves to nothing; keep the
+              // stored title so the chip is still identifiable.
+              title: hydrated?.title ?? item.title ?? "Unavailable product",
+              image: hydrated?.image ?? null,
+              imageAlt: hydrated?.imageAlt ?? item.title ?? "",
+              missing: !hydrated,
+            };
+          }),
+          overflow: Math.max(0, items.length - MAX_CHIPS),
+        },
+      ];
+    }),
   );
 
   // Counted per product, not per row: the plan allowance is "how many products
@@ -165,37 +194,107 @@ export const loader = async ({ request }) => {
   const overrideCount = await countOverriddenProducts(shop.id);
   const limit = overrideLimit(shop.plan);
 
-  // Sort options are built here, not in the component: SORT_KEYS lives in a
-  // .server module and must never be referenced from client code.
-  const sortOptions = isCustomMode
-    ? Object.entries(CUSTOM_SORTS).map(([value, label]) => ({ value, label }))
-    : Object.entries(SORT_KEYS).map(([value, config]) => ({
-        value,
-        label: config.label,
-      }));
-
   return {
-    sortOptions,
     products: products.map((product) => ({
       ...product,
       override: overrideByProduct[product.id] ?? null,
-      metrics: metrics.get(product.id) ?? {
-        served: 0,
-        impressions: 0,
-        clicks: 0,
-        addToCarts: 0,
-      },
     })),
     pageInfo,
-    filters: { search, source, status, placement, sort, page },
+    filters: { search, source, page },
     isCustomMode,
-    metricSortDowngraded,
-    windowDays,
     overrideCount,
     // Unlimited serialises as null — loaders are JSON-encoded (CLAUDE.md §10).
     overrideLimit: isUnlimited(limit) ? null : limit,
     canAddOverride: canAddOverride(shop.plan, overrideCount),
+    maxItems: MAX_OVERRIDE_ITEMS,
   };
+};
+
+/**
+ * Inline editing of a product's complementary list, straight from the table.
+ *
+ * The full editor at /app/recommendations/:productId still owns placement, the
+ * enable toggle, reordering, the Shopify-defaults preview and clearing a list
+ * ("Reset to Shopify defaults"). This action only ever changes *which products*
+ * are in the list, which is the one thing worth doing without leaving the page.
+ *
+ * Nothing here can empty a list, so nothing here can strand a merchant who has
+ * used their whole product allowance: reset is in the editor and is never gated,
+ * which is how a slot gets freed.
+ *
+ * Two rules it must not break:
+ *   - Placement is left exactly as it was. A product can hold a `pdp` row and a
+ *     `checkout` row, so assuming `pdp` here would write a second row beside an
+ *     existing one instead of editing it.
+ *   - The plan allowance is enforced server-side, as everywhere else. Editing a
+ *     product that already has a list takes no new slot; adding the first list
+ *     to a new product does.
+ */
+export const action = async ({ request }) => {
+  const { admin, session } = await authenticate.admin(request);
+  const shop = await ensureShop(session.shop);
+
+  const formData = await request.formData();
+  const intent = String(formData.get('intent') ?? '');
+  const productId = String(formData.get('productId') ?? '').trim();
+
+  if (!productId) return { ok: false, error: 'No product given.' };
+
+  if (intent !== 'save') return { ok: false, error: 'Unknown action.' };
+
+  let items = [];
+  try {
+    items = JSON.parse(formData.get('items') ?? '[]');
+  } catch {
+    return { ok: false, error: 'Could not read the selected products.' };
+  }
+
+  if (!Array.isArray(items) || items.length === 0) {
+    return {
+      ok: false,
+      productId,
+      error:
+        'Pick at least one product. To empty a list, open the product and choose "Reset to Shopify defaults".',
+    };
+  }
+
+  const existing = await getProductOverrides(shop.id, productId);
+
+  if (existing.length === 0 && !(await hasOverrideForProduct(shop.id, productId))) {
+    const overrideCount = await countOverriddenProducts(shop.id);
+    if (!canAddOverride(shop.plan, overrideCount)) {
+      return {
+        ok: false,
+        productId,
+        limitReached: true,
+        error: `Your plan covers complementary products on ${overrideLimit(shop.plan)} products, and all of them are in use. Open a product and choose "Reset to Shopify defaults" to free a slot, or upgrade for unlimited.`,
+      };
+    }
+  }
+
+  const product = await getProduct(admin, productId);
+  if (!product) return { ok: false, productId, error: 'Product not found.' };
+
+  const saved = await upsertOverride({
+    shopId: shop.id,
+    productId,
+    productTitle: product.title,
+    productHandle: product.handle,
+    // Keep whatever the row already had; only the full editor changes it.
+    placement: existing[0]?.placement ?? 'pdp',
+    items,
+    enabled: existing[0]?.enabled ?? true,
+  });
+
+  // Saved either way — only a successful sync makes it live, so a failure is
+  // reported rather than swallowed. syncedAt stays null for the repair action.
+  try {
+    const { published } = await syncOverrideMetafield(admin, saved);
+    await markOverrideSynced(saved.id);
+    return { ok: true, productId, saved: true, published };
+  } catch (error) {
+    return { ok: true, productId, saved: true, syncWarning: error.message };
+  }
 };
 
 export default function RecommendationsPage() {
@@ -203,21 +302,40 @@ export default function RecommendationsPage() {
     products,
     pageInfo,
     filters,
-    sortOptions,
     isCustomMode,
-    metricSortDowngraded,
-    windowDays,
     overrideCount,
     overrideLimit: limit,
     canAddOverride: canAdd,
+    maxItems,
   } = useLoaderData();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  /*
+   * One fetcher for every row rather than one per row: only a single picker can
+   * be open at a time, so the saves cannot overlap. `inline.formData` tells us
+   * which product is mid-save, which is what drives the row's spinner.
+   */
+  const inline = useFetcher();
+  const [inlineError, setInlineError] = useState(null);
   const navigation = useNavigation();
-  const searchRef = useRef(null);
   const debounceRef = useRef(null);
 
   const isLoading = navigation.state === 'loading';
+
+  const savingProductId =
+    inline.state !== 'idle' ? String(inline.formData?.get('productId') ?? '') : null;
+
+  const saveComplementary = (productId, items) => {
+    setInlineError(null);
+    inline.submit(
+      { intent: 'save', productId, items: JSON.stringify(items) },
+      { method: 'POST' },
+    );
+  };
+
+  // The action reports its own failures; the picker reports failing to open.
+  const actionError = inline.data?.ok === false ? inline.data.error : null;
+  const syncWarning = inline.data?.syncWarning ?? null;
 
   // Debounce the search box so typing does not fire a request per keystroke.
   useEffect(() => () => clearTimeout(debounceRef.current), []);
@@ -284,19 +402,30 @@ export default function RecommendationsPage() {
         </s-banner>
       )}
 
-      {metricSortDowngraded && (
-        <s-banner tone="warning" heading="Sorted by recency instead">
-          <s-paragraph>
-            You have more than {formatNumber(METRIC_SORT_CAP)} custom recommendations, which is more
-            than this page can rank by performance. Use the Analytics page for a full ranking.
-          </s-paragraph>
+      {/* Inline editing has no page of its own to report on, so its outcome
+          surfaces here. The picker is admin-hosted: when it fails to open there
+          is nothing this app can do about it, which is worth saying rather than
+          leaving in the console. */}
+      {(inlineError || actionError) && (
+        <s-banner tone="critical" heading="Could not save complementary products">
+          <s-paragraph>{inlineError || actionError}</s-paragraph>
+        </s-banner>
+      )}
+
+      {/* Saved to the database but not mirrored to the product metafield, so the
+          storefront still shows the old list. Settings has the repair action. */}
+      {syncWarning && (
+        <s-banner tone="warning" heading="Saved, but not live on your storefront yet">
+          <s-paragraph>{syncWarning}</s-paragraph>
+          <s-button href="/app/settings" variant="secondary">
+            Re-sync
+          </s-button>
         </s-banner>
       )}
 
       <s-section>
         <s-stack direction="block" gap="base">
           <s-search-field
-            ref={searchRef}
             label="Search products"
             name="q"
             value={filters.search}
@@ -304,68 +433,16 @@ export default function RecommendationsPage() {
             onInput={onSearchInput}
           />
 
-          <s-stack direction="inline" gap="base" alignItems="end">
-            <s-select
-              label="Source"
-              name="source"
-              value={filters.source}
-              onChange={(event) => applyFilter({ source: event.currentTarget.value })}
-            >
-              <s-option value="all">All products</s-option>
-              <s-option value="custom">Custom only</s-option>
-              <s-option value="shopify">Shopify defaults only</s-option>
-            </s-select>
-
-            <s-select
-              label="Sort"
-              name="sort"
-              value={filters.sort}
-              onChange={(event) => applyFilter({ sort: event.currentTarget.value })}
-            >
-              {sortOptions.map((option) => (
-                <s-option key={option.value} value={option.value}>
-                  {option.label}
-                </s-option>
-              ))}
-            </s-select>
-
-            {isCustomMode && (
-              <>
-                <s-select
-                  label="Placement"
-                  name="placement"
-                  value={filters.placement}
-                  onChange={(event) => applyFilter({ placement: event.currentTarget.value })}
-                >
-                  <s-option value="any">Any placement</s-option>
-                  <s-option value="pdp">Product page</s-option>
-                  <s-option value="checkout">Checkout</s-option>
-                  <s-option value="both">Both</s-option>
-                </s-select>
-
-                <s-select
-                  label="Status"
-                  name="status"
-                  value={filters.status}
-                  onChange={(event) => applyFilter({ status: event.currentTarget.value })}
-                >
-                  <s-option value="any">Any status</s-option>
-                  <s-option value="enabled">Enabled</s-option>
-                  <s-option value="disabled">Disabled</s-option>
-                </s-select>
-              </>
-            )}
-
-            <s-button
-              variant="secondary"
-              onClick={() => {
-                clearTimeout(debounceRef.current);
-                applyFilter({ q: searchRef.current?.value ?? '' });
-              }}
-            >
-              Apply
-            </s-button>
-          </s-stack>
+          <s-select
+            label="Source"
+            name="source"
+            value={filters.source}
+            onChange={(event) => applyFilter({ source: event.currentTarget.value })}
+          >
+            <s-option value="all">All products</s-option>
+            <s-option value="custom">Custom only</s-option>
+            <s-option value="shopify">Shopify defaults only</s-option>
+          </s-select>
         </s-stack>
       </s-section>
 
@@ -392,16 +469,16 @@ export default function RecommendationsPage() {
           />
         ) : (
           <>
-            <s-paragraph color="subdued">Metrics cover the last {windowDays} days.</s-paragraph>
+            <s-paragraph color="subdued">
+              This page manages which products go together. Performance figures live on the{' '}
+              <s-link href="/app/analytics">Analytics</s-link> page.
+            </s-paragraph>
 
             <s-table variant="auto" {...(isLoading ? { loading: true } : {})}>
               <s-table-header-row>
                 <s-table-header listSlot="primary">Product</s-table-header>
+                <s-table-header>Complementary products</s-table-header>
                 <s-table-header listSlot="kicker">Source</s-table-header>
-                <s-table-header format="numeric">Recommendations</s-table-header>
-                <s-table-header format="numeric">Impressions</s-table-header>
-                <s-table-header format="numeric">Clicks</s-table-header>
-                <s-table-header format="numeric">CTR</s-table-header>
                 <s-table-header>Actions</s-table-header>
               </s-table-header-row>
 
@@ -417,6 +494,20 @@ export default function RecommendationsPage() {
                     </s-table-cell>
 
                     <s-table-cell>
+                      <ComplementaryCell
+                        productId={product.id}
+                        chips={product.override?.chips ?? []}
+                        items={product.override?.items ?? []}
+                        overflow={product.override?.overflow ?? 0}
+                        maxItems={maxItems}
+                        canAdd={canAdd}
+                        busy={savingProductId === product.id}
+                        onSave={saveComplementary}
+                        onError={setInlineError}
+                      />
+                    </s-table-cell>
+
+                    <s-table-cell>
                       {product.override ? (
                         <s-badge tone={product.override.enabled ? 'success' : 'neutral'}>
                           {product.override.enabled
@@ -426,13 +517,6 @@ export default function RecommendationsPage() {
                       ) : (
                         <s-badge tone="neutral">Shopify</s-badge>
                       )}
-                    </s-table-cell>
-
-                    <s-table-cell>{formatNumber(product.metrics.served)}</s-table-cell>
-                    <s-table-cell>{formatNumber(product.metrics.impressions)}</s-table-cell>
-                    <s-table-cell>{formatNumber(product.metrics.clicks)}</s-table-cell>
-                    <s-table-cell>
-                      {formatPercent(rate(product.metrics.clicks, product.metrics.impressions))}
                     </s-table-cell>
 
                     <s-table-cell>

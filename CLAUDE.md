@@ -23,8 +23,8 @@
 
 | Route | Purpose |
 | --- | --- |
-| `/app` | Home — analytics dashboard, widgets, top recommended products, quota meter |
-| `/app/recommendations` | List of all products + their recommendation source, filters + search, override editor |
+| `/app` | Home — headline metrics, storefront status, quota meter, and the **Create offer** primary action |
+| `/app/recommendations` | List of all products + their recommendation source, filters + search, override editor. Each row shows its complementary products as thumbnails and picks them inline (§5, Phase 5 deviations) |
 | `/app/recommendations/$productId` | Override editor for a single product |
 | `/app/analytics` | Deeper analytics (trend charts, per-product breakdown, funnel) |
 | `/app/pricing` | 3 plans, current plan, upgrade/downgrade |
@@ -34,7 +34,7 @@
 
 | Extension | Type | Placement |
 | --- | --- | --- |
-| `recommendations` | Theme app block (`extensions/theme-extension`), shown as **Smart Recommendations** | **Product templates only** (`enabled_on`). One `source` setting: `custom` (per-product lists, billable) · `related` (Shopify's own recommendations, billable) |
+| `recommendations` | Theme app block (`extensions/theme-extension`), shown as **Smart Recommendations** | **Product templates only** (`enabled_on`). One `source` setting: `custom` (per-product lists, billable) · `related` (Shopify's own recommendations, billable) · `complementary` (Shopify's own, `intent: complementary`, billable) |
 | `product-showcase` | Theme app block, shown as **Product Showcase** | Any template. One `source` setting: `popular` (best sellers, collection optional) · `collection` (the picked collection) · `recently_viewed` (the shopper's own history). Owns the Collection picker. Free — no `served` beacon |
 | `upsell` | Theme app block, shown as **Bought Together** | **Product templates only.** The product being viewed plus its recommendations, checkboxes, a running total, one multi-line add to cart. A cross-sell bundle, not an upsell — `upsell` is the internal key only (§7.4). Billable |
 | `checkout-recommendations` | Checkout UI extension | `purchase.checkout.block.render`, `purchase.thank-you.block.render`, `customer-account.order-status.block.render` |
@@ -135,13 +135,13 @@ index.
 
 **Event types**: `served` · `impression` · `click` · `add_to_cart` · `purchase`
 
-**Placements**: `pdp` · `related` · `upsell` · `checkout` · `thank_you` · `order_status` ·
-`popular` · `collection` · `recently_viewed`. The last three are merchandising (§7.1), not
+**Placements**: `pdp` · `related` · `complementary` · `upsell` · `checkout` · `thank_you` ·
+`order_status` · `popular` · `collection` · `recently_viewed`. The last three are merchandising (§7.1), not
 recommendation surfaces — they have no source product (sentinel `"*"`) and never emit `served`.
 Keeping them in the list rather than coercing them to `pdp` is what stops a home-page row landing in
-some product's recommendation metrics. `related` (§7.2) and `upsell` (§7.4) are the reverse case:
+some product's recommendation metrics. `related` and `complementary` (§7.2) and `upsell` (§7.4) are the reverse case:
 real recommendations that bill, each given its own placement because one product page can carry a
-Custom row, a Related row *and* an Upsell bundle, and the serve dedupe keys on
+Custom row, a Related row, a Complementary row *and* an Upsell bundle, and the serve dedupe keys on
 `(session, product, placement)` — sharing `pdp` would make all but one of them free.
 
 The list is enforced in one place, `PLACEMENTS` in `app/models/event.server.js`. Anything absent
@@ -569,7 +569,41 @@ rather than 12 — the `all_products` 20-lookup cap does not apply, since this i
 When the collection is empty the block renders **nothing** on the storefront, and a dashed hint in
 the theme editor only (`request.design_mode`).
 
-### 7.2 Related products source (`source: "related"`, Smart Recommendations block)
+### 7.2 Related and Complementary sources (`source: "related"` / `"complementary"`, Smart Recommendations block)
+
+**Complementary was added 2026-08-20** and is Related with one word changed: it asks Shopify for
+`intent: complementary` — products bought *with* this one — instead of `related`, products like it.
+Everything else is identical, and **`reco.js` needed no new code path at all**: `fetchFallback`
+already read `data-reco-intent`, so the source is a schema option, a Liquid branch and a placement
+key. It bills for the §7.1 reason, on its own `complementary` placement for the §3.2 reason.
+
+> ⚠️ **This app cannot write Shopify's complementary products, and never will be able to.** They live
+> in `shopify--discovery--product_recommendation.complementary_products`, and `shopify--` is a
+> Shopify-controlled reserved prefix — an app may only write metafields under its own `$app:` prefix
+> ([ownership](https://shopify.dev/docs/apps/build/custom-data/ownership),
+> [reserved prefixes](https://shopify.dev/docs/apps/build/custom-data/reserved-prefixes)). So no admin
+> UI in this app can populate this source; that is why the merchant-curated equivalent is the **Custom**
+> source over `$app:reco_overrides`, surfaced as "Complementary products" on the recommendations list
+> (2026-08-20). Do not attempt a `metafieldsSet` against the `shopify--` namespace.
+
+> ⚠️ **Complementary needs merchant setup before it returns anything.** Shopify builds `related` from
+> order history, but `complementary` comes only from products a merchant has explicitly linked in the
+> **Search & Discovery** app (Apps → Search & Discovery → Product → Complementary products, stored as
+> `shopify--discovery--product_recommendation.complementary_products`). On a store that has never
+> touched it, `/recommendations/products.json?intent=complementary` returns an empty list for every
+> product — so the source works perfectly and shows nothing. That is why the theme editor now carries
+> an explicit hint (`complementary.empty`) rather than letting `reco.js` hide the row: an empty row is
+> the expected first-run state here, not a fault, and a vanished block reads as a broken feature.
+
+This is what §12 Q2 had been asking about. It is a *source*, not the removed *Recommendation type*
+picker and not a store-wide default in Settings: a global switch would make it impossible to run a
+Related row and a Complementary row on the same product page, which is the main thing a merchant
+would want it for. The picker stays deleted — a "Recommendation type: Related / Complementary" select
+sitting next to a source already labelled "Related products" is the contradiction that removed it.
+
+---
+
+#### Related, in detail
 
 Added 2026-08-19. Shopify's own product recommendations for the product being viewed, with **no
 override consulted** — the `custom` source's fallback path, promoted to a source of its own.
@@ -599,10 +633,12 @@ Custom too, at the merchant's request. It had only ever governed Custom's fallba
 rows where one is labelled "Related products" and the other offers a *Recommendation type* of Related
 or Complementary is a distinction that has to be explained to be understood.
 
-`complementary` is still supported the whole way down — `proxy.recommendations` accepts an `intent`
-query parameter and `getShopifyRecommendations()` passes it to the Storefront API. Only the theme
-stopped choosing it: both sources now send `data-reco-intent="related"`. If it should come back, the
-place for it is the global default in Settings (Phase 13, §12 Q2), not a per-block select.
+`complementary` was already supported the whole way down — `proxy.recommendations` accepts an
+`intent` query parameter and `getShopifyRecommendations()` passes it to the Storefront API — and as
+of 2026-08-20 the theme chooses it again, as the third **source** rather than a picker beside the
+other two. Custom and Related send `data-reco-intent="related"`; Complementary sends
+`data-reco-intent="complementary"`. The distinction now lives in the source list, where the label
+explains it, instead of in a select that had to be explained.
 
 Everything else is shared: `reco.js` needs no new code path (`fetchFallback` already reads
 `data-reco-intent` and `data-reco-source-product`), and the cards, tracking and add-to-cart wiring
@@ -873,9 +909,12 @@ marking done.
    - Loader: paginated product list from Admin GraphQL (cursor-based, 25/page), left-joined with
      `Override` rows to show **Source: Shopify / Custom**.
    - Search by product title (GraphQL `query:` param, debounced 300ms).
-   - Filters: source (all/shopify/custom), status (enabled/disabled), placement, has-clicks.
-   - Sort: title, most recommended, most clicked, CTR.
-   - `<s-table>` columns: Product · Source · # recommendations · Impressions · Clicks · CTR · Actions.
+   - Filters: source (all/shopify/custom) only. Status and placement were removed — see the
+     deviations below.
+   - Sort: none — fixed to most-recent-first. See the deviations below.
+   - `<s-table>` columns: Product · Complementary products · Source · Actions. The metric columns
+     (# recommendations, Impressions, Clicks, CTR) were all removed on 2026-08-20 — see the
+     deviations below.
    - Bulk actions: reset to Shopify defaults, disable overrides.
 2. `app/routes/app.recommendations.$productId.jsx`:
    - Shows the current Shopify-generated list as a starting point.
@@ -889,10 +928,38 @@ marking done.
 
 **Deviations made while building (2026-08-12):**
 - **Two list modes, not one.** Shopify pages the catalogue, and it has no idea which products carry
-  overrides — so "sort by most clicks" cannot be answered against the catalogue without pulling all
-  of it. *Catalogue mode* (default) uses Shopify cursor paging with Shopify sort keys; *Custom only*
-  mode is driven by the `Override` table and is where the metric sorts live, ranking every override
-  then paging the ranked list. Past `METRIC_SORT_CAP` (1000) it falls back to recency and says so.
+  overrides. *Catalogue mode* (default) uses Shopify cursor paging with Shopify sort keys; *Custom
+  only* mode is driven by the `Override` table and pages it directly.
+- **No metrics on this page at all** (2026-08-20). Clicks and CTR went first, then Recommendations
+  and Impressions — this page manages *which products go together*, and `/app/analytics` reports how
+  they performed. Removing the columns also removed the machinery behind them: the metric sorts
+  ("Most recommendations", "Most clicks"), the `METRIC_SORT_CAP` fallback and its warning banner, and
+  a `getSourceProductMetrics()` aggregation over raw events on every page load. Those sorts ranked by
+  numbers the page no longer displayed, which is worse than not offering them.
+- **No Apply button** (2026-08-20). Source applies on change and the search box is debounced at
+  300ms, so Apply only ever short-circuited that wait — a button whose sole purpose was to beat a
+  delay the merchant cannot perceive. Removing it also removed the `searchRef`, which existed only so
+  the button could read the field's current value.
+- **The controls are Search and Source, nothing else** (2026-08-20). Placement and Status were
+  removed along with Sort and the metric columns. Both only ever appeared in *Custom only* mode, and
+  both filtered on fields this page no longer displays — a merchant could hide rows by a placement or
+  an enabled flag they could not see, which reads as rows going missing. `listOverrides()` still takes
+  `placement` and `enabled`; the route just stops passing them, and a stale `?placement=`/`?status=`
+  in a bookmarked URL is ignored. Both fields are still edited in the override editor, which is where
+  they are visible.
+- **No Sort control; ordering is fixed to most-recent-first** (2026-08-20). The page went through
+  three rounds of sort options that each outlived their reason — the metric sorts ranked by numbers
+  the table stopped showing, and the title sorts that replaced them existed only so the control would
+  not be left with a single option — so the control went too. Recent-first is what curating lists
+  actually wants: the product just edited sits at the top. Catalogue mode passes Shopify's
+  `UPDATED_AT` sort key; custom mode orders the `Override` table by its own `updatedAt`, which is when
+  the *merchant* last edited the list rather than when Shopify last touched the product. A stale
+  `?sort=` in a bookmarked URL is ignored rather than honoured. `SORT_KEYS` / `DEFAULT_SORT` stay in
+  `products.server.js` — the override editor's product search still uses them.
+- **Complementary products are picked inline** (2026-08-20). Each row shows its list as thumbnails
+  and opens the App Bridge picker in place; the editor route still owns placement, the enable toggle,
+  reordering and the Shopify-defaults preview. See the progress row for 8.9 and the reserved-prefix
+  warning in §7.2 — this is the app's own list, not Shopify's complementary metafield.
 - **"Shopify defaults only" can return a short page.** The exclusion happens after Shopify has
   already paged, so a 25-row page minus 3 overridden products shows 22.
 - **Reorder is up/down buttons, not HTML5 drag-and-drop.** Dragging rows inside `<s-table>` is
@@ -1012,10 +1079,25 @@ marking done.
    **Add to carts** · **Attributed revenue** — each with a period-over-period delta.
 3. **Quota widget**: used / limit, remaining, progress bar, reset date, upgrade CTA.
 4. **Top recommended products** table: thumbnail, title, served, clicks, CTR, revenue (top 10).
-5. **Trend chart**: 30-day served vs clicks — inline SVG sparkline/area, no chart library.
+5. ~~**Trend chart**: 30-day served vs clicks~~ — **removed from Home on 2026-08-20.** The
+   `TrendChart` component stays and is still used on `/app/analytics`, which is where trends belong;
+   Home keeps the stat cards, storefront status, the quota meter and the onboarding checklist. The
+   loader still builds `metrics.series` — `lastServedDay` is derived from it.
 6. Date range selector: 7 / 30 / 90 days (90 gated to paid plans).
 7. Onboarding checklist for a brand-new install: enable app embed → add block to PDP →
    create your first override.
+8. **Create offer** button (2026-08-20), right-aligned at the top of the content column. An "offer"
+   is a product plus the products recommended alongside it, and there is no `new` route for one
+   (offers are per-product), so it links to `/app/recommendations` where a product is chosen and its
+   list picked inline. Deliberately never disabled: the product allowance limits *new* offers and the
+   list page enforces it there, whereas greying this out would also stop a merchant at the limit from
+   editing offers they already have.
+
+   > ⚠️ **Not `<s-page slot="primary-action">`.** In an embedded app that slot hoists the button out of
+   > the app frame and into the Shopify admin's own top bar, beside the "..." menu — visually detached
+   > from the content it acts on. It was built that way first and moved the same day. The same goes
+   > for `secondary-actions` and `breadcrumb-actions`; put page actions in the content column unless
+   > the intent really is to occupy Shopify's chrome.
 8. Empty states for every widget when there is no data yet.
 
 ### Phase 11 — Pricing & billing
@@ -1146,9 +1228,13 @@ deliberate — a merchant who reinstalls the same day keeps their overrides and 
 ## 12. Open questions
 
 1. **Quota unit** — confirm "1 recommendation = 1 widget served" (Section 3.3).
-2. **Complementary vs related** — the per-block picker was removed 2026-08-19; the theme always asks
-   for `related`. `complementary` still works through the proxy and the engine. Should Settings expose
-   it as a global default (Phase 13), or is `related` simply the answer?
+2. ~~**Complementary vs related**~~ — **answered 2026-08-20.** Neither a per-block *picker* nor a
+   Settings default: `complementary` is its own **source** on Smart Recommendations, labelled
+   "Complementary products" (§7.2). A global default was the other candidate and was rejected because
+   it makes one product page carrying a Related row *and* a Complementary row impossible, which is
+   the whole reason a merchant would want it. The removed picker is not coming back — a *Recommendation
+   type* select next to a source already named "Related products" is the contradiction that got it
+   deleted.
 3. **Checkout placement on non-Plus stores** — thank-you/order-status only; is that acceptable for the Standard plan pitch?
 4. **Trial** — 14-day free trial on paid plans, yes/no?
 5. **Analytics retention on Free** — 7-day dashboard window vs 30-day raw retention; confirm.
@@ -1163,13 +1249,14 @@ one-line note. Keep `Current status` and `Next up` accurate.
 **Current status:** Phases 0–11 complete — the full path exists end to end, from a merchant picking
 recommendations, to a card rendering on a product page, to tracking beacons rolled up into daily
 analytics with revenue attributed from orders, to a metered plan that raises the quota. The
-storefront is **two** theme blocks: **Smart Recommendations** (Custom, Related — product templates
-only) and **Product Showcase** (Popular, Collection products, Recently viewed — any template), split
+storefront is **two** theme blocks: **Smart Recommendations** (Custom, Related, Complementary —
+product templates only) and **Product Showcase** (Popular, Collection products, Recently viewed —
+any template), split
 so the first can declare `enabled_on` and the second can own a real collection picker (§7.1–7.3).
 They share their markup through `reco-panel` and `reco-collection-cards`; only the schema JSON
 duplicates, and a test pins the two copies together. A third block, **Upsell**, is a
 **Bought Together** bundle over the same Custom list (§7.4) — product templates only, its own
-`upsell` placement, billable. 337 Vitest tests pass; lint and typecheck are clean — though see the
+`upsell` placement, billable. 352 Vitest tests pass; lint and typecheck are clean — though see the
 warning in §4: typecheck does not read a single `.js`/`.jsx` file, which is all of them.
 
 Custom recommendations are no longer a paid-only feature: **Free covers 10 products** and the
@@ -1234,12 +1321,14 @@ long after 8.6 landed three; corrected 2026-08-20.
 | 8.6 Two blocks, split PDP vs merchandising | ✅ Done | 2026-08-19 | The Collection field showed on all five sources of the single block, doing nothing on four, and Shopify rejects `visible_if` on resource inputs by design. A `"type": "url"` field was built first and rejected on its picker (it also lists Products, Pages, Blogs and Policies, with no attribute to filter them); a Collection-only third block was built and reverted. Settled shape: **`recommendations.liquid`** = Custom + Related with `enabled_on: templates: ["product"]` — declarable for the first time, since both need a product — and **`product-showcase.liquid`** = Popular + Collection products + Recently viewed, any template, owning a real `"type": "collection"` picker that two of its three sources read. `popular` regained its optional collection narrowing. Markup shared through new `reco-panel` / `reco-collection-cards` snippets; only the schema duplicates, held together by a test comparing the two settings arrays. `limit` maxes at 12 on the PDP block and 24 on the showcase block. The **Recommendation type (`intent`) picker was removed** the same day: it governed only Custom's fallback and read as a contradiction beside the Related source, so both now send `data-reco-intent="related"` — `complementary` still works through the proxy and the engine, see §7.2 and §12 Q2. 261 tests. See §7.3 — settled, with tests blocking each dead end. |
 
 | 9. Analytics pipeline | ✅ Done | 2026-08-12 | `rollupDay`/`rollupRange` (idempotent, refuses pruned days), `getDashboardMetrics` (totals + prior-period deltas + gapless series), `getFunnel`, `WIDGET_TOTAL` sentinel; `attribution.server.js` + `orders/create` webhook with order-derived idempotency keys; `cron.rollup` route with retention pruning. 202 tests. Analytics page (`/app/analytics`) built 2026-08-18: range selector, impressions-vs-clicks trend, funnel bars, per-placement breakdown (`getPlacementBreakdown`), sortable 50-row per-product table, CSV export gated by `canExportCsv`. |
-| 10. Home dashboard | ✅ Done | 2026-08-18 | Real metrics with period deltas, 7/30/90 range (clamped to plan retention), served-vs-clicks SVG trend chart, top-10 products, funnel, onboarding checklist shown only before first data. Loader rolls up a 3-day trailing window so numbers appear without the cron. |
+| 10. Home dashboard | ✅ Done | 2026-08-18 | Real metrics with period deltas, 7/30/90 range (clamped to plan retention), top-10 products, funnel, onboarding checklist shown only before first data. Loader rolls up a 3-day trailing window so numbers appear without the cron. The served-vs-clicks trend chart was **removed on 2026-08-20** — `TrendChart` still renders it on `/app/analytics`. |
 | 11. Pricing & billing | ✅ Done | 2026-08-18 | `billing` config in `shopify.server.js` (paid plans only, 14-day trial, `isTest`); pricing page upgrade/downgrade actions; `app.billing.callback` verifies with `billing.check()` rather than trusting the return URL; `app_subscriptions/update` webhook drops non-active subscriptions to Free. Quota snapshot is rewritten on every plan change so the new limit applies immediately. |
 | 12. Checkout extension | ⬜ Not started | — | Checkout / thank-you / order status. "Checkout recommendations" removed from the Standard plan's feature list 2026-08-20 until it exists. |
 | 13. Settings page | ⬜ Not started | — | Global defaults, re-sync, deep links |
 | 14. Webhooks & privacy | 🟡 Mostly done | 2026-08-20 | Items 1–4 done: the three mandatory GDPR endpoints (`customers/data_request`, `customers/redact`, `shop/redact`), `products/delete`, and a completed `app/uninstalled`. Item 5 (error boundaries on every admin route) outstanding. |
 | 15. QA & launch | ⬜ Not started | — | Postgres provider + migrations, listing, BFS review. `DATABASE_URL` is env-driven as of 2026-08-20; the rest of the move is still here. |
+| 8.9 Inline complementary products | ✅ Done | 2026-08-20 | Each row of `/app/recommendations` now shows its curated products as thumbnails (4, then "+N") and picks them inline through the App Bridge resource picker — no round trip to the editor per product, which was the slow part of curating a catalogue. New `action` on the list route, `getProductOverrides()` in the override model, `components/ComplementaryCell.jsx`. **The action preserves the row's existing placement** rather than assuming `pdp`: a product can hold a `pdp` row and a `checkout` row, so defaulting would write a duplicate beside the existing row and charge two products against the plan allowance — pinned by tests. Plan allowance enforced server-side, as everywhere. **This route cannot empty a list** — the inline Clear button was removed on request the same day, so emptying is the editor's "Reset to Shopify defaults", which is never gated and is therefore how a merchant who has used their whole allowance frees a slot. Thumbnails are hydrated in one `nodes(ids:)` call per page, capped at the 4 chips actually drawn and narrowed to rows that survive the "Shopify defaults only" filter. A picked product since deleted still shows a chip, titled "no longer available", because it still occupies a slot. **Not** Shopify's complementary metafield — see the reserved-prefix warning in §7.2. |
+| 8.8 Complementary source | ✅ Done | 2026-08-20 | Third `source` on Smart Recommendations, labelled "Complementary products" (§7.2). Asks Shopify for `intent: complementary` — bought *with* this product rather than like it. `reco.js` needed no change: `fetchFallback` already read `data-reco-intent`, so this is a schema option, a Liquid branch in `reco-panel`, and a new `complementary` placement in `PLACEMENTS` + `PLACEMENT_LABELS`. Billable, own placement so a Related row and a Complementary row on one page are not deduped into a single serve. **Answers §12 Q2**: a source, not the deleted Recommendation-type picker and not a store-wide Settings default — a global switch would rule out running both rows on one page, which is the point. **Shopify answers this intent only for products a merchant has linked in the Search & Discovery app**, so an untouched store gets an empty list and the row used to remove itself silently — indistinguishable from a broken source. `reco.js` now unhides a design-mode-only hint (`complementary.empty`) instead of hiding the block, and does the same for `related` / `custom` (`related.empty`, for a store with too little order history). The live storefront still just hides an empty row. Also on this page: the **Clicks and CTR columns were removed** from the recommendations list; both still live on `/app/analytics`. |
 | H1. Audit & hardening pass | ✅ Done | 2026-08-20 | A code read of the whole app, then the fixes. **Two billing holes:** the app embed's tracking checkbox suppressed the `served` beacon, which on the theme path is the only billing signal, so unchecking it bought unlimited free recommendations (§3.3); and `selectBillableServes()` skipped its in-batch dedupe for serves with no session id, billing once per copy from a single beacon. **Two silent-failure paths:** the Storefront token was minted only by the override editor's loader, so every server-side recommendation path returned `{items: []}` for a merchant who never opened that one page (now provisioned in the `/app` loader); and an override whose products had all been deleted returned an empty list instead of falling back to Shopify, rendering nothing. **Two storefront defects:** prices used a hardcoded `"${{amount}}"` unless the optional app embed was on (§7.5), and both card blocks shipped `"default": "Heading"` — a literal `<h2>Heading</h2>` on the merchant's live product page. **Plus:** the beacon queue dropped everything past the first batch of 10 (a 12-card grid hit it immediately), slider autoplay leaked an interval per theme-editor re-render, and the product search interpolated raw input into Shopify's search grammar. **Infrastructure:** `DATABASE_URL` is now an env var rather than a container-local SQLite file — with a dev fallback and a hard failure in production, applied through `scripts/prisma.js` because `shopify.web.toml` shells out to the Prisma CLI twice before the app boots (making it env-driven broke `shopify app dev` with P1012 until the wrapper landed). Phase 14's webhooks landed. **Coverage:** `tests/reco-runtime.test.js` runs `reco.js` in jsdom — 24 tests where there had been none. 285 → 337 tests. **Docs:** §13 still described the rejected `url` picker and claimed one theme block after 8.6 shipped three; §7 claimed a `stylesheet` declaration that does not exist; §4 claimed lint ignored `.jsx`, which it does not. All corrected. |
 
 Status legend: ⬜ Not started · 🟡 In progress · ✅ Done · ⛔ Blocked
