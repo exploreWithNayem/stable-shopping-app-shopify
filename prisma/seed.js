@@ -93,6 +93,45 @@ async function main() {
     },
   });
 
+  /*
+   * Two offers, one live and one draft, so Home's offer list has both states to
+   * render. Their targets deliberately reuse the products the overrides above
+   * cover: publishing an offer writes exactly those Override rows, so the fixture
+   * matches what a real publish would leave behind rather than inventing a state
+   * the app cannot reach.
+   */
+  await prisma.offer.createMany({
+    data: [
+      {
+        shopId: shop.id,
+        name: "Product page offer",
+        placement: "PRODUCT_PAGE",
+        offerType: "cross_sell",
+        title: "You may also like",
+        badge: "",
+        buttonText: "Add",
+        countdown: false,
+        targets: [item(PRODUCTS[0], 0)],
+        items: [item(PRODUCTS[1], 0), item(PRODUCTS[2], 1), item(PRODUCTS[5], 2)],
+        status: "published",
+        publishedAt: new Date(),
+      },
+      {
+        shopId: shop.id,
+        name: "Winter bundle (draft)",
+        placement: "PRODUCT_PAGE",
+        offerType: "frequently_bought_together",
+        title: "Complete the set",
+        badge: "Limited offer",
+        buttonText: "Add to cart",
+        countdown: true,
+        targets: [item(PRODUCTS[4], 0), item(PRODUCTS[6], 1)],
+        items: [item(PRODUCTS[7], 0)],
+        status: "draft",
+      },
+    ],
+  });
+
   await prisma.override.createMany({
     data: [
       {
@@ -229,6 +268,7 @@ async function main() {
   });
 
   console.log(`Seeded ${SHOP_DOMAIN}`);
+  console.log(`  offers:         2 (1 published, 1 draft)`);
   console.log(`  overrides:      3`);
   console.log(`  analytics rows: ${dailyRows.length} over ${DAYS} days`);
   console.log(`  raw events:     ${rawEvents.length} over 3 days`);

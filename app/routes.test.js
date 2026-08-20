@@ -155,8 +155,41 @@ describe("route tree", () => {
     expect(linked.length, "no card links found — did the shape change?").toBeGreaterThan(0);
 
     for (const href of linked) {
-      expect(known, `${href} has no route`).toContain(href);
+      // A card may carry a query string (`?type=PRODUCT_PAGE` selects the offer
+      // editor on the same route); only the path has to resolve.
+      const path = href.split("?")[0];
+      expect(known, `${href} has no route`).toContain(path);
     }
+  });
+
+  test("Home lists offers and links back into the editor", () => {
+    /*
+     * The offer list is Home's way back into something a merchant just saved, so
+     * the link has to carry both the placement type and the id — `?type=` is what
+     * selects the editor over the placement picker, and without it the row would
+     * bounce back to the picker.
+     */
+    const home = readFileSync(`${appDirectory}routes/app._index.jsx`, "utf8");
+
+    expect(home).toContain('heading="Offers"');
+    expect(home).toContain("offer.placement}&id=${offer.id}");
+    expect(allPaths()).toContain("/app/offers/new");
+
+    // The empty state has to offer the way in, not just say there is nothing.
+    expect(home).toContain("No offers yet");
+    expect(home).toContain("href: '/app/offers/new'");
+  });
+
+  test("Home does not ship whole Json columns to the client", () => {
+    // `targets` and `items` are unbounded lists; the table draws two counts from
+    // them, so sending the arrays themselves is payload nobody reads.
+    const home = readFileSync(`${appDirectory}routes/app._index.jsx`, "utf8");
+    const payload = home.slice(home.indexOf("offers: offers.slice("), home.indexOf("moreOffers:"));
+
+    expect(payload).toContain("targetCount:");
+    expect(payload).toContain("itemCount:");
+    expect(payload).not.toMatch(/^\s*targets,/m);
+    expect(payload).not.toMatch(/^\s*items,/m);
   });
 
   test("the override editor is reachable at /app/recommendations/:productId", () => {

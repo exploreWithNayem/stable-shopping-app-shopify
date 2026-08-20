@@ -5,8 +5,7 @@
  * six files to keep in step with the admin's light and dark themes. The page
  * furniture is drawn in `currentColor` at low opacity and the block being placed
  * at high opacity, so each diagram inherits the admin's text colour and needs no
- * theme handling. The one exception is the Checkout nudge card, whose whole
- * subject is a red warning — that keeps a literal red.
+ * theme handling, and there are no literal colours anywhere in this file.
  *
  * Purely decorative: the card's heading and description carry the meaning, so
  * these are hidden from assistive tech rather than given labels that repeat it.
@@ -141,44 +140,6 @@ const DIAGRAMS = {
     </Frame>
   ),
 
-  /* Checkout nudge — a cart line with a red "you skipped this" warning. */
-  checkout_nudge: (
-    <Frame>
-      <rect x={20} y={36} width={44} height={44} rx="8" fill="#F0868E" opacity="0.85" />
-      <circle cx="66" cy="34" r="11" fill="currentColor" opacity="0.9" />
-      <text
-        x="66"
-        y="38"
-        textAnchor="middle"
-        fill="#fff"
-        style={{ font: '700 12px system-ui, sans-serif' }}
-      >
-        2
-      </text>
-      <Muted x={80} y={46} w={104} h={8} />
-      <Muted x={80} y={62} w={64} h={8} />
-      <Muted x={210} y={54} w={50} h={8} />
-      <rect x={20} y={104} width={240} height={30} rx="6" fill="#F0868E" opacity="0.22" />
-      <circle cx="40" cy="119" r="7" fill="#C7383F" opacity="0.75" />
-      <text
-        x="40"
-        y="123"
-        textAnchor="middle"
-        fill="#fff"
-        style={{ font: '700 9px system-ui, sans-serif' }}
-      >
-        !
-      </text>
-      <text
-        x="56"
-        y="123"
-        fill="#8E2A30"
-        style={{ font: '500 11px system-ui, sans-serif' }}
-      >
-        You didn&rsquo;t pick add-on in cart
-      </text>
-    </Frame>
-  ),
 };
 
 export default function PlacementThumb({ diagram }) {

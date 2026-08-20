@@ -4,10 +4,12 @@ import { authenticate } from '../shopify.server';
 import { ensureShop } from '../models/shop.server';
 import { getDashboardMetrics, rollupRange } from '../models/analytics.server';
 import { countOverriddenProducts, listUnsyncedOverrides } from '../models/override.server';
+import { listOffers } from '../models/offer.server';
 import { analyticsRetentionDays, rawEventRetentionDays } from '../lib/entitlements';
 import { addDays, startOfUtcDay } from '../lib/dates';
 import { formatNumber, formatPercent, formatShortDate } from '../lib/format';
 import QuotaBanner from '../components/QuotaBanner';
+import EmptyState from '../components/EmptyState';
 import StatCard, { StatCardGrid } from '../components/StatCard';
 import MeterBar from '../components/MeterBar';
 import Card from '../components/Card';
@@ -30,6 +32,14 @@ const HOME_DAYS = 30;
  */
 const LAZY_ROLLUP_DAYS = 3;
 
+/**
+ * Offers listed on Home before it points at the full list.
+ *
+ * Home is a summary: enough rows to recognise the offer you just saved and get
+ * back into it, not a management screen.
+ */
+const OFFERS_SHOWN = 5;
+
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
   const shop = await ensureShop(session.shop);
@@ -45,10 +55,11 @@ export const loader = async ({ request }) => {
     maxAgeDays: rawEventRetentionDays(shop.plan),
   });
 
-  const [metrics, overriddenProducts, unsynced] = await Promise.all([
+  const [metrics, overriddenProducts, unsynced, offers] = await Promise.all([
     getDashboardMetrics(shop.id, { days }),
     countOverriddenProducts(shop.id),
     listUnsyncedOverrides(shop.id),
+    listOffers(shop.id, { take: OFFERS_SHOWN + 1 }),
   ]);
 
   // The most recent day that actually served tells the merchant whether the
@@ -63,11 +74,28 @@ export const loader = async ({ request }) => {
     lastServedDay,
     unsyncedCount: unsynced.length,
     overriddenProducts,
+    /*
+     * Only the fields the list draws. The stored rows carry the whole targets and
+     * items arrays, and sending a dozen of those through a loader to render two
+     * counts is payload nobody reads — Json columns are the easy thing to leak
+     * into a page.
+     */
+    offers: offers.slice(0, OFFERS_SHOWN).map((offer) => ({
+      id: offer.id,
+      name: offer.name,
+      status: offer.status,
+      placement: offer.placement,
+      targetCount: (offer.targets ?? []).length,
+      itemCount: (offer.items ?? []).length,
+    })),
+    // One row was over-fetched to answer this without a second count query.
+    moreOffers: Math.max(0, offers.length - OFFERS_SHOWN),
   };
 };
 
 export default function Index() {
-  const { days, metrics, lastServedDay, unsyncedCount, overriddenProducts } = useLoaderData();
+  const { days, metrics, lastServedDay, unsyncedCount, overriddenProducts, offers, moreOffers } =
+    useLoaderData();
   const quota = useQuotaStatus();
 
   const { totals, deltas } = metrics;
@@ -126,6 +154,75 @@ export default function Index() {
             caption={`${formatPercent(totals.addToCartRate)} of clicks`}
           />
         </StatCardGrid>
+      </s-section>
+
+      {/*
+        Offers, the thing this app is now organised around. Home lists a few so a
+        merchant can recognise what they just saved and get back into it; it is
+        deliberately not a management screen.
+      */}
+      <s-section heading="Offers">
+        {offers.length === 0 ? (
+          <EmptyState
+            heading="No offers yet"
+            description="An offer is a set of products to recommend, plus the product pages it appears on."
+            action={{ label: 'Create offer', href: '/app/offers/new' }}
+          />
+        ) : (
+          <s-stack direction="block" gap="base">
+            <s-table variant="auto">
+              <s-table-header-row>
+                <s-table-header listSlot="primary">Offer</s-table-header>
+                <s-table-header listSlot="kicker">Status</s-table-header>
+                <s-table-header format="numeric">Shows on</s-table-header>
+                <s-table-header format="numeric">Recommends</s-table-header>
+                <s-table-header>Actions</s-table-header>
+              </s-table-header-row>
+
+              <s-table-body>
+                {offers.map((offer) => (
+                  <s-table-row key={offer.id}>
+                    <s-table-cell>
+                      <s-link href={`/app/offers/new?type=${offer.placement}&id=${offer.id}`}>
+                        {offer.name || 'Untitled offer'}
+                      </s-link>
+                    </s-table-cell>
+
+                    <s-table-cell>
+                      <s-badge tone={offer.status === 'published' ? 'success' : 'neutral'}>
+                        {offer.status === 'published' ? 'Published' : 'Draft'}
+                      </s-badge>
+                    </s-table-cell>
+
+                    <s-table-cell>
+                      {`${formatNumber(offer.targetCount)} product${
+                        offer.targetCount === 1 ? '' : 's'
+                      }`}
+                    </s-table-cell>
+
+                    <s-table-cell>
+                      {`${formatNumber(offer.itemCount)} product${
+                        offer.itemCount === 1 ? '' : 's'
+                      }`}
+                    </s-table-cell>
+
+                    <s-table-cell>
+                      <s-link href={`/app/offers/new?type=${offer.placement}&id=${offer.id}`}>
+                        Edit
+                      </s-link>
+                    </s-table-cell>
+                  </s-table-row>
+                ))}
+              </s-table-body>
+            </s-table>
+
+            {moreOffers > 0 && (
+              <s-paragraph color="subdued">
+                {`${formatNumber(moreOffers)} more offer${moreOffers === 1 ? '' : 's'} not shown.`}
+              </s-paragraph>
+            )}
+          </s-stack>
+        )}
       </s-section>
 
       <s-section>

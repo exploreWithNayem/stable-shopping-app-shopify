@@ -42,6 +42,8 @@ function placements() {
       title: entry.match(/title: '([^']+)'/)?.[1],
       button: entry.match(/button: '([^']+)'/)?.[1],
       badge: entry.match(/badge: '([^']+)'/)?.[1] ?? null,
+      type: entry.match(/type: '([^']+)'/)?.[1],
+      diagram: entry.match(/diagram: '([^']+)'/)?.[1],
       available: /available: true/.test(entry),
       href: entry.match(/href: '([^']+)'/)?.[1] ?? null,
       waiting: entry.match(/waiting:\s*'([^']+)'/)?.[1] ?? null,
@@ -51,21 +53,22 @@ function placements() {
 describe("the placement picker", () => {
   const cards = placements();
 
-  test("parses six cards", () => {
+  test("parses five cards", () => {
     // Guards the parser above as much as the page: a silent 0 would make every
     // assertion below vacuously pass.
-    expect(cards).toHaveLength(6);
+    expect(cards).toHaveLength(5);
     expect(cards.every((card) => card.id && card.title && card.button)).toBe(true);
   });
 
-  test("carries the six specified placements, in order", () => {
+  test("carries the five specified placements, in order", () => {
+    // Checkout nudge was removed on request; it was the only card with an
+    // overflow control, so that branch went with it.
     expect(cards.map((card) => card.title)).toEqual([
       "Product page",
       "Cart page",
       "Pop-up",
       "Post purchase page",
       "Suggest new placement type",
-      "Checkout nudge",
     ]);
   });
 
@@ -76,7 +79,6 @@ describe("the placement picker", () => {
       "Select this placement type",
       "Select this placement type",
       "Suggest a new placement type",
-      "Get on Shopify App Store",
     ]);
   });
 
@@ -87,10 +89,20 @@ describe("the placement picker", () => {
     ]);
   });
 
-  test("Product page is the one built placement, and it links to the product list", () => {
+  test("Product page is the one built placement, and it opens the offer editor", () => {
     const available = cards.filter((card) => card.available);
     expect(available.map((card) => card.title)).toEqual(["Product page"]);
-    expect(available[0].href).toBe("/app/recommendations");
+    // Same route: `?type=` selects the editor over the picker.
+    expect(available[0].href).toBe("/app/offers/new?type=PRODUCT_PAGE");
+    expect(available[0].type).toBe("PRODUCT_PAGE");
+  });
+
+  test("every card declares a unique placement type", () => {
+    // The type is what the URL carries and what the loader validates against.
+    for (const card of cards) {
+      expect(card.type, `${card.title} has no type`).toMatch(/^[A-Z_]+$/);
+    }
+    expect(new Set(cards.map((card) => card.type)).size).toBe(cards.length);
   });
 
   /*
@@ -139,10 +151,20 @@ describe("the placement picker", () => {
     expect(offenders).toEqual([]);
   });
 
+  test("the grid is not wrapped in a section", () => {
+    // A section draws its own white rounded surface, which put a second card
+    // behind the cards. Each tile already has its own background from `Card`.
+    expect(source).not.toContain("<s-section>");
+    expect(source).toContain("<s-query-container>");
+  });
+
   test("the placement grid asks for three columns", () => {
-    const value = source.match(/gridTemplateColumns="([^"]+)"/)?.[1];
+    // Scoped to the picker: the editor on the same route has its own two-track
+    // grid, and an unscoped match found that one first.
+    const picker = source.slice(source.indexOf("function PlacementPicker"));
+    const value = picker.match(/gridTemplateColumns="([^"]+)"/)?.[1];
+
     expect(value).toBeTruthy();
-    // Three tracks above the breakpoint, one below.
     expect(value).toMatch(/@container \(inline-size > \d+px\) 1fr 1fr 1fr, 1fr/);
   });
 
@@ -191,7 +213,18 @@ describe("the placement picker", () => {
     expect(source).not.toMatch(/<s-heading style=/);
     expect(source).toContain('heading="Choose Offer Placement"');
     expect(source).toContain('icon="arrow-left"');
-    expect(source).toContain('href="/app"');
+    // The heading row is shared by both screens, so its back target is a prop.
+    expect(source).toContain('back="/app"');
+  });
+
+  test("no diagram hardcodes a colour", () => {
+    /*
+     * Everything is drawn in `currentColor` so one file covers the admin's light
+     * and dark themes. The Checkout nudge diagram was the sole exception, with a
+     * literal red for its warning pill, and it went with that card.
+     */
+    const thumb = readFileSync(join(root, "app", "components", "PlacementThumb.jsx"), "utf8");
+    expect(thumb).not.toMatch(/#[0-9a-fA-F]{3,6}/);
   });
 
   test("the diagram named by every card exists", () => {
@@ -203,10 +236,153 @@ describe("the placement picker", () => {
 
     expect(known.length).toBeGreaterThan(0);
     for (const card of cards) {
-      const diagram = source.match(
-        new RegExp(`id: '${card.id}',\\n\\s*diagram: '([a-z_]+)'`),
-      )?.[1];
-      expect(known, `${card.title} names a diagram that does not exist`).toContain(diagram);
+      expect(known, `${card.title} names a diagram that does not exist`).toContain(card.diagram);
     }
+  });
+});
+
+/*
+ * The offer builder, behind `?type=`. Everything on it is local state: the app
+ * has no `Offer` model, and the fields a merchant would expect to save — title,
+ * badge, button text — currently come from the theme block's own settings. So the
+ * risk here is a screen that looks like it saves; Publish has to say what it is
+ * waiting for instead.
+ */
+describe("the offer editor", () => {
+  test("lives on the same route, selected by ?type=", () => {
+    expect(source).toContain("params.get('type')");
+    // An unknown or unbuilt type falls back to the picker rather than erroring —
+    // the parameter comes from a URL a merchant can edit or bookmark.
+    expect(source).toContain("BUILDABLE.includes(requested) ? requested : null");
+  });
+
+  test("an existing offer opens by id, scoped to the shop", () => {
+    // An id from a URL is not proof of ownership, so the lookup carries shop.id.
+    expect(source).toContain("params.get('id')");
+    expect(source).toContain("getOffer(shop.id, id)");
+  });
+
+  test("only a built placement can open it", () => {
+    expect(source).toMatch(/const BUILDABLE = PLACEMENTS\.filter\(/);
+  });
+
+  test("carries the four offer types", () => {
+    const block = source.slice(source.indexOf("const OFFER_TYPES"));
+    for (const label of [
+      "Cross-sell",
+      "Volume discount",
+      "Frequently bought together",
+      "Product add-on",
+    ]) {
+      expect(block).toContain(label);
+    }
+  });
+
+  test("carries the four tabs, with Content first", () => {
+    const start = source.indexOf("const TABS = [");
+    const block = source.slice(start, source.indexOf("];", start));
+    expect([...block.matchAll(/label: '([^']+)'/g)].map((m) => m[1])).toEqual([
+      "Content",
+      "Offer",
+      "Design",
+      "Placement",
+    ]);
+  });
+
+  /*
+   * Publish has storefront side effects: it writes an Override per target product
+   * and syncs each metafield. The rules that must not slip are that a draft can
+   * be saved incomplete, that publishing cannot exceed the plan's product
+   * allowance, and that taking an offer down is never gated — that is how a
+   * merchant at the limit frees slots.
+   */
+  test("the route has an action handling save, publish and unpublish", () => {
+    expect(source).toMatch(/export const action/);
+    for (const intent of ["'save'", "'publish'", "'unpublish'"]) {
+      expect(source, `no ${intent} branch`).toContain(intent);
+    }
+  });
+
+  test("a draft is validated more loosely than a publish", () => {
+    // A merchant who has picked products but not written a title should be able
+    // to save and come back, so only publishing demands a complete offer.
+    expect(source).toContain(
+      "intent === 'publish' ? validateForPublish(input) : validateOffer(input)",
+    );
+  });
+
+  test("publishing enforces the product allowance server-side", () => {
+    expect(source).toContain("publishedTargetIds(shop.id");
+    expect(source).toContain("newlyOccupiedTargets(saved, occupied)");
+    expect(source).toContain("limitReached: true");
+  });
+
+  test("unpublishing is not gated", () => {
+    // It runs before any allowance check and needs only the offer id.
+    const unpublish = source.slice(
+      source.indexOf("if (intent === 'unpublish')"),
+      source.indexOf("if (intent !== 'save'"),
+    );
+    expect(unpublish).toContain("unpublishOffer(");
+    expect(unpublish).not.toContain("canAddOverride");
+    expect(unpublish).not.toContain("overrideLimit(");
+  });
+
+  /*
+   * The admin's contextual save bar renders in Shopify's own top bar, so unsaved
+   * changes belong there rather than in a banner of our own. Two things make it
+   * work: a baseline to compare against, and resetting that baseline from the
+   * persisted row — not from the values we happened to send.
+   */
+  test("unsaved changes raise the contextual save bar", () => {
+    expect(source).toContain('<SaveBar id="offer-save-bar" open={dirty}>');
+    expect(source).toContain("const dirty = !sameForm(current, baseline)");
+    // App Bridge looks for variant="primary" to find the confirming button, and
+    // these are plain <button>s, not Polaris ones.
+    expect(source).toMatch(/<button variant="primary"[^>]*onClick=\{\(\) => submit\('save'\)\}/);
+    expect(source).toContain("restore(baseline)");
+  });
+
+  test("the save bar clears from the persisted row", () => {
+    // Resetting it from the submitted values would leave the bar showing after a
+    // save that normalised anything — a trimmed name, a deduped product list.
+    expect(source).toContain("setBaseline(formValues(result.offer))");
+  });
+
+  test("product lists are compared by id, not deep equality", () => {
+    /*
+     * Stored rows carry a `position` and a `title` the picker does not always
+     * return, so a structural compare reported changes the merchant had not made
+     * — and a save bar that will not go away is worse than none.
+     */
+    const compare = source.slice(source.indexOf("function sameForm"));
+    expect(compare).toContain("ids(a.targets) === ids(b.targets)");
+    expect(compare).toContain("ids(a.items) === ids(b.items)");
+  });
+
+  test("saving twice updates one row rather than leaving drafts behind", () => {
+    // The row only exists after the first save, so the returned id has to be
+    // held — without it every press of Save created another draft.
+    expect(source).toContain("setId(result.offer.id)");
+  });
+
+  test("the Offer tab picks both product lists", () => {
+    expect(source).toContain("Show this offer on");
+    expect(source).toContain("Recommend these products");
+    // A product must never be a recommendation for itself.
+    expect(source).toContain("exclude={targets.map((target) => target.id)}");
+  });
+
+  test("the preview is wired to the copy fields", () => {
+    // The point of a preview is judging the copy as it is typed, so it has to
+    // read state rather than repeat the defaults as literals.
+    const preview = source.slice(source.indexOf("preview */"));
+    expect(preview).toContain("{title ||");
+    expect(preview).toContain("{buttonText ||");
+    expect(preview).toContain("{badge &&");
+  });
+
+  test("says the offer is unsaved", () => {
+    expect(source).toContain("Not published");
   });
 });

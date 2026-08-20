@@ -23,8 +23,10 @@
 
 | Route | Purpose |
 | --- | --- |
-| `/app` | Home — headline metrics, storefront status, quota meter, and the **Create offer** primary action |
-| `/app/offers/new` | "Choose placement type" — the step after **Create offer**. Explains each surface an offer can appear on, then hands off. Unbuilt placements are shown, badged and disabled |
+| `/app` | Home — headline metrics, **offer list**, storefront status, quota meter, and the **Create offer** action |
+| `/app/offers/new` | **Choose Offer Placement** — the step after **Create offer**. Five placement cards; only Product page is built |
+| `/app/offers/new?type=PRODUCT_PAGE` | **New offer** builder on the same route: offer type, copy fields, product pickers, live preview. Saves drafts and publishes to the storefront (§4 `Offer`) |
+| `/app/offers/new?type=PRODUCT_PAGE&id=…` | The same builder, editing an existing offer |
 | `/app/recommendations` | List of all products + their recommendation source, filters + search, override editor. Each row shows its complementary products as thumbnails and picks them inline (§5, Phase 5 deviations) |
 | `/app/recommendations/$productId` | Override editor for a single product |
 | `/app/analytics` | Deeper analytics (trend charts, per-product breakdown, funnel) |
@@ -1107,28 +1109,92 @@ marking done.
 
 9. **`/app/offers/new` — "Choose placement type"** (2026-08-20): `app.offers.new.jsx` plus
    `components/PlacementThumb.jsx` for the wireframe diagrams (inline SVG in `currentColor`, so one
-   file covers both admin themes and there are no image assets to keep in step — the Checkout nudge
-   card is the exception and keeps a literal red, since a red warning is its whole subject).
+   file covers both admin themes and there are no image assets to keep in step; a test asserts no
+   diagram hardcodes a colour).
 
-   **Six cards, fixed by design**: Product page · Cart page *(Essential plan)* · Pop-up ·
-   Post purchase page · Suggest new placement type · Checkout nudge.
+   **Five cards, fixed by design**: Product page · Cart page *(Essential plan)* · Pop-up ·
+   Post purchase page · Suggest new placement type. A sixth, **Checkout nudge**, was built and
+   removed on request — it was the only card with an overflow (`···`) control and the only diagram
+   using a literal colour, so both went with it.
 
-   > ⚠️ **Only Product page is built.** The other five are surfaces this app does not have — Cart page,
-   > Pop-up and Post purchase are unbuilt, Checkout nudge waits on Phase 12, Suggest has no inbox to
-   > post to — and the "Essential plan" badge names a tier that does not exist here (the plans are
+   > ⚠️ **Only Product page is built.** The other four are surfaces this app does not have — Cart page,
+   > Pop-up and Post purchase are unbuilt, and Suggest has no inbox to post to — and the
+   > "Essential plan" badge names a tier that does not exist here (the plans are
    > Free / Standard / Enterprise, §5). A first pass adapted the cards to what the app really offers
-   > and was reverted: the six cards and their copy are the specified design, so they stay.
+   > and was reverted: the cards and their copy are the specified design, so they stay.
    >
    > **What they must not do is navigate.** Pressing an unbuilt card names the placement and what it
    > is waiting on, in a notice above the grid, and offers the product page instead. A route whose
    > only job is to say "not implemented" is worse than a button that says so where it stands.
-   > `tests/placement-picker.test.js` pins the six titles, their button labels, the single plan badge,
+   > `tests/placement-picker.test.js` pins the five titles, their button labels, the single plan badge,
    > that Product page is the only card with an `href`, and that every unbuilt card carries an
    > explanation. When a placement ships, flip `available: true` and give it an `href` — and
    > `app/routes.test.js` starts checking that href resolves.
 
    Only the plan's product allowance can stop the flow before it starts, so the loader answers it up
    front rather than after a placement has been chosen.
+
+   **`?type=` selects the second screen on the same route.** `/app/offers/new` is the picker;
+   `/app/offers/new?type=PRODUCT_PAGE` is the **New offer** builder — offer type radios, the internal
+   name field, Title / Badge / Button text, a countdown toggle, four tabs (Content · Offer · Design ·
+   Placement) and a live preview that follows the copy fields as they are typed. A query parameter
+   rather than a path segment because the placement is a *choice within* creating an offer, not a
+   different resource: the back arrow and the eventual save belong to one flow. An unknown or unbuilt
+   `type` falls back to the picker rather than erroring — the value comes from a URL a merchant can
+   edit or bookmark, and only types in `BUILDABLE` open the editor.
+
+   **The builder saves and publishes** (2026-08-20). `Offer` in `prisma/schema.prisma`,
+   `app/models/offer.server.js` for persistence and `app/lib/offers.server.js` for the side effects.
+
+   **An Offer sits above Override, it does not replace it.** Publishing projects the offer onto the
+   existing pipeline — one `Override` row per target product, then a metafield sync each — so the
+   whole Phase 6/8 storefront path is reused unchanged and **the theme block has no idea offers
+   exist**; it just finds a list in `$app:reco_overrides`. Unpublishing removes exactly what it wrote,
+   metafield included, because a stale metafield keeps the old list rendering (§3.1).
+
+   Rules worth not breaking, each pinned by a test:
+
+   - **A draft is validated more loosely than a publish.** `validateOffer` wants a name, placement and
+     type; `validateForPublish` also wants targets, items and a title. A merchant who has picked
+     products but not written a title must not lose the products.
+   - **A plain save never changes status.** Publishing has storefront side effects, so it goes through
+     `publishOffer()` and can never happen by accident.
+   - **One failing product does not take the publish down.** A metafield write fails per product (a
+     deleted product, a throttled shop); each failure is reported, `syncedAt` is left null for the
+     Settings repair action, and the offer is still `published` if *any* product went live — calling
+     it a draft would say nothing is showing when something is.
+   - **The product allowance is enforced server-side**, counting only targets no published offer
+     already occupies — the §5 per-product rule. Unpublishing is never gated: it is how a merchant at
+     the limit frees slots.
+   - **An id in a form field is not proof of ownership.** Every lookup is scoped to `shop.id`.
+   - **`listOffers` orders by `updatedAt` *and* `id`.** `updatedAt` alone is not a total order — SQLite
+     stores milliseconds, same-tick saves compared equal, and the list came back in planner order.
+     Found by an intermittently failing test.
+
+   **Unsaved changes raise the admin's contextual save bar** (`SaveBar` from
+   `@shopify/app-bridge-react`, 2026-08-20). It renders in Shopify's own top bar rather than in the
+   page, which is where a merchant already looks for Save/Discard — so this is not a banner of our
+   own. Its children are plain `<button>` elements, not Polaris ones: App Bridge looks for
+   `variant="primary"` to find the confirming button, which is why `.eslintrc.cjs` allows `variant`
+   through `react/no-unknown-property`.
+
+   Two details it depends on. The baseline is reset from **the row the action returns**, not from the
+   values that were submitted — otherwise a save that normalised anything (a trimmed name, a deduped
+   list) would leave the bar showing. And product lists are compared **by id in order**, not
+   structurally: stored rows carry a `position` and a `title` the picker does not always return, so a
+   deep compare reported changes the merchant never made, and a save bar that will not go away is
+   worse than none. Discard restores the baseline rather than reloading, so the current tab and any
+   result banner survive.
+
+   Tabs: **Content** (copy) and **Offer** (both product lists) are functional. **Design** explains
+   that layout and colours are theme block settings rather than offer settings, which is true and not
+   a placeholder. **Placement** shows the chosen type and where to add the block.
+
+   > ⚠️ **Title, Badge and Button text are saved but the storefront still ignores them.** The theme
+   > block renders its own `heading` setting and its own add-to-cart label (§7), and the metafield
+   > carries only `items`. Making the offer's copy reach the storefront needs a `v: 2` metafield shape
+   > plus `reco-panel.liquid` and `reco.js` reading it — the products a published offer recommends
+   > *do* reach the storefront today; its wording does not.
 
    **The heading is repeated in the content column**, with a back arrow beside it. `s-page heading`
    alone is hoisted into the admin's header strip — the same place `primary-action` goes (see the
@@ -1152,6 +1218,13 @@ marking done.
    > `"@container (inline-size > 720px) 1fr 1fr 1fr, 1fr"`. `tests/placement-picker.test.js` now fails
    > if any route's grid carries more than one `@container` clause.
 8. Empty states for every widget when there is no data yet.
+9. **Offer list** (2026-08-20), directly under the metrics: name, Published/Draft badge, how many
+   product pages it shows on, how many products it recommends, and a link back into the editor at
+   `?type=<placement>&id=<id>`. Capped at 5 rows with an "N more" line — Home is a summary, not a
+   management screen. The loader projects only the counts, never the `targets`/`items` Json columns
+   themselves; `app/routes.test.js` pins both that and the link shape, since a row missing `?type=`
+   bounces back to the placement picker instead of opening the offer. `npm run seed` now creates one
+   published and one draft offer so both states render locally.
 
 ### Phase 11 — Pricing & billing
 1. Add the `billing` config to `app/shopify.server.js` with the three plan definitions.

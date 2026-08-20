@@ -56,10 +56,44 @@ model Shop {
   uninstalledAt     DateTime?
   settings          Json? // global widget defaults, see Phase 13
 
+  offers    Offer[]
   overrides Override[]
   usage     UsagePeriod[]
   events    RecommendationEvent[]
   daily     AnalyticsDaily[]
+}
+
+/// A merchant-authored offer: which products it shows on, what it recommends,
+/// and how that reads on the storefront.
+///
+/// Sits *above* Override rather than replacing it. Publishing an offer writes one
+/// Override per target product and syncs each metafield, so the whole Phase 6/8
+/// storefront path is reused unchanged — the theme block does not know offers
+/// exist. Unpublishing removes those rows again.
+///
+/// `targets` and `items` are Json rather than relations for the same reason
+/// Override.items is: they are short, ordered, merchant-curated lists that are
+/// always read whole, and a join table would buy nothing.
+model Offer {
+  id          String    @id @default(cuid())
+  shopId      String
+  shop        Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  name        String // internal reference, shown only in the admin
+  placement   String    @default("PRODUCT_PAGE") // PRODUCT_PAGE (the only built one)
+  offerType   String    @default("cross_sell") // cross_sell | volume_discount | frequently_bought_together | product_add_on
+  title       String    @default("")
+  badge       String    @default("")
+  buttonText  String    @default("Add")
+  countdown   Boolean   @default(false)
+  targets     Json // [{ id, handle, title }] — the product pages it appears on
+  items       Json // [{ id, handle, title }] — what it recommends
+  status      String    @default("draft") // draft | published
+  publishedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([shopId, status])
+  @@index([shopId, updatedAt])
 }
 
 /// A manual recommendation list that replaces the Shopify-generated one.
