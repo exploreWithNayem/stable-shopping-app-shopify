@@ -144,6 +144,32 @@ export async function getOverridesForProducts(shopId, productIds) {
   return new Map(rows.map((row) => [row.productId, row]));
 }
 
+/**
+ * Copy projected from an Offer, or null when there is none.
+ *
+ * Stored on the row rather than looked up at sync time because this row is what
+ * gets written to the metafield — the Settings re-sync reads rows, not offers,
+ * so anything the metafield needs has to be here or a repair would drop it.
+ */
+export function normalizePresentation(presentation) {
+  if (!presentation) return null;
+
+  const title = String(presentation.title ?? "").trim();
+  const badge = String(presentation.badge ?? "").trim();
+  const buttonText = String(presentation.buttonText ?? "").trim();
+  const countdown = Boolean(presentation.countdown);
+
+  const selector = String(presentation.anchor?.selector ?? "").trim();
+  const position = presentation.anchor?.position === "before" ? "before" : "after";
+  // Only stored when it says something: a bare default is reco.js's job.
+  const anchor = selector ? { selector, position } : null;
+
+  // Nothing worth storing: let the theme block's own settings speak.
+  if (!title && !badge && !buttonText && !countdown && !anchor) return null;
+
+  return { title, badge, buttonText, countdown, ...(anchor ? { anchor } : {}) };
+}
+
 export function upsertOverride({
   shopId,
   productId,
@@ -152,8 +178,10 @@ export function upsertOverride({
   placement = "pdp",
   items,
   enabled = true,
+  presentation = null,
 }) {
   const normalized = normalizeItems(items);
+  const copy = normalizePresentation(presentation);
   const key = { shopId, productId: String(productId), placement };
 
   return prisma.override.upsert({
@@ -165,6 +193,7 @@ export function upsertOverride({
       productHandle,
       items: normalized,
       enabled,
+      presentation: copy,
       syncedAt: null,
     },
     create: {
@@ -173,6 +202,7 @@ export function upsertOverride({
       productHandle,
       items: normalized,
       enabled,
+      presentation: copy,
     },
   });
 }

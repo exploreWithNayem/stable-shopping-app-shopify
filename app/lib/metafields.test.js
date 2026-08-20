@@ -86,11 +86,61 @@ describe("buildMetafieldValue", () => {
       ),
     );
 
+    // No copy without an offer, so this is byte-identical to v1 apart from the
+    // version — the theme block's own settings still supply the wording.
     expect(value).toEqual({
-      v: 1,
+      v: 2,
       updatedAt: "2026-08-12T00:00:00.000Z",
       items: [{ id: "1", handle: "one" }],
     });
+  });
+
+  test("carries an offer's wording when there is some", () => {
+    const value = JSON.parse(
+      buildMetafieldValue([{ id: 1, handle: "one" }], {
+        now: new Date("2026-08-12T00:00:00Z"),
+        presentation: {
+          title: "Complete the set",
+          badge: "Limited offer",
+          buttonText: "Add to cart",
+          countdown: true,
+        },
+      }),
+    );
+
+    expect(value.copy).toEqual({
+      title: "Complete the set",
+      badge: "Limited offer",
+      buttonText: "Add to cart",
+      countdown: true,
+    });
+  });
+
+  test("omits copy entirely rather than writing an empty object", () => {
+    // Liquid checks for nil to decide whether to fall back to block settings, so
+    // an empty object here would read as "the offer wants a blank heading".
+    const value = JSON.parse(buildMetafieldValue([{ id: 1 }]));
+    expect("copy" in value).toBe(false);
+  });
+
+  test("the sync reads copy off the row, not the caller", async () => {
+    /*
+     * The Settings re-sync has no offer in hand — it iterates Override rows. If
+     * the copy were passed in by the publish path only, a repair would rewrite
+     * every metafield without it and silently blank the merchant's wording.
+     */
+    const admin = stubAdmin();
+
+    await syncOverrideMetafield(admin, {
+      productId: "1",
+      placement: "pdp",
+      enabled: true,
+      items: [{ id: "2", handle: "two" }],
+      presentation: { title: "From the row", badge: "", buttonText: "Add", countdown: false },
+    });
+
+    const sent = JSON.parse(admin.calls[0].variables.metafields[0].value);
+    expect(sent.copy.title).toBe("From the row");
   });
 
   test("keeps ids as strings and tolerates a missing handle", () => {

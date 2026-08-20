@@ -29,13 +29,36 @@
 
 {%- liquid
   comment
+    An offer's wording wins over the block's own settings.
+
+    `copy` arrives in the v2 metafield (app/lib/metafields.server.js) when the
+    list came from a published offer, and is absent otherwise — including in every
+    v1 metafield written before offers existed, which is why this is a plain nil
+    check and needs no version test or backfill. A merchant who curated the list
+    on the recommendations page still gets the block settings they set here.
+
+    Only `custom` can carry copy: the other sources never read the metafield.
+  endcomment
+  assign copy = nil
+  if mode == 'custom'
+    assign copy = product.metafields["$app"].reco_overrides.value.copy
+  endif
+
+  comment
     Not `| default: 'key' | t` — that pipes the merchant's own heading through
     the translation filter and renders "translation missing".
   endcomment
   assign heading = block.settings.heading
+  if copy.title != blank
+    assign heading = copy.title
+  endif
+
+  assign badge = copy.badge
 
   assign add_label = block.settings.add_to_cart_label
-  if add_label == blank
+  if copy.buttonText != blank
+    assign add_label = copy.buttonText
+  elsif add_label == blank
     assign add_label = 'recommendations.add_to_cart' | t
   endif
 
@@ -166,10 +189,21 @@
     "
     {{ block.shopify_attributes }}
   >
-    {%- if heading != blank -%}
-      <h2 class="reco__heading reco__heading--{{ block.settings.heading_size }}">
-        {{ heading }}
-      </h2>
+    {%- if heading != blank or badge != blank -%}
+      <div class="reco__header">
+        {%- if heading != blank -%}
+          <h2 class="reco__heading reco__heading--{{ block.settings.heading_size }}">
+            {{ heading }}
+          </h2>
+        {%- endif -%}
+        {%- comment -%}
+          The offer's badge. It has no block setting to fall back to — a badge is
+          something an offer says, not a property of where the block sits.
+        {%- endcomment -%}
+        {%- if badge != blank -%}
+          <span class="reco__badge">{{ badge }}</span>
+        {%- endif -%}
+      </div>
     {%- endif -%}
 
     <div class="reco__viewport">

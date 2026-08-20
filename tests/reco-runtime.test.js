@@ -461,6 +461,253 @@ describe("the complementary source", () => {
   });
 });
 
+/*
+ * The app embed path: no theme block on the page at all. The embed reads the
+ * product's own metafield in Liquid, inlines the offer, and reco.js builds the
+ * container and injects it next to the add-to-cart button.
+ *
+ * This is what makes the app work for a merchant who never opens the theme
+ * editor, so the cases that matter are: it finds an anchor, it does not fight a
+ * theme block that is already there, and a bad selector degrades rather than
+ * breaking.
+ */
+describe("app embed injection", () => {
+  const offerProduct = (id) => ({
+    id,
+    handle: `p${id}`,
+    title: `Product ${id}`,
+    url: `/products/p${id}`,
+    price: 3000,
+    compare_at_price: null,
+    available: true,
+    featured_image: `/img/${id}.jpg`,
+    variants: [{ id: id * 10, title: 'Default', available: true, price: 3000 }],
+  });
+
+  const offer = (overrides = {}) => ({
+    productId: '1001',
+    copy: { title: 'You may also like', badge: '', buttonText: 'Add', countdown: false },
+    render: null,
+    items: [offerProduct(2001), offerProduct(2002)],
+    ...overrides,
+  });
+
+  /** A product page with a Dawn-shaped buy form and no app block. */
+  const productPage = () => `
+    <div class="product__info-wrapper">
+      <h1>A product</h1>
+      <form action="/cart/add" method="post">
+        <div class="product-form__buttons">
+          <button type="submit" class="product-form__submit">Add to cart</button>
+        </div>
+      </form>
+    </div>`;
+
+  function bootEmbed(html, theOffer, config = { enabled: true }) {
+    document.body.innerHTML = html;
+    window.EasyReco = { config, offer: theOffer };
+    // eslint-disable-next-line no-new-func
+    new Function(SRC)();
+  }
+
+  test("injects the offer after the add-to-cart button", async () => {
+    bootEmbed(productPage(), offer());
+    await tick(1000);
+
+    const block = document.querySelector('[data-reco-embedded="true"]');
+    expect(block).toBeTruthy();
+
+    // Directly after the buttons container, so it lands under the buy area
+    // rather than at the end of the document.
+    const anchor = document.querySelector('.product-form__buttons');
+    expect(anchor.nextElementSibling).toBe(block);
+    expect(document.querySelectorAll('[data-reco-card]')).toHaveLength(2);
+  });
+
+  test("renders the offer's title, badge and button text", async () => {
+    bootEmbed(
+      productPage(),
+      offer({ copy: { title: 'Complete the set', badge: 'Limited offer', buttonText: 'Add to bag' } }),
+    );
+    await tick(1000);
+
+    expect(document.querySelector('.reco__heading').textContent).toBe('Complete the set');
+    expect(document.querySelector('.reco__badge').textContent).toBe('Limited offer');
+    expect(document.querySelector('[data-reco-add]').textContent).toBe('Add to bag');
+  });
+
+  test("merchant copy is escaped, not injected as markup", async () => {
+    // The title is merchant-authored and reaches the page through innerHTML.
+    bootEmbed(productPage(), offer({ copy: { title: '<img src=x onerror=1>', buttonText: 'Add' } }));
+    await tick(1000);
+
+    const heading = document.querySelector('.reco__heading');
+    expect(heading.querySelector('img')).toBeNull();
+    expect(heading.textContent).toContain('<img');
+  });
+
+  test("prices use the shop's format, from the embed config", async () => {
+    bootEmbed(productPage(), offer(), { enabled: true, moneyFormat: '€{{amount}}' });
+    await tick(1000);
+
+    expect(document.querySelector('[data-reco-price]').textContent).toBe('€30.00');
+  });
+
+  test("reports one serve, on the pdp placement", async () => {
+    bootEmbed(productPage(), offer());
+    await tick(1000);
+
+    const served = await typesOf('served');
+    expect(served).toHaveLength(1);
+    expect(served[0].placement).toBe('pdp');
+    expect(served[0].sourceProductId).toBe('1001');
+    // The list came from the merchant's own offer, not Shopify's.
+    expect(served[0].source).toBe('override');
+  });
+
+  test("add to cart from an injected card is attributed", async () => {
+    bootEmbed(productPage(), offer());
+    await tick(1000);
+
+    document.querySelector('[data-reco-add]').click();
+    await tick(1000);
+
+    expect(cartAdds).toHaveLength(1);
+    const [line] = cartAdds[0].items;
+    expect(line.properties._reco_src).toBe('1001');
+    expect(line.properties._reco_source).toBe('override');
+  });
+
+  /*
+   * A merchant who placed a theme block has said where they want it. Rendering
+   * both would show the same products twice and bill two serves for one page
+   * view (CLAUDE.md §3.3).
+   */
+  test("a theme block on the page wins — nothing is injected", async () => {
+    bootEmbed(
+      productPage() + panel({ attrs: customAttrs, cards: card(2001) }),
+      offer(),
+    );
+    await tick(1000);
+
+    expect(document.querySelector('[data-reco-embedded]')).toBeNull();
+    expect(await typesOf('served')).toHaveLength(1);
+  });
+
+  test("runs once, even if the theme reloads the section", async () => {
+    bootEmbed(productPage(), offer());
+    await tick(1000);
+    document.dispatchEvent(new window.Event('shopify:section:load'));
+    await tick(1000);
+
+    expect(document.querySelectorAll('[data-reco-embedded]')).toHaveLength(1);
+    expect(await typesOf('served')).toHaveLength(1);
+  });
+
+  test("a merchant's own selector is preferred", async () => {
+    document.body.innerHTML = '';
+    bootEmbed(
+      `<div id="my-spot"></div>${productPage()}`,
+      offer({ render: { selector: '#my-spot', position: 'after' } }),
+    );
+    await tick(1000);
+
+    expect(document.querySelector('#my-spot').nextElementSibling.getAttribute('data-reco-embedded')).toBe(
+      'true',
+    );
+  });
+
+  test("position before puts it above the anchor", async () => {
+    bootEmbed(
+      productPage(),
+      offer({ render: { selector: '.product-form__buttons', position: 'before' } }),
+    );
+    await tick(1000);
+
+    const anchor = document.querySelector('.product-form__buttons');
+    expect(anchor.previousElementSibling.getAttribute('data-reco-embedded')).toBe('true');
+  });
+
+  test("a selector that matches nothing falls back to the built-in chain", async () => {
+    // A theme update that renames a class should cost a slightly worse position,
+    // not the offer disappearing.
+    bootEmbed(productPage(), offer({ render: { selector: '.gone-in-the-redesign' } }));
+    await tick(1000);
+
+    expect(document.querySelector('[data-reco-embedded]')).toBeTruthy();
+  });
+
+  test("an invalid selector does not stop the chain", async () => {
+    bootEmbed(productPage(), offer({ render: { selector: ':::not-a-selector' } }));
+    await tick(1000);
+
+    expect(document.querySelector('[data-reco-embedded]')).toBeTruthy();
+  });
+
+  test("no anchor on the page means nothing renders and nothing is billed", async () => {
+    bootEmbed('<div>a page with no buy form</div>', offer());
+    await tick(1000);
+
+    expect(document.querySelector('[data-reco-embedded]')).toBeNull();
+    expect(await events()).toHaveLength(0);
+  });
+
+  test("an empty offer renders nothing", async () => {
+    bootEmbed(productPage(), offer({ items: [] }));
+    await tick(1000);
+
+    expect(document.querySelector('[data-reco-embedded]')).toBeNull();
+    expect(await events()).toHaveLength(0);
+  });
+
+  /*
+   * The bug this exists for. Blocks declare reco.js through their schema
+   * `javascript` key, so on a page with no block the script was never present and
+   * nothing injected the offer — indistinguishable from the embed being broken.
+   * The embed now loads it too, which means a page carrying a block gets two
+   * identical script tags and executes both.
+   */
+  test("loading the runtime twice injects once and bills once", async () => {
+    bootEmbed(productPage(), offer());
+    // The second script tag a page with a block produces.
+    // eslint-disable-next-line no-new-func
+    new Function(SRC)();
+    await tick(1000);
+
+    expect(document.querySelectorAll('[data-reco-embedded]')).toHaveLength(1);
+    expect(document.querySelectorAll('[data-reco-card]')).toHaveLength(2);
+    expect(await typesOf('served')).toHaveLength(1);
+  });
+
+  test("the second copy does not double the beacons", async () => {
+    bootEmbed(productPage(), offer());
+    // eslint-disable-next-line no-new-func
+    new Function(SRC)();
+    await tick(1000);
+
+    observers.forEach((observer) => observer.trigger());
+    await tick(1000);
+
+    // Two impressions for two cards, not four from two instrumented copies.
+    expect(await typesOf('impression')).toHaveLength(2);
+  });
+
+  test("a hidden anchor is skipped", async () => {
+    // Themes ship duplicate buy forms for drawers and quick-add; injecting into
+    // one puts the offer somewhere the shopper never sees.
+    document.body.innerHTML = '';
+    bootEmbed(
+      `<div class="product-form__buttons" style="display:none"></div>${productPage()}`,
+      offer(),
+    );
+    await tick(1000);
+
+    const block = document.querySelector('[data-reco-embedded]');
+    expect(block).toBeTruthy();
+    expect(block.previousElementSibling?.style.display).not.toBe('none');
+  });
+});
+
 describe("add to cart", () => {
   test("tags the line so the order can be attributed", async () => {
     boot(panel({ attrs: customAttrs, cards: card(9001, 91) }), { enabled: true });

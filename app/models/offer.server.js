@@ -25,6 +25,8 @@ export const OFFER_TYPES = [
 
 export const STATUSES = ["draft", "published"];
 
+export const ANCHOR_POSITIONS = ["before", "after"];
+
 /**
  * Same ceiling as Override.MAX_OVERRIDE_ITEMS, and for the same reason: Liquid
  * resolves the published list with all_products[handle], which is capped at 20
@@ -115,6 +117,12 @@ const shape = (input) => ({
   badge: String(input.badge ?? "").trim(),
   buttonText: String(input.buttonText ?? "").trim() || "Add",
   countdown: Boolean(input.countdown),
+  // Empty means "use reco.js's fallback chain", which is the right default —
+  // storing a blank string would look like a selector that matches nothing.
+  anchorSelector: String(input.anchorSelector ?? "").trim() || null,
+  anchorPosition: ANCHOR_POSITIONS.includes(input.anchorPosition)
+    ? input.anchorPosition
+    : "after",
   targets: normalizeProducts(input.targets, MAX_TARGETS),
   items: normalizeProducts(input.items),
 });

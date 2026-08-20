@@ -47,6 +47,16 @@ export async function publishOffer({ admin, shopId, offer }) {
         placement: "pdp",
         items,
         enabled: true,
+        // Projected onto the row so the metafield carries the offer's wording,
+        // and so the Settings re-sync can rewrite it without the offer.
+        presentation: {
+          title: offer.title,
+          badge: offer.badge,
+          buttonText: offer.buttonText,
+          countdown: offer.countdown,
+          // Where the app embed injects it, when no theme block is present.
+          anchor: { selector: offer.anchorSelector, position: offer.anchorPosition },
+        },
       });
 
       await syncOverrideMetafield(admin, override);

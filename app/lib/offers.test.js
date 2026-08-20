@@ -162,6 +162,83 @@ describe("publishOffer", () => {
   });
 });
 
+describe("the offer's wording reaches the metafield", () => {
+  /*
+   * This is the whole point of the v2 shape: the products a published offer
+   * recommends always reached the storefront, but its Title, Badge and Button
+   * text did not — the theme block rendered its own settings instead.
+   */
+  test("publishing writes the copy into the metafield payload", async () => {
+    const offer = await saveOffer(shopId, {
+      name: "Offer",
+      placement: "PRODUCT_PAGE",
+      offerType: "cross_sell",
+      title: "Complete the set",
+      badge: "Limited offer",
+      buttonText: "Add to cart",
+      countdown: true,
+      targets: [product(1)],
+      items: [product(10)],
+    });
+
+    const admin = stubAdmin();
+    await publishOffer({ admin, shopId, offer });
+
+    const value = JSON.parse(admin.calls[0].variables.metafields[0].value);
+    expect(value.v).toBe(2);
+    expect(value.copy).toEqual({
+      title: "Complete the set",
+      badge: "Limited offer",
+      buttonText: "Add to cart",
+      countdown: true,
+    });
+    expect(value.items.map((item) => item.id)).toEqual(["10"]);
+  });
+
+  test("the copy is stored on the row, so a re-sync keeps it", async () => {
+    // The Settings repair action iterates Override rows and has no offer in
+    // hand; if the copy only travelled with the publish call, a repair would
+    // blank the merchant's wording.
+    const offer = await saveOffer(shopId, {
+      name: "Offer",
+      placement: "PRODUCT_PAGE",
+      offerType: "cross_sell",
+      title: "Complete the set",
+      buttonText: "Add to cart",
+      targets: [product(1)],
+      items: [product(10)],
+    });
+    await publishOffer({ admin: stubAdmin(), shopId, offer });
+
+    const override = await getOverride({ shopId, productId: "1", placement: "pdp" });
+    expect(override.presentation).toMatchObject({
+      title: "Complete the set",
+      buttonText: "Add to cart",
+    });
+  });
+
+  test("an offer with no wording leaves the block settings in charge", async () => {
+    const offer = await saveOffer(shopId, {
+      name: "Offer",
+      placement: "PRODUCT_PAGE",
+      offerType: "cross_sell",
+      title: "",
+      badge: "",
+      buttonText: "",
+      targets: [product(1)],
+      items: [product(10)],
+    });
+
+    const admin = stubAdmin();
+    await publishOffer({ admin, shopId, offer });
+
+    // buttonText defaults to "Add" in the model, so that alone is present —
+    // what matters is that an empty title never becomes a blank heading.
+    const value = JSON.parse(admin.calls[0].variables.metafields[0].value);
+    expect(value.copy?.title ?? "").toBe("");
+  });
+});
+
 describe("unpublishOffer", () => {
   test("removes the override and the metafield for every target", async () => {
     const offer = await offerFor([product(1), product(2)], [product(10)]);

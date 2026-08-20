@@ -164,6 +164,8 @@ function readOffer(formData) {
     badge: formData.get('badge') ?? '',
     buttonText: formData.get('buttonText') ?? '',
     countdown: formData.get('countdown') === 'true',
+    anchorSelector: formData.get('anchorSelector') ?? '',
+    anchorPosition: formData.get('anchorPosition') ?? 'after',
     targets: json('targets'),
     items: json('items'),
   };
@@ -399,6 +401,8 @@ function formValues(offer) {
     badge: offer?.badge ?? '',
     buttonText: offer?.buttonText ?? 'Add',
     countdown: Boolean(offer?.countdown),
+    anchorSelector: offer?.anchorSelector ?? '',
+    anchorPosition: offer?.anchorPosition ?? 'after',
     targets: offer?.targets ?? [],
     items: offer?.items ?? [],
   };
@@ -422,6 +426,8 @@ function sameForm(a, b) {
     a.badge === b.badge &&
     a.buttonText === b.buttonText &&
     a.countdown === b.countdown &&
+    a.anchorSelector === b.anchorSelector &&
+    a.anchorPosition === b.anchorPosition &&
     ids(a.targets) === ids(b.targets) &&
     ids(a.items) === ids(b.items)
   );
@@ -441,6 +447,8 @@ function OfferEditor({ type, offer, maxItems, maxTargets }) {
   const [badge, setBadge] = useState(initial.badge);
   const [buttonText, setButtonText] = useState(initial.buttonText);
   const [countdown, setCountdown] = useState(initial.countdown);
+  const [anchorSelector, setAnchorSelector] = useState(initial.anchorSelector);
+  const [anchorPosition, setAnchorPosition] = useState(initial.anchorPosition);
   const [targets, setTargets] = useState(initial.targets);
   const [items, setItems] = useState(initial.items);
   const [status, setStatus] = useState(offer?.status ?? 'draft');
@@ -453,7 +461,18 @@ function OfferEditor({ type, offer, maxItems, maxTargets }) {
    */
   const [baseline, setBaseline] = useState(initial);
 
-  const current = { offerType, name, title, badge, buttonText, countdown, targets, items };
+  const current = {
+    offerType,
+    name,
+    title,
+    badge,
+    buttonText,
+    countdown,
+    anchorSelector,
+    anchorPosition,
+    targets,
+    items,
+  };
   const dirty = !sameForm(current, baseline);
 
   const restore = (values) => {
@@ -463,6 +482,8 @@ function OfferEditor({ type, offer, maxItems, maxTargets }) {
     setBadge(values.badge);
     setButtonText(values.buttonText);
     setCountdown(values.countdown);
+    setAnchorSelector(values.anchorSelector);
+    setAnchorPosition(values.anchorPosition);
     setTargets(values.targets);
     setItems(values.items);
   };
@@ -495,6 +516,8 @@ function OfferEditor({ type, offer, maxItems, maxTargets }) {
         badge,
         buttonText,
         countdown: String(countdown),
+        anchorSelector,
+        anchorPosition,
         targets: JSON.stringify(targets),
         items: JSON.stringify(items),
       },
@@ -734,10 +757,14 @@ function OfferEditor({ type, offer, maxItems, maxTargets }) {
             {tab === 'design' && (
               <s-stack direction="block" gap="base">
                 <s-heading>Design</s-heading>
+                <s-paragraph>
+                  Your Title, Badge and Button text above are published with the offer and override
+                  the block&rsquo;s own wording on the product page.
+                </s-paragraph>
                 <s-paragraph color="subdued">
-                  Layout, columns, image shape, colours and button style are theme block settings,
-                  not offer settings — they live in your theme editor so they can follow your
-                  theme&rsquo;s styling. Open the block on a product template to change them.
+                  Layout, columns, image shape, colours and button style are still theme block
+                  settings — they live in your theme editor so they can follow your theme&rsquo;s
+                  styling. Open the block on a product template to change them.
                 </s-paragraph>
                 <s-button variant="secondary" onClick={() => setTab('placement')}>
                   Continue to placement
@@ -753,10 +780,39 @@ function OfferEditor({ type, offer, maxItems, maxTargets }) {
                   <s-badge tone="info">{type}</s-badge>
                 </s-stack>
                 <s-paragraph color="subdued">
-                  Publishing writes this offer to each product you chose, and the Smart
-                  Recommendations block renders it. Add that block once in your theme editor on the
-                  product template — after that, every published offer shows through it.
+                  With the app embed enabled, published offers appear on their product pages on
+                  their own — no theme block needed. If you have placed the Smart Recommendations
+                  block on a product template, that block wins and these settings are ignored.
                 </s-paragraph>
+
+                <s-divider />
+
+                <s-heading>Where it appears</s-heading>
+                <s-paragraph color="subdued">
+                  Leave this empty and the offer goes just below the Add to cart button. It fits
+                  most themes; set your own CSS selector if yours is unusual.
+                </s-paragraph>
+
+                <s-text-field
+                  label="CSS selector"
+                  name="anchorSelector"
+                  value={anchorSelector}
+                  placeholder=".product-form__buttons"
+                  details="If this matches nothing, the built-in positions are tried instead — the offer still shows."
+                  onInput={(event) => setAnchorSelector(event.currentTarget.value)}
+                />
+
+                <s-select
+                  label="Position"
+                  name="anchorPosition"
+                  value={anchorPosition}
+                  onChange={(event) => setAnchorPosition(event.currentTarget.value)}
+                >
+                  <s-option value="after">Below it</s-option>
+                  <s-option value="before">Above it</s-option>
+                </s-select>
+
+                <s-divider />
                 <s-button variant="secondary" onClick={() => setTab('content')}>
                   Back to content
                 </s-button>

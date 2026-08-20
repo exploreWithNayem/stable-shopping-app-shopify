@@ -1,12 +1,18 @@
 {%- comment -%}
   Easy Recommendation — app embed.
 
-  Publishes runtime config for reco.js. Deliberately does not load the script
-  itself: the recommendations block declares it, so the script is present
-  wherever a block is, whether or not the merchant enabled this embed.
+  Publishes runtime config for reco.js, and — on a product page carrying an
+  offer — the offer itself plus the script to render it.
 
-  reco.js reads this object at call time rather than load time, so the two can
-  arrive in either order.
+  The script used to be left to the blocks, which declare it through their schema
+  `javascript` key. That was fine while the blocks did all the rendering, but it
+  meant a product page with no block never loaded reco.js at all, so an offer the
+  embed had inlined had nothing to draw it. It is loaded here as well now; the
+  runtime bails if it has already run, so a page with both costs one cached
+  request.
+
+  reco.js reads the config object at call time rather than load time, so the two
+  can arrive in either order.
 {%- endcomment -%}
 
 <script>
@@ -25,6 +31,91 @@
     }
   };
 </script>
+
+{%- comment -%}
+  The offer for this product, inlined for the app embed to render.
+
+  This is what makes the embed path work without a theme block. The embed runs on
+  every page, so on a product template it can read that product's own
+  `$app:reco_overrides` metafield — the same mirror the theme block reads (§3.1) —
+  and hand reco.js everything it needs.
+
+  Products are resolved here in Liquid rather than fetched by reco.js: the prices
+  are then formatted by the shop's own rules, the currency is right, and there is
+  no network hop at all. `all_products` is capped at 20 lookups per page and an
+  override holds at most 12, so this stays clear of the ceiling.
+
+  The shape deliberately matches Shopify's Ajax product JSON, because renderFallback
+  already knows how to draw that — no second renderer.
+{%- endcomment -%}
+{%- if template.name == 'product' and product -%}
+  {%- assign reco = product.metafields["$app"].reco_overrides.value -%}
+
+  {%- if reco.items -%}
+    {%- capture offer_items -%}
+      {%- assign rendered = 0 -%}
+      {%- for entry in reco.items -%}
+        {%- assign candidate = all_products[entry.handle] -%}
+        {%- if candidate.id and candidate.id != product.id -%}
+          {%- if rendered > 0 %},{% endif -%}
+          {
+            "id": {{ candidate.id | json }},
+            "handle": {{ candidate.handle | json }},
+            "title": {{ candidate.title | json }},
+            "url": {{ candidate.url | json }},
+            "price": {{ candidate.price | json }},
+            "compare_at_price": {{ candidate.compare_at_price | json }},
+            "available": {{ candidate.available | json }},
+            "featured_image": {%- if candidate.featured_image -%}
+              {{ candidate.featured_image | image_url: width: 400 | json }}
+            {%- else -%}null{%- endif -%},
+            "variants": [
+              {%- for variant in candidate.variants limit: 20 -%}
+                {%- unless forloop.first %},{% endunless -%}
+                {
+                  "id": {{ variant.id | json }},
+                  "title": {{ variant.title | json }},
+                  "price": {{ variant.price | json }},
+                  "available": {{ variant.available | json }}
+                }
+              {%- endfor -%}
+            ]
+          }
+          {%- assign rendered = rendered | plus: 1 -%}
+        {%- endif -%}
+      {%- endfor -%}
+    {%- endcapture -%}
+
+    {%- if offer_items != blank -%}
+      {{ 'reco.css' | asset_url | stylesheet_tag }}
+      <script>
+        window.EasyReco = window.EasyReco || {};
+        window.EasyReco.offer = {
+          productId: {{ product.id | json }},
+          copy: {%- if reco.copy -%}{{ reco.copy | json }}{%- else -%}null{%- endif -%},
+          render: {%- if reco.render -%}{{ reco.render | json }}{%- else -%}null{%- endif -%},
+          items: [{{ offer_items }}]
+        };
+      </script>
+      {%- comment -%}
+        The runtime, loaded here and not only by the blocks.
+
+        Blocks declare reco.js through their schema `javascript` key, so on a page
+        with no block the script was never on the page at all and nothing injected
+        the offer — which looked exactly like the embed being broken, and was
+        fixed the same day it shipped.
+
+        Loading it from both places is safe: reco.js bails immediately if it has
+        already run (`window.EasyReco.loaded`), so the duplicate script tag a page
+        with a block produces costs one cached request and nothing else.
+
+        Only loaded when there is an offer to draw. A product with none needs
+        nothing from this file.
+      {%- endcomment -%}
+      <script src="{{ 'reco.js' | asset_url }}" defer></script>
+    {%- endif -%}
+  {%- endif -%}
+{%- endif -%}
 
 {%- comment -%}
   Recently viewed history.

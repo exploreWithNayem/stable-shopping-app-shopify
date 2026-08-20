@@ -590,6 +590,110 @@ describe("two blocks, six sources", () => {
     );
   });
 
+  /*
+   * An offer's wording reaches the storefront through the v2 metafield: `copy`
+   * is present when the list came from a published offer and absent otherwise —
+   * including in every v1 metafield written before offers existed. So the panel
+   * needs a plain nil check, never a version test, and a merchant who curated the
+   * list on the recommendations page must keep the block settings they set.
+   */
+  /*
+   * The app embed path: no theme block on the page at all. On a product template
+   * the embed reads that product's own metafield — the same mirror the block
+   * reads — and inlines the offer for reco.js to inject.
+   */
+  test("the app embed inlines the product's offer", () => {
+    const embed = readLiquid(join(BLOCKS, "app-embed.liquid"));
+
+    expect(embed).toContain('product.metafields["$app"].reco_overrides.value');
+    expect(embed).toContain("window.EasyReco.offer");
+    // Guarded to product templates: the embed runs everywhere, and `product` is
+    // nil elsewhere.
+    expect(embed).toContain("template.name == 'product'");
+  });
+
+  test("the embed resolves products in Liquid, not over the network", () => {
+    /*
+     * `all_products` means prices come out formatted by the shop's own rules in
+     * the shop's own currency, and reco.js makes no request at all. The shape
+     * matches Shopify's Ajax product JSON so renderFallback needs no second
+     * renderer.
+     */
+    const embed = readLiquid(join(BLOCKS, "app-embed.liquid"));
+
+    expect(embed).toContain("all_products[entry.handle]");
+    for (const field of ['"price"', '"compare_at_price"', '"featured_image"', '"variants"']) {
+      expect(embed, `${field} missing from the inlined product`).toContain(field);
+    }
+  });
+
+  test("the embed loads the runtime, not just the config", () => {
+    /*
+     * The blocks declare reco.js through their schema `javascript` key, so on a
+     * product page with no block the script was absent entirely and the offer
+     * never rendered. The embed has to load it itself.
+     */
+    const embed = readLiquid(join(BLOCKS, "app-embed.liquid"));
+    expect(embed).toContain("'reco.js' | asset_url");
+
+    // Safe to load from both places only because the runtime bails if it has
+    // already run.
+    const runtime = readFileSync(join(EXTENSION, "assets", "reco.js"), "utf8");
+    expect(runtime).toContain("if (window.EasyReco.loaded) return;");
+    expect(runtime).toContain("window.EasyReco.loaded = true;");
+  });
+
+  test("the embed loads the stylesheet it will need", () => {
+    // Blocks emit reco.css themselves; on the embed path there is no block, so
+    // the injected container would be unstyled without this.
+    const embed = readLiquid(join(BLOCKS, "app-embed.liquid"));
+    expect(embed).toContain("'reco.css' | asset_url | stylesheet_tag");
+  });
+
+  test("a product is never offered as its own recommendation", () => {
+    const embed = readLiquid(join(BLOCKS, "app-embed.liquid"));
+    expect(embed).toContain("candidate.id != product.id");
+  });
+
+  test("an offer's copy overrides the block's own settings", () => {
+    expect(panel).toContain("reco_overrides.value.copy");
+    // Falls back rather than replacing: the setting is read first, then beaten.
+    expect(panel).toContain("assign heading = block.settings.heading");
+    expect(panel).toContain("if copy.title != blank");
+    expect(panel).toContain("if copy.buttonText != blank");
+  });
+
+  test("only the custom source reads offer copy", () => {
+    // Related and Complementary never touch the metafield, so copy from one
+    // would be wording with no list behind it.
+    const guard = panel.slice(panel.indexOf("assign copy = nil"));
+    expect(guard).toContain("if mode == 'custom'");
+  });
+
+  test("the badge has no block setting to fall back to", () => {
+    /*
+     * A badge is something an offer says, not a property of where the block sits,
+     * so there is deliberately no `badge` in either schema — only the metafield
+     * can supply one.
+     */
+    expect(panel).toContain('class="reco__badge"');
+    for (const file of blockFiles) {
+      const settings = readSchema(file).settings ?? [];
+      expect(
+        settings.find((entry) => entry.id === "badge"),
+        `${file} grew a badge setting`,
+      ).toBeUndefined();
+    }
+  });
+
+  test("the badge and heading are styled", () => {
+    // The panel emits them unconditionally once an offer supplies either, so an
+    // unstyled badge would be raw text next to the heading.
+    const css = readFileSync(join(EXTENSION, "assets", "reco.css"), "utf8");
+    expect(css).toContain(".reco__header");
+    expect(css).toContain(".reco__badge");
+  });
+
   test("the heading is a plain setting with a literal default", () => {
     // Deliberately not source-aware: Liquid cannot write a block setting, so a
     // heading that changed with the source left the editor's own input showing

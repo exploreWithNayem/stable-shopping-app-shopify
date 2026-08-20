@@ -85,6 +85,11 @@ model Offer {
   badge       String    @default("")
   buttonText  String    @default("Add")
   countdown   Boolean   @default(false)
+  /// Where on the page the app embed injects the offer. Null means "use the
+  /// built-in fallback chain in reco.js", which covers Dawn-family themes; a
+  /// merchant on an unusual theme sets their own CSS selector.
+  anchorSelector String?
+  anchorPosition String  @default("after") // before | after
   targets     Json // [{ id, handle, title }] — the product pages it appears on
   items       Json // [{ id, handle, title }] — what it recommends
   status      String    @default("draft") // draft | published
@@ -108,6 +113,14 @@ model Override {
   placement     String    @default("pdp") // pdp | checkout | both
   enabled       Boolean   @default(true)
   items         Json // [{ id, handle, title, position }]
+  /// Copy an Offer projected onto this row: { title, badge, buttonText, countdown }.
+  /// Null for rows created straight from the recommendations page, where the theme
+  /// block's own settings supply the wording.
+  ///
+  /// Denormalised on purpose. This row is what gets written to the metafield, so
+  /// it has to carry everything the metafield needs — otherwise the Settings
+  /// re-sync, which reads rows and not offers, would silently drop the copy.
+  presentation  Json?
   syncedAt      DateTime? // last successful metafield sync
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt

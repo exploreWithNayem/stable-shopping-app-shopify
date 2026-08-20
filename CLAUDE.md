@@ -93,18 +93,37 @@ analytics joins), but the storefront cannot read Prisma cheaply. Mirroring each 
 app-owned, storefront-readable product metafield lets the Liquid block render server-side with
 **zero** extra network hops. Every write to an override must sync the metafield (Phase 6).
 
-Metafield shape (`$app:reco_overrides`, type `json`):
+Metafield shape (`$app:reco_overrides`, type `json`) — **`v: 2` since 2026-08-20**:
 
 ```json
 {
-  "v": 1,
+  "v": 2,
   "updatedAt": "2026-08-12T10:00:00Z",
+  "copy": {
+    "title": "Complete the set",
+    "badge": "Limited offer",
+    "buttonText": "Add to cart",
+    "countdown": true
+  },
   "items": [
     { "id": "12345678", "handle": "blue-snowboard" },
     { "id": "22345678", "handle": "wax-kit" }
   ]
 }
 ```
+
+`copy` is what a published **Offer** says, and it is **omitted entirely** when there is none — a list
+curated on the recommendations page produces the v1 shape plus a version bump. `reco-panel.liquid`
+therefore does a plain nil check rather than a version test, which is why **every v1 metafield
+written before offers existed keeps working with no backfill**. An offer's `title` beats the block's
+`heading` setting and its `buttonText` beats `add_to_cart_label`; `badge` has no block setting to
+fall back to, because a badge is something an offer says rather than a property of where the block
+sits. Only the `custom` source reads any of this — the other sources never touch the metafield.
+
+**The copy is denormalised onto `Override.presentation`**, not looked up from the Offer at sync time.
+That row is what gets written, and `syncAllOverrides()` (the Settings repair action) iterates rows
+with no offer in hand — reading the copy from the caller instead would make a repair silently blank
+every merchant's wording.
 
 IDs *and* handles are stored: Liquid resolves products with `all_products[handle]`
 (hard limit **20 lookups per page** — cap override lists at 12). IDs are strings, matching how
@@ -811,6 +830,59 @@ embed is optional, and a button that says nothing until someone enables it is a 
 > most 10 per product (§7.2). The fetch over-fetches by 4, capped at Shopify's 10, to leave room for
 > the lines this block drops for having no sellable variant.
 
+### 7.6 App embed rendering — the offer with no theme block
+
+Added 2026-08-20. The merchant enables the app embed once and never opens the theme editor: a
+published offer appears on its product pages on its own.
+
+**What made this possible with no new plumbing.** The embed runs on *every* page, so on a product
+template it can read that product's own `$app:reco_overrides` metafield — the same mirror the theme
+block reads (§3.1). Nothing shop-level is needed for `PRODUCT_PAGE`.
+
+> ⚠️ **The embed has to load `reco.js` itself.** The three blocks declare it through their schema
+> `javascript` key, so on a product page with **no block** the script was never on the page and the
+> offer the embed had just inlined had nothing to draw it — which looks exactly like the embed being
+> broken, and was the first thing to go wrong with this path. The embed now emits
+> `<script src="{{ 'reco.js' | asset_url }}" defer>` whenever it inlined an offer.
+>
+> That means a page carrying a block gets **two identical script tags and executes both**. So
+> `reco.js` opens with a `window.EasyReco.loaded` guard and returns immediately on the second run.
+> The DOM markers (`data-reco-ready`, `data-reco-embedded`) already stopped double *rendering*; they
+> did not stop double *instrumenting* — two beacon queues, two sets of listeners. Anything new added
+> at the top of that file goes below the guard.
+
+`app-embed.liquid` resolves the list with `all_products` and inlines it as `window.EasyReco.offer`,
+in the shape of Shopify's Ajax product JSON. Two consequences worth keeping: prices are formatted by
+the shop's own rules in the shop's own currency, and **reco.js makes no request at all** — the offer
+renders from markup already on the page. It also emits `reco.css`, which blocks normally emit for
+themselves.
+
+`initEmbeddedOffer()` in `reco.js` builds the container and injects it. The pieces that matter:
+
+| | |
+| --- | --- |
+| Anchor | The offer's own CSS selector first, then a built-in chain (`.product-form__buttons`, the submit button, `.shopify-payment-button`, `product-form`, the cart form, then the info wrapper). A selector that matches nothing **falls through to the chain** — a theme rename should cost a worse position, not the offer |
+| Visibility | Ancestors are walked for `display:none` / `visibility:hidden` / `[hidden]`, and `querySelectorAll` is used so a hidden duplicate earlier in the document does not consume the selector's turn. Themes ship duplicate buy forms for drawers and quick-add |
+| Position | `before` / `after` the anchor, from the offer |
+| A theme block wins | If any `[data-reco-block][data-reco-placement="pdp"]` is on the page, nothing is injected. The merchant placed it and said where they want it; rendering both would double the products *and* bill two serves for one page view (§3.3) |
+| Idempotent | `data-reco-embedded` guards re-entry, so `shopify:section:load` cannot inject twice |
+| Escaping | The title, badge and button text are merchant-authored and reach the page through `innerHTML`, so they go through `escapeHtml()` |
+
+> ⚠️ **Not `offsetParent !== null` for the visibility check.** That is the usual shorthand and it is
+> wrong here: it reports null for `position: fixed` elements, so a theme with a sticky add-to-cart bar
+> would have its only anchor rejected. The ancestor walk needs no layout, gives the same answer for
+> the case that matters, and is testable in jsdom — where `offsetParent` is always null.
+
+`tests/reco-runtime.test.js` drives all of this in jsdom against a Dawn-shaped buy form: injection
+position, the offer's copy, escaping, money format, the serve beacon, attributed add-to-cart, the
+block-wins rule, re-entry, a merchant selector, `before`, a stale selector, an invalid selector, no
+anchor at all, an empty offer, and a hidden duplicate.
+
+The anchor is set on the **Placement** tab of the offer builder and travels as `render` in the v2
+metafield (§3.1).
+
+---
+
 ### 7.5 The app embed is optional — so nothing may depend on it
 
 Added 2026-08-20, after two bugs with the same root cause.
@@ -828,6 +900,11 @@ at most a fallback.
 | Tracking on/off | embed only | tracking on, which is the default anyway |
 | Upsell button labels | `data-upsell-add-*` on the block | correct |
 | Card strings (Sold out, Choose options) | embed only | English defaults in `reco.js` |
+| The injected offer (§7.6) | embed only | **nothing renders** — this path *is* the embed |
+
+> The last row is the one exception to this section's rule, and it is not a violation of it: an offer
+> injected by the embed is a feature *of* the embed, not something a block needs from it. A merchant
+> who never enables the embed still gets everything the theme blocks render.
 
 **The money format is the one that actually broke.** It came from the embed alone, with a hardcoded
 `"${{amount}}"` fallback, so a store selling in EUR that never enabled the embed rendered `$` on
@@ -1190,11 +1267,16 @@ marking done.
    that layout and colours are theme block settings rather than offer settings, which is true and not
    a placeholder. **Placement** shows the chosen type and where to add the block.
 
-   > ⚠️ **Title, Badge and Button text are saved but the storefront still ignores them.** The theme
-   > block renders its own `heading` setting and its own add-to-cart label (§7), and the metafield
-   > carries only `items`. Making the offer's copy reach the storefront needs a `v: 2` metafield shape
-   > plus `reco-panel.liquid` and `reco.js` reading it — the products a published offer recommends
-   > *do* reach the storefront today; its wording does not.
+   **Title, Badge and Button text now reach the storefront** (2026-08-20). The metafield carries a
+   `copy` object (§3.1, `v: 2`), `reco-panel.liquid` prefers it over the block's own settings, and the
+   badge renders beside the heading. `reco.js` needed no change: the client-rendered path only runs
+   when there is *no* override, so there is no offer copy to apply — the block settings are correct
+   there by definition.
+
+   > ⚠️ **Layout and colours are still theme block settings.** Offers own the *wording*; columns,
+   > image shape, button style and padding remain in the theme editor, which is what the Design tab
+   > says. Moving them onto the offer is the app-embed direction's step 4, and it needs `reco.css` to
+   > take them as custom properties set from JS rather than inline from Liquid.
 
    **The heading is repeated in the content column**, with a back arrow beside it. `s-page heading`
    alone is hoisted into the admin's header strip — the same place `primary-action` goes (see the

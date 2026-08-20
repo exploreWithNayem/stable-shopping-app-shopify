@@ -69,11 +69,48 @@ export function shouldPublishToStorefront(override) {
   return override.placement === "pdp" || override.placement === "both";
 }
 
-/** The JSON payload Liquid reads. Ids stay strings to match how we store them. */
-export function buildMetafieldValue(items, { now = new Date() } = {}) {
+/**
+ * The JSON payload Liquid reads.
+ *
+ * `v: 2` adds `copy` — the wording an offer supplies. It is omitted entirely
+ * when there is none, so a row created straight from the recommendations page
+ * produces the same shape as before and the theme block's own settings still
+ * win. Liquid treats a missing `copy` as nil, so **v1 metafields written before
+ * this keep working untouched** — no backfill, no migration of live data.
+ *
+ * Ids stay strings to match how they are stored, so nothing has to agree on
+ * number formatting.
+ */
+export const METAFIELD_VERSION = 2;
+
+export function buildMetafieldValue(items, { now = new Date(), presentation = null } = {}) {
+  const copy = presentation
+    ? {
+        title: presentation.title ?? "",
+        badge: presentation.badge ?? "",
+        buttonText: presentation.buttonText ?? "",
+        countdown: Boolean(presentation.countdown),
+      }
+    : null;
+
+  /*
+   * Where the app embed injects the offer when no theme block is on the page.
+   * Omitted unless the merchant set a selector — reco.js has a fallback chain
+   * that covers Dawn-family themes, and an empty selector here would read as
+   * "match nothing" rather than "use the default".
+   */
+  const anchor = presentation?.anchor?.selector
+    ? {
+        selector: presentation.anchor.selector,
+        position: presentation.anchor.position === "before" ? "before" : "after",
+      }
+    : null;
+
   return JSON.stringify({
-    v: 1,
+    v: METAFIELD_VERSION,
     updatedAt: now.toISOString(),
+    ...(copy ? { copy } : {}),
+    ...(anchor ? { render: anchor } : {}),
     items: (items ?? []).map((item) => ({
       id: String(item.id),
       handle: item.handle ?? null,
@@ -81,13 +118,18 @@ export function buildMetafieldValue(items, { now = new Date() } = {}) {
   });
 }
 
-function metafieldInput(override, options) {
+function metafieldInput(override, options = {}) {
   return {
     ownerId: toProductGid(override.productId),
     namespace: METAFIELD_NAMESPACE,
     key: METAFIELD_KEY,
     type: METAFIELD_TYPE,
-    value: buildMetafieldValue(override.items, options),
+    value: buildMetafieldValue(override.items, {
+      ...options,
+      // Taken from the row, not the caller: the re-sync repair action has no
+      // offer in hand, and reading it here is what keeps a repair lossless.
+      presentation: override.presentation ?? null,
+    }),
   };
 }
 

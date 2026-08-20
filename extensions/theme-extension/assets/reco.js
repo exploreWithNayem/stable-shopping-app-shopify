@@ -15,6 +15,22 @@
 (function () {
   "use strict";
 
+  /*
+   * Run once per page, whatever loads us.
+   *
+   * Three blocks declare this file through their schema `javascript` key, and the
+   * app embed loads it with its own <script src> so an offer can render with no
+   * block present (§7.6). A page with both gets two identical script tags: the
+   * browser serves the second from cache but *executes* it, which would mean two
+   * beacon queues, two sets of listeners, and a second init racing the first.
+   *
+   * The DOM markers (data-reco-ready, data-reco-embedded) already stop double
+   * rendering, but they do not stop double instrumenting — so the guard is here.
+   */
+  window.EasyReco = window.EasyReco || {};
+  if (window.EasyReco.loaded) return;
+  window.EasyReco.loaded = true;
+
   var DEFAULTS = {
     proxy: "/apps/easy-reco",
     moneyFormat: "${{amount}}",
@@ -30,6 +46,11 @@
       enabled: provided.enabled !== false,
       strings: provided.strings || {},
     };
+  }
+
+  /** The offer the app embed inlined for this product page, if any. */
+  function embeddedOffer() {
+    return (window.EasyReco && window.EasyReco.offer) || null;
   }
 
   function uid() {
@@ -1065,7 +1086,175 @@
     });
   }
 
+  // --- App embed injection -------------------------------------------------
+
+  /*
+   * Anchors tried in order when the offer names none of its own.
+   *
+   * Every one of these is a place the add-to-cart button lives in a
+   * Dawn-family theme. Ordered most specific first: matching the button's own
+   * container puts the offer directly under the buy area, whereas the last two
+   * are whole-section fallbacks that at least keep it inside the product
+   * details rather than at the end of the document.
+   */
+  var ANCHORS = [
+    '.product-form__buttons',
+    'form[action*="/cart/add"] .product-form__submit',
+    'form[action*="/cart/add"] [type="submit"]',
+    '.shopify-payment-button',
+    'product-form',
+    'form[action*="/cart/add"]',
+    '.product__info-wrapper',
+    '.product-single__meta',
+  ];
+
+  /**
+   * Is this element actually on screen?
+   *
+   * Themes ship duplicate buy forms for their cart drawer and quick-add modals,
+   * and injecting into one puts the offer somewhere the shopper never sees. So
+   * the chain skips hidden candidates.
+   *
+   * Deliberately *not* `offsetParent !== null`, which is the usual shorthand: it
+   * reports null for `position: fixed` elements too, so a theme with a sticky
+   * add-to-cart bar would have its only anchor rejected. This walks the ancestors
+   * instead, which needs no layout and gives the same answer for the case that
+   * matters.
+   */
+  function isVisible(element) {
+    var view = element.ownerDocument && element.ownerDocument.defaultView;
+    if (!view || typeof view.getComputedStyle !== "function") return true;
+
+    for (var node = element; node && node.nodeType === 1; node = node.parentElement) {
+      if (node.hasAttribute("hidden")) return false;
+
+      var style = view.getComputedStyle(node);
+      if (style && (style.display === "none" || style.visibility === "hidden")) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  function findAnchor(offer) {
+    var selectors = [];
+
+    // The merchant's own selector is tried first and the built-in chain still
+    // follows it: a theme update that renames a class should degrade to a
+    // slightly worse position, not to nothing rendering at all.
+    if (offer.render && offer.render.selector) selectors.push(offer.render.selector);
+    selectors = selectors.concat(ANCHORS);
+
+    for (var i = 0; i < selectors.length; i += 1) {
+      try {
+        // All matches, not the first: a hidden duplicate earlier in the document
+        // must not consume the selector's turn in the chain.
+        var found = document.querySelectorAll(selectors[i]);
+        for (var j = 0; j < found.length; j += 1) {
+          if (isVisible(found[j]) && found[j].parentNode) return found[j];
+        }
+      } catch (error) {
+        /* an invalid selector from the merchant must not stop the chain */
+      }
+    }
+
+    return null;
+  }
+
+  /** The container the embed renders into, shaped like reco-panel's output. */
+  function buildBlock(offer) {
+    var copy = offer.copy || {};
+    var block = document.createElement("div");
+
+    block.className = "reco reco--grid reco--align-left reco--embedded";
+    block.setAttribute("data-reco-block", "");
+    block.setAttribute("data-reco-embedded", "true");
+    block.setAttribute("data-reco-placement", "pdp");
+    block.setAttribute("data-reco-source-product", String(offer.productId));
+    block.setAttribute("data-reco-source", "override");
+    block.setAttribute("data-reco-intent", "related");
+    block.setAttribute("data-reco-limit", String(offer.items.length));
+    block.setAttribute("data-reco-atc", "ajax");
+    block.setAttribute("data-reco-money-format", config().moneyFormat);
+    // Products came inlined, so there is nothing to fetch — but the cards are
+    // still drawn by renderFallback, which needs the template below.
+    block.setAttribute("data-reco-server-rendered", "false");
+
+    var heading = copy.title
+      ? '<div class="reco__header"><h2 class="reco__heading reco__heading--md">' +
+        escapeHtml(copy.title) +
+        "</h2>" +
+        (copy.badge ? '<span class="reco__badge">' + escapeHtml(copy.badge) + "</span>" : "") +
+        "</div>"
+      : "";
+
+    block.innerHTML =
+      heading +
+      '<div class="reco__viewport"><div class="reco__track" data-reco-track></div></div>' +
+      '<template data-reco-card-template>' +
+      '<div class="reco-card" data-reco-card>' +
+      '<a class="reco-card__media" data-reco-link>' +
+      '<img class="reco-card__image" width="400" height="400" loading="lazy" alt="">' +
+      "</a>" +
+      '<div class="reco-card__info">' +
+      '<a class="reco-card__title" data-reco-link data-reco-title></a>' +
+      '<span class="reco-card__price"><span data-reco-price></span>' +
+      '<s class="reco-card__compare" data-reco-compare hidden></s></span>' +
+      '<button type="button" class="reco-card__button reco-card__button--solid" data-reco-add>' +
+      escapeHtml(copy.buttonText || config().strings.addToCart || "Add to cart") +
+      "</button>" +
+      "</div>" +
+      "</div>" +
+      "</template>";
+
+    return block;
+  }
+
+  /** Text into markup. The copy is merchant-authored, so it is never trusted. */
+  function escapeHtml(value) {
+    var node = document.createElement("span");
+    node.textContent = String(value == null ? "" : value);
+    return node.innerHTML;
+  }
+
+  /**
+   * Render the embed's offer, when there is no theme block already doing it.
+   *
+   * The block always wins: a merchant who placed one has said where they want it,
+   * and rendering both would show the same products twice and bill two serves for
+   * one page (§3.3).
+   */
+  function initEmbeddedOffer() {
+    var offer = embeddedOffer();
+    if (!offer || !offer.items || offer.items.length === 0) return;
+
+    // Already handled, or a theme block owns this placement.
+    if (document.querySelector("[data-reco-embedded]")) return;
+    if (document.querySelector('[data-reco-block][data-reco-placement="pdp"]')) return;
+
+    var anchor = findAnchor(offer);
+    if (!anchor) return;
+
+    var block = buildBlock(offer);
+    var position = offer.render && offer.render.position === "before" ? "before" : "after";
+
+    if (position === "before") {
+      anchor.parentNode.insertBefore(block, anchor);
+    } else {
+      anchor.parentNode.insertBefore(block, anchor.nextSibling);
+    }
+
+    renderFallback(block, offer.items);
+    block.setAttribute("data-reco-ready", "true");
+    wire(block);
+  }
+
   function init() {
+    // Before the block loops: if a theme block is present it owns the placement,
+    // and this checks for one.
+    initEmbeddedOffer();
+
     // Upsell blocks first: they mark themselves ready so the card loop skips
     // them, since both carry data-reco-block for the shared tracking wiring.
     initUpsell();
@@ -1099,6 +1288,6 @@
   // Theme editor re-renders sections without a page load.
   document.addEventListener("shopify:section:load", init);
 
-  window.EasyReco = window.EasyReco || {};
+  // Namespace was created by the load guard at the top.
   window.EasyReco.init = init;
 })();
