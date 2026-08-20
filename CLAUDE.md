@@ -24,6 +24,7 @@
 | Route | Purpose |
 | --- | --- |
 | `/app` | Home — headline metrics, storefront status, quota meter, and the **Create offer** primary action |
+| `/app/offers/new` | "Choose placement type" — the step after **Create offer**. Explains each surface an offer can appear on, then hands off. Unbuilt placements are shown, badged and disabled |
 | `/app/recommendations` | List of all products + their recommendation source, filters + search, override editor. Each row shows its complementary products as thumbnails and picks them inline (§5, Phase 5 deviations) |
 | `/app/recommendations/$productId` | Override editor for a single product |
 | `/app/analytics` | Deeper analytics (trend charts, per-product breakdown, funnel) |
@@ -340,6 +341,13 @@ Vitest, configured in `vitest.config.js` (separate from `vite.config.js`, which 
 npm test         # single run
 npm run test:watch
 ```
+
+> ⚠️ **Never put a test file in `app/routes/`.** `flatRoutes()` turns *every* file in that directory
+> into a route, test files included — `app/routes/app.offers.new.test.js` became a live route at
+> `/app/offers/new/test` and broke `npm run build`, which then tried to bundle vitest for the browser.
+> `npm test` did not catch it: the file's own assertions passed. `app/routes.test.js` is safe because
+> it sits at `app/`, not inside `app/routes/`; a test that reads a route's source belongs in `tests/`.
+> `app/routes.test.js` now fails if any route file matches `.test.`/`.spec.`.
 
 Integration tests run against the local `prisma/dev.sqlite` — the datasource URL is hardcoded in
 `schema.prisma`, so there is no separate test database. Two rules follow from that:
@@ -1086,10 +1094,8 @@ marking done.
 6. Date range selector: 7 / 30 / 90 days (90 gated to paid plans).
 7. Onboarding checklist for a brand-new install: enable app embed → add block to PDP →
    create your first override.
-8. **Create offer** button (2026-08-20), right-aligned at the top of the content column. An "offer"
-   is a product plus the products recommended alongside it, and there is no `new` route for one
-   (offers are per-product), so it links to `/app/recommendations` where a product is chosen and its
-   list picked inline. Deliberately never disabled: the product allowance limits *new* offers and the
+8. **Create offer** button (2026-08-20), right-aligned at the top of the content column, linking to
+   `/app/offers/new`. Deliberately never disabled: the product allowance limits *new* offers and the
    list page enforces it there, whereas greying this out would also stop a merchant at the limit from
    editing offers they already have.
 
@@ -1098,6 +1104,53 @@ marking done.
    > from the content it acts on. It was built that way first and moved the same day. The same goes
    > for `secondary-actions` and `breadcrumb-actions`; put page actions in the content column unless
    > the intent really is to occupy Shopify's chrome.
+
+9. **`/app/offers/new` — "Choose placement type"** (2026-08-20): `app.offers.new.jsx` plus
+   `components/PlacementThumb.jsx` for the wireframe diagrams (inline SVG in `currentColor`, so one
+   file covers both admin themes and there are no image assets to keep in step — the Checkout nudge
+   card is the exception and keeps a literal red, since a red warning is its whole subject).
+
+   **Six cards, fixed by design**: Product page · Cart page *(Essential plan)* · Pop-up ·
+   Post purchase page · Suggest new placement type · Checkout nudge.
+
+   > ⚠️ **Only Product page is built.** The other five are surfaces this app does not have — Cart page,
+   > Pop-up and Post purchase are unbuilt, Checkout nudge waits on Phase 12, Suggest has no inbox to
+   > post to — and the "Essential plan" badge names a tier that does not exist here (the plans are
+   > Free / Standard / Enterprise, §5). A first pass adapted the cards to what the app really offers
+   > and was reverted: the six cards and their copy are the specified design, so they stay.
+   >
+   > **What they must not do is navigate.** Pressing an unbuilt card names the placement and what it
+   > is waiting on, in a notice above the grid, and offers the product page instead. A route whose
+   > only job is to say "not implemented" is worse than a button that says so where it stands.
+   > `tests/placement-picker.test.js` pins the six titles, their button labels, the single plan badge,
+   > that Product page is the only card with an `href`, and that every unbuilt card carries an
+   > explanation. When a placement ships, flip `available: true` and give it an `href` — and
+   > `app/routes.test.js` starts checking that href resolves.
+
+   Only the plan's product allowance can stop the flow before it starts, so the loader answers it up
+   front rather than after a placement has been chosen.
+
+   **The heading is repeated in the content column**, with a back arrow beside it. `s-page heading`
+   alone is hoisted into the admin's header strip — the same place `primary-action` goes (see the
+   warning under item 8) — which left the top of the page blank. This is a step in a flow, so the
+   arrow is its only way out.
+
+   > ⚠️ **`s-heading` cannot be resized, and ignores an inline `fontSize`.** Polaris derives heading
+   > size from section nesting and exposes no size prop, and setting `style={{ fontSize }}` on the
+   > host does nothing because the element sets its own font-size inside its shadow DOM — it rendered
+   > at card-title size whatever was passed. A page-level heading that needs a specific size has to be
+   > a plain element (`<h1>` here, with `margin: 0` so the browser default does not push the content
+   > down). The installed `@shopify/polaris-types` ships no font-size custom properties to use
+   > instead, so there is no token-based route.
+
+   > ⚠️ **`gridTemplateColumns` takes one `@container` query plus a fallback, never two.** This grid
+   > shipped as
+   > `"@container (inline-size > 900px) 1fr 1fr 1fr, @container (inline-size > 560px) 1fr 1fr, 1fr"`
+   > and rendered as a **single column**: Polaris does not parse a second clause, and an unparsed value
+   > falls back to the last track list. Nothing was logged and every test stayed green. The working
+   > shape is the one `app.pricing.jsx` uses —
+   > `"@container (inline-size > 720px) 1fr 1fr 1fr, 1fr"`. `tests/placement-picker.test.js` now fails
+   > if any route's grid carries more than one `@container` clause.
 8. Empty states for every widget when there is no data yet.
 
 ### Phase 11 — Pricing & billing

@@ -25,10 +25,30 @@ beforeAll(async () => {
 });
 
 function flatten(list, parent = null) {
-  return list.flatMap((route) => [
-    { ...route, parent },
-    ...flatten(route.children ?? [], route),
-  ]);
+  return list.flatMap((route) => {
+    const self = { ...route, parent };
+    return [self, ...flatten(route.children ?? [], self)];
+  });
+}
+
+/**
+ * A route's URL path, walked up through its parents.
+ *
+ * `route.path` on a nested route is *relative* — the placement picker's is
+ * "offers/new", not "app/offers/new" — so comparing it to an href directly
+ * silently never matches.
+ */
+function fullPath(route) {
+  const segments = [];
+  for (let node = route; node; node = node.parent) {
+    if (node.path) segments.unshift(node.path);
+  }
+  return `/${segments.join("/")}`;
+}
+
+/** Every addressable path in the tree, index routes included. */
+function allPaths() {
+  return flatten(routes).map(fullPath);
 }
 
 describe("route tree", () => {
@@ -84,6 +104,59 @@ describe("route tree", () => {
     expect(paths).toContain("webhooks/products/delete");
     expect(toml).toContain('uri = "/webhooks/products/delete"');
     expect(toml).toContain('topics = [ "products/delete" ]');
+  });
+
+  test("no test file is inside app/routes", () => {
+    /*
+     * flatRoutes() turns every file in app/routes/ into a route, test files
+     * included: app/routes/app.offers.new.test.js became a real route at
+     * /app/offers/new/test, and `npm run build` then failed trying to bundle
+     * vitest for the browser. `npm test` alone did not catch it — the file's own
+     * assertions passed.
+     *
+     * This file is safe because it sits at app/, not app/routes/. Tests that read
+     * a route's source belong in tests/.
+     */
+    const offenders = flatten(routes)
+      .map((route) => route.file)
+      .filter((file) => /\.(test|spec)\./.test(file));
+
+    expect(offenders).toEqual([]);
+  });
+
+  test("Create offer reaches the placement picker", () => {
+    /*
+     * Two halves that have to agree: the route has to exist at the path the
+     * button points at, and nothing may turn the picker into a layout — it
+     * renders no Outlet, so a child would silently never appear, which is the
+     * bug the first test in this file exists for.
+     */
+    expect(allPaths()).toContain("/app/offers/new");
+
+    const picker = flatten(routes).find((route) =>
+      route.file.endsWith("app.offers.new.jsx"),
+    );
+    expect(picker).toBeDefined();
+    expect(picker.children ?? []).toHaveLength(0);
+
+    const home = readFileSync(`${appDirectory}routes/app._index.jsx`, "utf8");
+    expect(home).toContain('href="/app/offers/new"');
+    expect(home).toContain("Create offer");
+  });
+
+  test("the placement picker only links to pages that exist", () => {
+    // Every enabled card navigates somewhere real. The unbuilt placements are
+    // badged and disabled rather than pointing at a route whose only job would
+    // be to say "not built yet".
+    const page = readFileSync(`${appDirectory}routes/app.offers.new.jsx`, "utf8");
+    const known = allPaths();
+
+    const linked = [...page.matchAll(/href: ["'](\/app[^"']*)["']/g)].map((m) => m[1]);
+    expect(linked.length, "no card links found — did the shape change?").toBeGreaterThan(0);
+
+    for (const href of linked) {
+      expect(known, `${href} has no route`).toContain(href);
+    }
   });
 
   test("the override editor is reachable at /app/recommendations/:productId", () => {

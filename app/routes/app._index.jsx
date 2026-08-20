@@ -82,9 +82,11 @@ export default function Index() {
         puts it outside the app's frame entirely and a long way from the content
         it acts on.
 
-        An offer is a product plus the products to recommend alongside it, so
-        there is no "new offer" route to send this to — it opens the product list,
-        where a product is chosen and its complementary products picked inline.
+        Opens /app/offers/new, which explains the surfaces an offer can appear
+        on and then hands off to the product list. An offer is the same data
+        wherever it renders — *where* is a property of the theme block the
+        merchant places, not of the saved list — so that page orients rather than
+        configures.
 
         Deliberately never disabled. The product allowance is a limit on *new*
         offers, and the list page enforces it there with its own banner; greying
@@ -97,7 +99,7 @@ export default function Index() {
         paddingBlockStart="base"
         paddingBlockEnd="base"
       >
-        <s-button variant="primary" href="/app/recommendations">
+        <s-button variant="primary" href="/app/offers/new">
           Create offer
         </s-button>
       </s-stack>
