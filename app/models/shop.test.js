@@ -4,6 +4,7 @@ import {
   ensureShop,
   getShopByDomain,
   markUninstalled,
+  purgeShopData,
   setPlan,
   updateSettings,
 } from "./shop.server";
@@ -90,5 +91,54 @@ describe("updateSettings", () => {
     await updateSettings(shop.id, { defaultLayout: "slider" });
     const merged = await updateSettings(shop.id, { defaultLayout: "list" });
     expect(merged.settings.defaultLayout).toBe("list");
+  });
+});
+
+describe("purgeShopData", () => {
+  /*
+   * The hard delete behind the mandatory shop/redact webhook, which arrives 48
+   * hours after an uninstall. app/uninstalled only soft-deletes, so this is the
+   * only path that actually erases a shop.
+   */
+  test("removes the shop, its children and its sessions", async () => {
+    const shop = await ensureShop(DOMAIN);
+    await prisma.override.create({
+      data: {
+        shopId: shop.id,
+        productId: "1",
+        productTitle: "T",
+        productHandle: "t",
+        items: [],
+      },
+    });
+    await prisma.recommendationEvent.create({
+      data: {
+        shopId: shop.id,
+        type: "served",
+        sourceProductId: "1",
+        placement: "pdp",
+        source: "shopify",
+      },
+    });
+    await prisma.session.create({
+      data: { id: `purge-${DOMAIN}`, shop: DOMAIN, state: "s", accessToken: "t" },
+    });
+
+    const result = await purgeShopData(DOMAIN);
+
+    expect(result.shops).toBe(1);
+    expect(result.sessions).toBe(1);
+    expect(await getShopByDomain(DOMAIN)).toBeNull();
+    // Cascades, so nothing is left pointing at a shop that no longer exists.
+    expect(await prisma.override.count({ where: { shopId: shop.id } })).toBe(0);
+    expect(
+      await prisma.recommendationEvent.count({ where: { shopId: shop.id } }),
+    ).toBe(0);
+  });
+
+  test("is idempotent — Shopify delivers at least once", async () => {
+    await ensureShop(DOMAIN);
+    await purgeShopData(DOMAIN);
+    expect(await purgeShopData(DOMAIN)).toEqual({ shops: 0, sessions: 0 });
   });
 });

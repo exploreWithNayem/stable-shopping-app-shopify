@@ -57,6 +57,25 @@ export function markUninstalled(domain) {
   });
 }
 
+/**
+ * Erase everything this app holds for a shop.
+ *
+ * Called from the mandatory `shop/redact` webhook, which Shopify sends 48 hours
+ * after an uninstall. Unlike markUninstalled() this is not a soft delete —
+ * deleting the Shop row cascades to overrides, usage periods, raw events and
+ * daily rollups, and the sessions go with it.
+ *
+ * Idempotent: Shopify delivers at least once, and a second call finds nothing.
+ */
+export async function purgeShopData(domain) {
+  const [sessions, shops] = await prisma.$transaction([
+    prisma.session.deleteMany({ where: { shop: domain } }),
+    prisma.shop.deleteMany({ where: { domain } }),
+  ]);
+
+  return { sessions: sessions.count, shops: shops.count };
+}
+
 export function setPlan(shopId, { plan, subscriptionId = null }) {
   return prisma.shop.update({
     where: { id: shopId },

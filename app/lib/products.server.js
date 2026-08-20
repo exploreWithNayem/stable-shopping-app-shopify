@@ -89,6 +89,22 @@ export function toProductGid(id) {
   return value.startsWith("gid://") ? value : `gid://shopify/Product/${value}`;
 }
 
+/**
+ * Strip the characters that mean something to Shopify's search grammar.
+ *
+ * The list query is built by interpolation (`title:*<term>*`), so a quote, a
+ * bracket or a bare field name in the search box changes the query instead of
+ * being searched for — `12"` errors, and `x OR status:draft` quietly widens the
+ * result set. Merchant-scoped and read-only, so this is hygiene rather than a
+ * hole, but a search for a product called `12" Skateboard` should return it.
+ */
+export function sanitizeSearchTerm(value) {
+  return String(value ?? "")
+    .replace(/[\\"'()*:]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export function normalizeAdminProduct(node) {
   if (!node?.id) return null;
 
@@ -121,11 +137,13 @@ export async function listProducts(
     ? { last: pageSize, before, first: null, after: null }
     : { first: pageSize, after, last: null, before: null };
 
+  const term = sanitizeSearchTerm(search);
+
   const response = await admin.graphql(PRODUCT_LIST_QUERY, {
     variables: {
       ...paging,
       // Shopify's search syntax; an empty string means "everything".
-      query: search ? `title:*${search}*` : null,
+      query: term ? `title:*${term}*` : null,
       sortKey,
       reverse,
     },

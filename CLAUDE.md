@@ -171,7 +171,16 @@ the two render paths do not share a request: an override rendered from the metaf
 this app, and neither does the Ajax fallback. So `reco.js` emits a `served` beacon for every widget
 that displayed products, and `track` counts it. `selectBillableServes()` deduplicates against stored
 events *and* within the batch — a block that re-initialises can put two identical serves in one
-beacon, and neither would find the other in the database yet.
+beacon, and neither would find the other in the database yet. That in-batch check ignores whether a
+session id came with the serve: the key is `(session, product, placement)`, and two serves agreeing
+on all three are the same serve even when the session part is empty (fixed 2026-08-20 — it used to
+skip the check entirely without one, so a re-initialising block billed once per copy).
+
+> ⚠️ **`served` is the one event exempt from the app embed's tracking toggle.** It is not analytics,
+> it is the meter, and on the theme path it is the only signal that ever reaches the app. Routing it
+> through the same `if (!config().enabled) return` as impressions and clicks turned a checkbox
+> labelled "Track recommendation performance" into unlimited free recommendations (fixed
+> 2026-08-20). Anything added to `reco.js` that gates event sending has to make the same exception.
 
 ---
 
@@ -266,15 +275,61 @@ model AnalyticsDaily {
 }
 ```
 
-Migration command: `npx prisma migrate dev --name <name>` (never hand-edit migrations).
+Migration command: `npm run prisma -- migrate dev --name <name>` (never hand-edit migrations, and
+see the wrapper note below for why this is not `npx prisma`).
+
+**The datasource URL is `env("DATABASE_URL")`, not a literal** (changed 2026-08-20). It used to be
+`url = "file:dev.sqlite"`, which meant the Docker image shipped a SQLite file *inside the container*
+— recreated empty on every redeploy, taking every shop, override and event with it.
+
+Only the **Prisma CLI** reads `.env`. Plain `node prisma/seed.js` does not, and neither does Vite's
+dev server for server-side `process.env` — so `app/lib/database-url.server.js` resolves it, and both
+`app/db.server.js` and `prisma/seed.js` call it before constructing a client:
+
+| | Result |
+| --- | --- |
+| `DATABASE_URL` set | used as given |
+| unset, `NODE_ENV != production` | `file:dev.sqlite` — relative paths resolve against `prisma/`, so byte-for-byte what the schema used to hardcode. A fresh clone runs `npm test` and `npm run seed` with no setup. |
+| unset, `NODE_ENV == production` | **throws at boot**, naming the variable |
+
+That last row is the entire point. Defaulting in production is what made the original bug invisible:
+the app came up, wrote to a doomed file, and lost everything on the next deploy. The `Dockerfile`
+deliberately sets **no** default for the same reason.
+
+`vitest.config.js` pins the value anyway rather than relying on the fallback, so a test run can never
+be steered at a real database by an inherited environment.
+
+**The Prisma CLI is a separate process**, so the fallback above cannot reach it — it never loads
+`app/db.server.js`, and it reads `.env` only if one exists. `shopify.web.toml` shells out to it twice
+before the app boots (`predev` and `dev`), so making the datasource env-driven broke
+`shopify app dev` outright: a clone with no `.env` died at `prisma generate` with P1012.
+
+**Everything therefore goes through `scripts/prisma.js`**, which calls `resolveDatabaseUrl()` and
+then spawns the CLI — `shopify.web.toml`, `npm run setup`, and `npm run prisma -- <args>` (use that
+instead of `npx prisma`, e.g. `npm run prisma -- migrate dev --name x`). `app/lib/database-url.test.js`
+asserts that no npm script and no line of `shopify.web.toml` invokes the CLI directly, because that
+is the shape of the regression.
+
+> ⚠️ **This does not make the app Postgres-ready.** Prisma requires `provider` to be a literal, so
+> production also needs `provider = "postgresql"` here plus a regenerated migration history — and the
+> test suite would need a running Postgres, since `fileParallelism` is off specifically for SQLite's
+> write lock. Phase 15 still owns that. The in-memory rate limiter (`tracking.server.js`) and the
+> in-memory recommendation LRU (`recommendations.server.js`) also make the app single-instance until
+> they move to a shared store.
 
 Seed the local database with `npm run seed` (re-runnable; clears its own shop first).
 `SEED_QUOTA_FILL=0.85` / `=1` seeds the warning / over-quota states, `SEED_SHOP` sets the domain.
 
-> ⚠️ `tsconfig.json` only includes `**/*.ts` and `**/*.tsx`, and eslint's `import` plugin is scoped
-> to the TypeScript override — so **neither `npm run lint` nor `npm run typecheck` checks the `.js`
-> and `.jsx` source files**. Both passing says nothing about this app's code. `npm test` is the
-> check that actually exercises it.
+> ⚠️ **`npm run typecheck` does not look at this app's code.** `tsconfig.json` includes only
+> `**/*.ts` and `**/*.tsx`, so every `.js` and `.jsx` file — which is all of them — is invisible to
+> `tsc`. It passing says nothing.
+>
+> `npm run lint` *does* cover `.js`/`.jsx`: the React override matches
+> `**/*.{js,jsx,ts,tsx}`, so `eslint:recommended`, `react`, `react-hooks` and `jsx-a11y` all run.
+> Only the `import` plugin is scoped to the TypeScript override. (Corrected 2026-08-20; this note
+> previously claimed neither tool checked anything.)
+>
+> `npm test` is still the check that actually exercises the app.
 
 ### Testing
 
@@ -294,6 +349,25 @@ Integration tests run against the local `prisma/dev.sqlite` — the datasource U
 - `fileParallelism` is off — concurrent writers hit SQLite's database-level write lock.
 
 Re-run `npm run seed` after a test run if you want the dev fixture back.
+
+**Two suites live in `tests/` rather than beside the code, because their subject is the theme
+extension:**
+
+- `tests/theme-extension.test.js` reads the Liquid and the block schemas *as text and JSON*. It
+  catches malformed schema JSON, out-of-bounds range defaults, the 25-character block `name` cap,
+  missing translation keys, placeholder heading defaults, drift between the two duplicated settings
+  arrays, and every `data-reco-placement` a block emits being one `PLACEMENTS` keeps. It executes
+  nothing.
+- `tests/reco-runtime.test.js` **runs `reco.js` in jsdom** (added 2026-08-20). It boots the real file
+  into fixtures shaped like the panel's and the bundle's output, stubs `sendBeacon`, `fetch` and
+  `IntersectionObserver`, and asserts on the beacons and the `/cart/add.js` bodies that come out:
+  the serve/impression/click/add-to-cart funnel, the tracking-toggle exemption, batch draining,
+  money formatting, the Ajax fallback, and the bundle's per-line attribution. Before it existed the
+  most fragile file in the app — 1,000 lines running inside someone else's theme, carrying the
+  billing signal — had no behavioural coverage at all, and four of the bugs fixed on 2026-08-20 were
+  in it.
+
+`jsdom` is a devDependency for that suite; the file opts in with `// @vitest-environment jsdom`.
 
 ---
 
@@ -691,6 +765,37 @@ embed is optional, and a button that says nothing until someone enables it is a 
 > most 10 per product (§7.2). The fetch over-fetches by 4, capped at Shopify's 10, to leave room for
 > the lines this block drops for having no sellable variant.
 
+### 7.5 The app embed is optional — so nothing may depend on it
+
+Added 2026-08-20, after two bugs with the same root cause.
+
+`blocks/app-embed.liquid` publishes `window.EasyReco.config` and records the recently-viewed
+history. It is an *app embed*: the merchant enables it in Theme settings, and plenty never will.
+Every block declares `reco.js` itself precisely so it works either way — which means **anything
+`reco.js` needs in order to render correctly has to arrive on the block**, and the embed's copy is
+at most a fallback.
+
+| Needed by reco.js | Where it comes from | If the embed is off |
+| --- | --- | --- |
+| Money format | `data-reco-money-format` on the wrapper, embed as fallback | correct |
+| Proxy path | embed only | falls back to `/apps/easy-reco`, the real subpath |
+| Tracking on/off | embed only | tracking on, which is the default anyway |
+| Upsell button labels | `data-upsell-add-*` on the block | correct |
+| Card strings (Sold out, Choose options) | embed only | English defaults in `reco.js` |
+
+**The money format is the one that actually broke.** It came from the embed alone, with a hardcoded
+`"${{amount}}"` fallback, so a store selling in EUR that never enabled the embed rendered `$` on
+every price `reco.js` drew. In the Bought Together block it was worse than wrong, it was
+inconsistent: Liquid formatted the row prices with `| money` and only the running total underneath
+came from JS, so one block showed two currencies. Both copies now go through `strip_html` — some
+stores still hold a `<span class="money">` wrapper in `shop.money_format`, and that would land in
+`textContent` as literal tags.
+
+The remaining embed-only values are all *strings or defaults* whose fallback is merely suboptimal,
+never wrong. A number or a currency must never be in that column.
+
+---
+
 ## 8. Checkout UI extension
 
 Directory: `extensions/checkout-recommendations/`
@@ -729,7 +834,7 @@ marking done.
 
 ### Phase 1 — Data model
 1. Add the models from Section 4 to `prisma/schema.prisma`.
-2. `npx prisma migrate dev --name add_recommendation_models`.
+2. `npm run prisma -- migrate dev --name add_recommendation_models`.
 3. Create `app/models/` with one file per entity: `shop.server.js`, `override.server.js`,
    `usage.server.js`, `event.server.js`, `analytics.server.js`. **All Prisma access lives here** —
    routes never import `db.server.js` directly.
@@ -851,9 +956,17 @@ marking done.
   is skipped entirely under `prefers-reduced-motion`.
 - **`show_rating` reads `product.metafields.reviews.rating`** — the convention most review apps
   write. Renders nothing when unset rather than inventing stars.
-- The block declares both `stylesheet` and `javascript`, so it works even if the merchant never
-  enables the app embed. The embed only publishes `window.EasyReco.config`, which `reco.js` reads at
-  call time so the two can load in either order.
+- **The block works without the app embed**, which is optional. The schema declares
+  `"javascript": "reco.js"` and the CSS is emitted inline by `reco-panel.liquid` /
+  `upsell.liquid` as `{{ 'reco.css' | asset_url | stylesheet_tag }}` — so a page carrying three
+  blocks emits three identical `<link>` tags, which browsers dedupe. (The schema does *not* declare
+  `stylesheet`; this note used to claim it did.)
+- **Anything `reco.js` needs must ride on the block, not the embed.** The embed only publishes
+  `window.EasyReco.config`, and `reco.js` reads it at call time so the two can load in either order
+   — but a merchant who never enables it must still get correct output. Two bugs came from
+  forgetting that, both fixed 2026-08-20: prices were formatted with a hardcoded `"${{amount}}"`
+  (now `data-reco-money-format` on the wrapper, §7.5), and the embed's tracking checkbox could
+  suppress the `served` beacon (§3.3).
 
 ### Phase 9 — Analytics pipeline
 1. `app/models/analytics.server.js`:
@@ -936,12 +1049,43 @@ marking done.
 3. Theme editor deep link: `shopify.app.deepLink` / `/admin/themes/current/editor?template=product&addAppBlockId=…`.
 
 ### Phase 14 — Webhooks, privacy & hardening
-1. Webhooks: `app/uninstalled` (soft-delete shop data, cancel period), `app/scopes_update`,
+1. ✅ Webhooks: `app/uninstalled` (soft-delete shop data, cancel period), `app/scopes_update`,
    `orders/create`, `app_subscriptions/update`, `products/delete` (clean up orphan overrides).
-2. Mandatory GDPR webhooks: `customers/data_request`, `customers/redact`, `shop/redact`.
-3. Verify HMAC on every webhook (the library does this — never bypass with a custom handler).
-4. Rate limiting on proxy endpoints; input validation everywhere.
-5. Error boundaries on all admin routes.
+2. ✅ Mandatory GDPR webhooks: `customers/data_request`, `customers/redact`, `shop/redact`.
+3. ✅ Verify HMAC on every webhook (the library does this — never bypass with a custom handler).
+4. ✅ Rate limiting on proxy endpoints; input validation everywhere.
+5. Error boundaries on all admin routes. **Still outstanding** — only `app.jsx` and `app._index.jsx`
+   export one.
+
+**Done 2026-08-20 (items 1–4).**
+
+The three GDPR endpoints go in `[webhooks.privacy_compliance]` with **absolute** URLs, unlike the
+relative `uri` on a normal subscription — keep them in step with `application_url`.
+`app/routes.test.js` checks that each one has both a route and a config line and that the two agree
+on the path: a handler with no toml entry is never called, and a toml entry with no handler is a 404
+at review time.
+
+**What the two customer webhooks actually do**, since the honest answer is "almost nothing":
+
+- `customers/data_request` returns no data, because the app holds none. Nothing in the schema is
+  keyed to a person — `RecommendationEvent` carries product ids, a placement, an opaque per-tab
+  session id, and on purchase rows an order id. There is no name, email or customer id anywhere, and
+  no customer scopes are requested. The handler still has to exist and still has to verify the HMAC,
+  which is what review tests.
+- `customers/redact` deletes the `purchase` events for the orders named in `orders_to_redact`.
+  `orderId` is the only field that leads back to a person. Revenue already rolled into
+  `AnalyticsDaily` is a per-day total and identifies nobody, so it stays — but the raw rows must
+  actually go, or a later rollup of the same day would rebuild them.
+- `shop/redact` is the hard delete (`purgeShopData`). Deleting the `Shop` row cascades to overrides,
+  usage periods, raw events and daily rollups.
+
+**`app/uninstalled` is a soft delete, `shop/redact` is the hard one.** The uninstall handler was
+only deleting sessions, so `Shop.uninstalledAt` was never set — and `/cron/rollup` filters on
+`uninstalledAt: null`, meaning every scheduled run kept rolling up and pruning shops that had left
+months earlier. It now also drops the plan to Free and clears `subscriptionId`: Shopify cancels the
+charge on uninstall regardless, so a stored id is a stale claim to a paid quota. The soft delete is
+deliberate — a merchant who reinstalls the same day keeps their overrides and history, because
+`ensureShop` clears the marker and re-anchors the billing window.
 
 ### Phase 15 — QA, performance & launch
 1. Checklist in Section 11.
@@ -988,6 +1132,14 @@ marking done.
 - [ ] Checkout extension renders on thank-you page and adds lines to the order
 - [ ] Uninstall → reinstall does not duplicate shop/override rows
 - [ ] No console errors on the storefront; no CLS from the widget
+- [ ] Prices render in the shop's own currency **with the app embed disabled** (§7.5)
+- [ ] Turning off the embed's "Track recommendation performance" stops impressions and clicks but
+      **still counts the serve** (§3.3)
+- [ ] A block added in the theme editor shows a real heading, not the word "Heading"
+- [ ] A grid of 12 cards reports 12 impressions, not 10
+- [ ] Uninstall sets `Shop.uninstalledAt` and drops the plan to Free; `shop/redact` erases the shop
+- [ ] Deleting a product removes its override rows and frees a slot against the Free allowance
+- [ ] An override whose products have all been deleted falls back to Shopify's list, not an empty row
 
 ---
 
@@ -1017,7 +1169,8 @@ so the first can declare `enabled_on` and the second can own a real collection p
 They share their markup through `reco-panel` and `reco-collection-cards`; only the schema JSON
 duplicates, and a test pins the two copies together. A third block, **Upsell**, is a
 **Bought Together** bundle over the same Custom list (§7.4) — product templates only, its own
-`upsell` placement, billable. 285 Vitest tests pass; lint and typecheck are clean.
+`upsell` placement, billable. 337 Vitest tests pass; lint and typecheck are clean — though see the
+warning in §4: typecheck does not read a single `.js`/`.jsx` file, which is all of them.
 
 Custom recommendations are no longer a paid-only feature: **Free covers 10 products** and the
 allowance is enforced in the editor's action as well as the UI (§5).
@@ -1027,22 +1180,39 @@ allowance is enforced in the editor's action as well as the UI (§5).
 ⛔ **Revenue attribution is disabled in `shopify.app.toml`** pending protected customer data
 approval — see the note at the end of Phase 9. Code is written and tested; config is off.
 
-**None of the storefront code has ever run.** The Liquid has never been rendered by Shopify, neither
-block has appeared in a theme editor, and `reco.js` has never executed in a browser. The static
-tests in `tests/theme-extension.test.js` catch malformed schema JSON, out-of-bounds range defaults
-and missing translation keys — nothing more. Equally, `npm run deploy` has not been run, so the
-scopes, metafield definition and app proxy are not live, and no real Admin or Storefront API call
-has ever executed.
+**The Liquid has still never been rendered by Shopify.** No block has appeared in a theme editor,
+`npm run deploy` has not been run, so the scopes, the metafield definition and the app proxy are not
+live, and no real Admin or Storefront API call has ever executed. Everything below is verified
+against tests and nothing else.
 
-The Collection picker is a `url` input scoped to `source == 'collection'` (§7.3, settled
-2026-08-19) — it hides for the other four sources, at the cost of a picker menu that also lists
-products and pages. `popular` no longer takes a collection. A two-block split was built and reverted
-the same day; the app stays one theme block.
+`reco.js` is no longer in that category: `tests/reco-runtime.test.js` executes it in jsdom against
+fixtures shaped like the Liquid's output (added 2026-08-20, see §4 Testing). That is a real safety
+net for its logic — beacons, batching, money formatting, cart payloads — but it is not a browser and
+its fixtures are hand-written, so it cannot catch a mismatch between them and what Liquid actually
+emits. Only a live pass can.
 
-**Next up:** Phase 12 — the checkout UI extension. Still outstanding and still recommended first: a
-live pass on a dev store (`npm run deploy`, `npm run dev`, add the block in the theme editor on Dawn
-once per source, walk the QA checklist in §11).
-**Last updated:** 2026-08-19
+The Collection picker is a real `"type": "collection"` resource input on **Product Showcase**,
+visible for all three of that block's sources (§7.3, settled 2026-08-19). `popular` reads it as an
+optional narrowing; `collection` requires it and falls back to the store's first collection. The
+`"type": "url"` variant and the Collection-only third block were both built and rejected — see 8.5
+and 8.6. This paragraph described the `url` attempt and claimed the app was still one theme block
+long after 8.6 landed three; corrected 2026-08-20.
+
+**Next up, in order:**
+
+1. **A live pass on a dev store.** `npm run deploy`, `npm run dev`, add each block in the theme
+   editor on Dawn once per source, walk the QA checklist in §11. This is the single highest-value
+   thing left and has been deferred through eight feature phases; every finding below came from
+   reading code, and the storefront still has never been rendered by Shopify.
+2. **Postgres** (§4 warning) — `provider`, migration history, and a plan for the two in-memory
+   caches. The URL is env-driven now; the provider is not.
+3. **Phase 12** — the checkout UI extension. `canUseCheckout()` has been written and unused since
+   Phase 5; "Checkout recommendations" was pulled from the Standard plan's feature list on
+   2026-08-20 rather than keep selling it, and goes back the moment the extension ships.
+4. **Phase 13** — Settings, and with it §12 Q2 (a global `intent` default).
+5. **Error boundaries on the remaining admin routes** (Phase 14 item 5, the only one left).
+
+**Last updated:** 2026-08-20
 
 | Phase | Status | Completed | Notes |
 | --- | --- | --- | --- |
@@ -1066,9 +1236,10 @@ once per source, walk the QA checklist in §11).
 | 9. Analytics pipeline | ✅ Done | 2026-08-12 | `rollupDay`/`rollupRange` (idempotent, refuses pruned days), `getDashboardMetrics` (totals + prior-period deltas + gapless series), `getFunnel`, `WIDGET_TOTAL` sentinel; `attribution.server.js` + `orders/create` webhook with order-derived idempotency keys; `cron.rollup` route with retention pruning. 202 tests. Analytics page (`/app/analytics`) built 2026-08-18: range selector, impressions-vs-clicks trend, funnel bars, per-placement breakdown (`getPlacementBreakdown`), sortable 50-row per-product table, CSV export gated by `canExportCsv`. |
 | 10. Home dashboard | ✅ Done | 2026-08-18 | Real metrics with period deltas, 7/30/90 range (clamped to plan retention), served-vs-clicks SVG trend chart, top-10 products, funnel, onboarding checklist shown only before first data. Loader rolls up a 3-day trailing window so numbers appear without the cron. |
 | 11. Pricing & billing | ✅ Done | 2026-08-18 | `billing` config in `shopify.server.js` (paid plans only, 14-day trial, `isTest`); pricing page upgrade/downgrade actions; `app.billing.callback` verifies with `billing.check()` rather than trusting the return URL; `app_subscriptions/update` webhook drops non-active subscriptions to Free. Quota snapshot is rewritten on every plan change so the new limit applies immediately. |
-| 12. Checkout extension | ⬜ Not started | — | Checkout / thank-you / order status |
+| 12. Checkout extension | ⬜ Not started | — | Checkout / thank-you / order status. "Checkout recommendations" removed from the Standard plan's feature list 2026-08-20 until it exists. |
 | 13. Settings page | ⬜ Not started | — | Global defaults, re-sync, deep links |
-| 14. Webhooks & privacy | ⬜ Not started | — | GDPR, orders/create, hardening |
-| 15. QA & launch | ⬜ Not started | — | Postgres, listing, BFS review |
+| 14. Webhooks & privacy | 🟡 Mostly done | 2026-08-20 | Items 1–4 done: the three mandatory GDPR endpoints (`customers/data_request`, `customers/redact`, `shop/redact`), `products/delete`, and a completed `app/uninstalled`. Item 5 (error boundaries on every admin route) outstanding. |
+| 15. QA & launch | ⬜ Not started | — | Postgres provider + migrations, listing, BFS review. `DATABASE_URL` is env-driven as of 2026-08-20; the rest of the move is still here. |
+| H1. Audit & hardening pass | ✅ Done | 2026-08-20 | A code read of the whole app, then the fixes. **Two billing holes:** the app embed's tracking checkbox suppressed the `served` beacon, which on the theme path is the only billing signal, so unchecking it bought unlimited free recommendations (§3.3); and `selectBillableServes()` skipped its in-batch dedupe for serves with no session id, billing once per copy from a single beacon. **Two silent-failure paths:** the Storefront token was minted only by the override editor's loader, so every server-side recommendation path returned `{items: []}` for a merchant who never opened that one page (now provisioned in the `/app` loader); and an override whose products had all been deleted returned an empty list instead of falling back to Shopify, rendering nothing. **Two storefront defects:** prices used a hardcoded `"${{amount}}"` unless the optional app embed was on (§7.5), and both card blocks shipped `"default": "Heading"` — a literal `<h2>Heading</h2>` on the merchant's live product page. **Plus:** the beacon queue dropped everything past the first batch of 10 (a 12-card grid hit it immediately), slider autoplay leaked an interval per theme-editor re-render, and the product search interpolated raw input into Shopify's search grammar. **Infrastructure:** `DATABASE_URL` is now an env var rather than a container-local SQLite file — with a dev fallback and a hard failure in production, applied through `scripts/prisma.js` because `shopify.web.toml` shells out to the Prisma CLI twice before the app boots (making it env-driven broke `shopify app dev` with P1012 until the wrapper landed). Phase 14's webhooks landed. **Coverage:** `tests/reco-runtime.test.js` runs `reco.js` in jsdom — 24 tests where there had been none. 285 → 337 tests. **Docs:** §13 still described the rejected `url` picker and claimed one theme block after 8.6 shipped three; §7 claimed a `stylesheet` declaration that does not exist; §4 claimed lint ignored `.jsx`, which it does not. All corrected. |
 
 Status legend: ⬜ Not started · 🟡 In progress · ✅ Done · ⛔ Blocked

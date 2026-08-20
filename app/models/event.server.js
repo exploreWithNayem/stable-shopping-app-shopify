@@ -175,6 +175,28 @@ export async function getSourceProductMetrics(shopId, productIds, { from, to } =
   return metrics;
 }
 
+/**
+ * Drop the events tied to a set of orders, for the `customers/redact` webhook.
+ *
+ * `orderId` is the only field in this table that leads back to a person —
+ * everything else is a product id, a placement or an opaque session id — and it
+ * appears only on `purchase` rows written by the orders/create handler. Deleting
+ * those rows is the whole redaction.
+ *
+ * The revenue already rolled into AnalyticsDaily is not customer-linked and
+ * stays, which is also why this cannot be a no-op: a later rollup of the same
+ * day would otherwise rebuild the deleted rows from raw events that still
+ * existed.
+ */
+export function deleteEventsForOrders(shopId, orderIds = []) {
+  const ids = [...new Set(orderIds.map(String).filter(Boolean))];
+  if (ids.length === 0) return Promise.resolve({ count: 0 });
+
+  return prisma.recommendationEvent.deleteMany({
+    where: { shopId, orderId: { in: ids } },
+  });
+}
+
 /** Retention job. Rolled-up data in AnalyticsDaily is kept. */
 export function deleteEventsBefore(shopId, cutoff) {
   return prisma.recommendationEvent.deleteMany({

@@ -1,3 +1,7 @@
 .cache
 build
 node_modules
+
+# Never bake a local database into the image.
+prisma/dev.sqlite
+prisma/dev.sqlite-journal

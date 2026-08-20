@@ -105,7 +105,17 @@ export async function selectBillableServes({ shopId, serves, now = new Date() })
     const placement = serve.placement ?? "pdp";
     const key = `${serve.sessionId ?? ""}:${serve.sourceProductId}:${placement}`;
 
-    if (serve.sessionId && seen.has(key)) continue;
+    /*
+     * Collapse duplicates inside the batch whether or not a session id came
+     * with them.
+     *
+     * This check used to be skipped for serves without one, on the reasoning
+     * that there was nothing to dedupe on — but the key is
+     * (session, product, placement), and two serves that agree on all three are
+     * the same serve even when the session part is empty. A block that
+     * re-initialised ten times billed ten recommendations from one beacon.
+     */
+    if (seen.has(key)) continue;
 
     const duplicate = await isDuplicateServe({
       shopId,

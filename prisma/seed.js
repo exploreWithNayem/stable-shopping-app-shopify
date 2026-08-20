@@ -8,6 +8,10 @@
  * extensionless imports, which plain `node` ESM cannot resolve.
  */
 import { PrismaClient } from "@prisma/client";
+import { resolveDatabaseUrl } from "../app/lib/database-url.server.js";
+
+// Plain `node` does not read .env, and the datasource is env-driven.
+resolveDatabaseUrl();
 
 const prisma = new PrismaClient();
 

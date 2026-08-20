@@ -30,6 +30,12 @@ export const PLANS = {
       "7 days of analytics",
     ],
   },
+  /*
+   * "Checkout recommendations" was listed here before the checkout UI extension
+   * existed (Phase 12), so the plan was sold on a feature a merchant could not
+   * find. canUseCheckout() in lib/entitlements.js is the gate it will use, and
+   * this line goes back the moment the extension ships.
+   */
   standard: {
     key: "standard",
     name: "Standard",
@@ -39,7 +45,7 @@ export const PLANS = {
     features: [
       "Everything in Free",
       "Custom recommendations on unlimited products",
-      "Checkout recommendations",
+      "Bought Together bundles",
       "90 days of analytics",
       "CSV export",
     ],

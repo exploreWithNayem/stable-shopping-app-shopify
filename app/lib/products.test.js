@@ -4,6 +4,7 @@ import {
   getProductsByIds,
   listProducts,
   normalizeAdminProduct,
+  sanitizeSearchTerm,
   toProductGid,
 } from "./products.server";
 
@@ -101,6 +102,33 @@ describe("listProducts", () => {
     const admin = stubAdmin(connection);
     await listProducts(admin, { search: "snow" });
     expect(admin.calls[0].variables.query).toBe("title:*snow*");
+  });
+
+  /*
+   * The query is built by interpolation, so the search box was one `"` away
+   * from producing a syntax error and one `OR status:draft` away from silently
+   * widening the result set. Merchant-scoped and read-only, so hygiene rather
+   * than a hole — but a product called `12" Skateboard` was unsearchable.
+   */
+  test("strips the characters that mean something to Shopify's search grammar", () => {
+    expect(sanitizeSearchTerm('12" board')).toBe("12 board");
+    expect(sanitizeSearchTerm("x OR status:draft")).toBe("x OR status draft");
+    expect(sanitizeSearchTerm("a*b(c)")).toBe("a b c");
+    expect(sanitizeSearchTerm("  spaced   out  ")).toBe("spaced out");
+    expect(sanitizeSearchTerm(null)).toBe("");
+  });
+
+  test("a search of nothing but punctuation filters nothing", async () => {
+    // Sanitising down to an empty string must mean "everything", not `title:**`.
+    const admin = stubAdmin(() => ({ products: { nodes: [], pageInfo: {} } }));
+    await listProducts(admin, { search: '**' });
+    expect(admin.calls[0].variables.query).toBeNull();
+  });
+
+  test("sanitises before wrapping in the title syntax", async () => {
+    const admin = stubAdmin(() => ({ products: { nodes: [], pageInfo: {} } }));
+    await listProducts(admin, { search: 'snow"board' });
+    expect(admin.calls[0].variables.query).toBe("title:*snow board*");
   });
 
   test("sends no query filter when the search is empty", async () => {

@@ -78,6 +78,13 @@
     if (queue.length === 0) return;
 
     var batch = queue.splice(0, MAX_BATCH);
+
+    // The server caps a batch at 10 as well, so a full queue leaves a tail
+    // behind. The timer was just cleared, so without re-arming it the leftovers
+    // wait for the next event — or are lost to the navigation that triggered
+    // this flush. A grid of 12 cards hits this on its first screenful.
+    if (queue.length > 0) flushTimer = setTimeout(flush, 250);
+
     var url = config().proxy + "/track";
     var body = JSON.stringify({ events: batch });
 
@@ -104,8 +111,29 @@
     }
   }
 
+  /**
+   * A timer cannot fire after the page is gone, so the queue is drained in a
+   * loop instead of one batch at a time.
+   */
+  function flushAll() {
+    var guard = 0;
+    while (queue.length > 0 && guard < 20) {
+      flush();
+      guard += 1;
+    }
+  }
+
+  /**
+   * `served` is exempt from the tracking toggle, deliberately.
+   *
+   * It is not an analytics event: it is the billing signal (CLAUDE.md §3.3), and
+   * on the theme path it is the *only* signal, because an override renders from
+   * the metafield and the Ajax fallback never reaches the app either. Letting
+   * the app embed's "Track recommendation performance" checkbox suppress it
+   * would turn that checkbox into unlimited free recommendations.
+   */
   function track(event) {
-    if (!config().enabled) return;
+    if (!config().enabled && event.type !== "served") return;
 
     queue.push({
       clientId: uid(),
@@ -130,12 +158,28 @@
   }
 
   // Clicks often navigate away before a timer fires.
-  window.addEventListener("pagehide", flush);
+  window.addEventListener("pagehide", flushAll);
   document.addEventListener("visibilitychange", function () {
-    if (document.visibilityState === "hidden") flush();
+    if (document.visibilityState === "hidden") flushAll();
   });
 
   // --- Money ---------------------------------------------------------------
+
+  /**
+   * The shop's money format, read from the block before the app embed.
+   *
+   * The embed publishes it too, but the embed is optional and every block is
+   * built to work without it — so a store selling in EUR that never enabled it
+   * would render "$" on every client-rendered price. Worse in the Bought
+   * Together block, where Liquid formats the row prices correctly and only the
+   * running total underneath would be wrong.
+   */
+  function moneyFormat(block) {
+    return (
+      (block && block.getAttribute("data-reco-money-format")) ||
+      config().moneyFormat
+    );
+  }
 
   function formatMoney(cents, format) {
     var value = Number(cents || 0) / 100;
@@ -169,6 +213,7 @@
     if (!template || !track_) return;
 
     var settings = config();
+    var format = moneyFormat(block);
     var fragment = document.createDocumentFragment();
 
     products.forEach(function (product) {
@@ -198,11 +243,11 @@
       if (vendor) vendor.textContent = product.vendor || "";
 
       var price = node.querySelector("[data-reco-price]");
-      if (price) price.textContent = formatMoney(product.price, settings.moneyFormat);
+      if (price) price.textContent = formatMoney(product.price, format);
 
       var compare = node.querySelector("[data-reco-compare]");
       if (compare && product.compare_at_price > product.price) {
-        compare.textContent = formatMoney(product.compare_at_price, settings.moneyFormat);
+        compare.textContent = formatMoney(product.compare_at_price, format);
         compare.hidden = false;
       }
 
@@ -432,6 +477,22 @@
 
   // --- Slider --------------------------------------------------------------
 
+  /**
+   * Autoplay intervals, so a block that leaves the DOM takes its timer with it.
+   * The theme editor re-renders a section on every settings change, and an
+   * orphaned interval keeps scrolling a detached node for the rest of the
+   * session.
+   */
+  var autoplayTimers = [];
+
+  document.addEventListener("shopify:section:unload", function () {
+    autoplayTimers = autoplayTimers.filter(function (entry) {
+      if (document.contains(entry.block)) return true;
+      clearInterval(entry.timer);
+      return false;
+    });
+  });
+
   function setupSlider(block) {
     var track_ = block.querySelector("[data-reco-track]");
     var nav = block.querySelector("[data-reco-nav]");
@@ -481,6 +542,8 @@
           page(1);
         }
       }, seconds * 1000);
+
+      autoplayTimers.push({ block: block, timer: timer });
 
       // Stop fighting the shopper the moment they take control.
       ["pointerdown", "focusin"].forEach(function (name) {
@@ -641,7 +704,7 @@
       var select = row.querySelector("[data-upsell-variant]");
       // Keep the row's own price honest when its variant changes.
       if (price && select && !select.hidden) {
-        price.textContent = formatMoney(rowCents(row), config().moneyFormat);
+        price.textContent = formatMoney(rowCents(row), moneyFormat(block));
       }
     });
 
@@ -655,7 +718,7 @@
         : "";
     }
     if (totalValue) {
-      totalValue.textContent = count ? formatMoney(total, config().moneyFormat) : "";
+      totalValue.textContent = count ? formatMoney(total, moneyFormat(block)) : "";
     }
     if (button) {
       button.textContent = count === 0
@@ -677,7 +740,7 @@
     var sourceProductId = block.getAttribute("data-reco-source-product");
     var showImage = block.getAttribute("data-upsell-show-image") !== "false";
     var showCompare = block.getAttribute("data-upsell-show-compare") !== "false";
-    var format = config().moneyFormat;
+    var format = moneyFormat(block);
     var fragment = document.createDocumentFragment();
     var rendered = 0;
 

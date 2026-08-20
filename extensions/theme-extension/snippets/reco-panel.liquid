@@ -78,6 +78,12 @@
   <div
     class="reco reco--{{ block.settings.layout }} reco--align-{{ block.settings.text_align }}{% if has_background %} reco--has-background{% endif %}"
     data-reco-block
+    {%- comment -%}
+      Carried on the block rather than left to the app embed: the embed is
+      optional, and without a format reco.js falls back to a hardcoded "$" —
+      so every client-rendered price in a non-USD store would be wrong.
+    {%- endcomment -%}
+    data-reco-money-format="{{ shop.money_format | strip_html | escape }}"
     data-reco-limit="{{ limit }}"
     data-reco-atc="{{ block.settings.atc_behavior }}"
     data-reco-autoplay="{{ block.settings.autoplay }}"

@@ -202,11 +202,29 @@ describe("selectBillableServes", () => {
     expect(await selectBillableServes({ shopId, serves: [served()] })).toHaveLength(0);
   });
 
-  // Without a session there is nothing to dedupe on, so each one counts.
-  test("counts every sessionless serve", async () => {
+  /*
+   * A sessionless serve used to skip the in-batch check entirely, on the
+   * reasoning that there was nothing to dedupe on. But the key is
+   * (session, product, placement), and two serves agreeing on all three are the
+   * same serve even with the session part empty — so a block that
+   * re-initialised billed once per copy from a single beacon.
+   */
+  test("collapses identical sessionless serves within a batch", async () => {
     const billable = await selectBillableServes({
       shopId,
       serves: [served({ sessionId: null }), served({ sessionId: null })],
+    });
+    expect(billable).toHaveLength(1);
+  });
+
+  // Only *identical* ones. Two different products are two recommendations.
+  test("keeps sessionless serves for different products", async () => {
+    const billable = await selectBillableServes({
+      shopId,
+      serves: [
+        served({ sessionId: null, sourceProductId: "111" }),
+        served({ sessionId: null, sourceProductId: "222" }),
+      ],
     });
     expect(billable).toHaveLength(2);
   });

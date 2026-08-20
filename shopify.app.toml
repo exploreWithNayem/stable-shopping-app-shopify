@@ -44,9 +44,27 @@ prefix = "apps"
 [webhooks]
 api_version = "2026-07"
 
+  # Mandatory GDPR endpoints. Every public app must subscribe to all three or
+  # App Store review rejects it, and Shopify probes them with a signed request
+  # during review — authenticate.webhook() verifies the HMAC and answers 401 on a
+  # bad signature, which is what it is checking for.
+  #
+  # These take absolute URLs, unlike the relative `uri` on the subscriptions
+  # below. Keep them in step with application_url.
+  [webhooks.privacy_compliance]
+  customer_data_request_url = "https://logan-newfoundland-literature-albums.trycloudflare.com/webhooks/customers/data_request"
+  customer_deletion_url = "https://logan-newfoundland-literature-albums.trycloudflare.com/webhooks/customers/redact"
+  shop_deletion_url = "https://logan-newfoundland-literature-albums.trycloudflare.com/webhooks/shop/redact"
+
   [[webhooks.subscriptions]]
   uri = "/webhooks/app/uninstalled"
   topics = [ "app/uninstalled" ]
+
+  # A deleted product leaves its override rows behind, holding a slot against
+  # the plan's product allowance for something that no longer exists.
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/products/delete"
+  topics = [ "products/delete" ]
 
   [[webhooks.subscriptions]]
   uri = "/webhooks/app/scopes_update"

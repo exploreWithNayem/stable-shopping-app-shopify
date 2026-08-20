@@ -4,13 +4,34 @@ import { AppProvider } from "@shopify/shopify-app-react-router/react";
 import { authenticate } from "../shopify.server";
 import { ensureShop } from "../models/shop.server";
 import { getQuotaStatusForShop } from "../models/usage.server";
+import { ensureStorefrontToken } from "../lib/storefront.server";
 
 export const loader = async ({ request }) => {
-  const { session } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
 
   // Every page under /app depends on the Shop row existing, so bootstrap it
   // here rather than in each route.
   const shop = await ensureShop(session.shop);
+
+  /*
+   * Provision the delegated Storefront token here, not on the page that happens
+   * to need it first.
+   *
+   * Shopify's own recommendations are reachable only through the Storefront API,
+   * so without a token every server-side path — the app proxy, the checkout
+   * extension, the admin preview — degrades to an empty list. Minting it in one
+   * route's loader meant a merchant who never opened the override editor had a
+   * silently broken proxy. It is a no-op once the token is on the Shop row.
+   *
+   * Never fatal: a missing scope or a token cap must not take the whole admin
+   * down. The paths that need it already degrade on their own.
+   */
+  try {
+    await ensureStorefrontToken(admin, shop);
+  } catch (error) {
+    console.error("[easy-reco] storefront token provisioning failed", error);
+  }
+
   const quota = await getQuotaStatusForShop(shop);
 
   return {

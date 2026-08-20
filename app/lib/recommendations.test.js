@@ -337,6 +337,42 @@ describe("resolveRecommendations", () => {
     expect(result.reason).toMatch(/500/);
   });
 
+  /*
+   * An override pointing only at deleted or unpublished products used to return
+   * `{ source: "override", items: [] }` — no fallback and no `degraded` flag —
+   * so the surface rendered nothing at all. The merchant's intent was
+   * "recommend something here", and the list they curated no longer exists to
+   * honour.
+   */
+  test("an override whose products are all gone falls back to Shopify", async () => {
+    await saveOverride("pdp", [{ id: "11" }, { id: "12" }]);
+    const graphql = stubGraphql(({ ids }) =>
+      // nodes(ids:) answers null for anything deleted or unpublished.
+      ids ? { nodes: ids.map(() => null) } : { productRecommendations: [node(77)] },
+    );
+
+    const result = await resolveRecommendations({ shop, productId: 5, graphql });
+
+    expect(result.source).toBe("shopify");
+    expect(result.items.map((i) => i.id)).toEqual(["77"]);
+    expect(result.degraded).toBeUndefined();
+  });
+
+  test("a partly resolvable override is still the override", async () => {
+    // One survivor is a list; falling back would discard the merchant's choice.
+    await saveOverride("pdp", [{ id: "11" }, { id: "12" }]);
+    const graphql = stubGraphql(({ ids }) =>
+      ids
+        ? { nodes: [node(fromProductGid(ids[0])), null] }
+        : { productRecommendations: [node(77)] },
+    );
+
+    const result = await resolveRecommendations({ shop, productId: 5, graphql });
+
+    expect(result.source).toBe("override");
+    expect(result.items.map((i) => i.id)).toEqual(["11"]);
+  });
+
   test("degrades when the shop has no storefront token", async () => {
     const result = await resolveRecommendations({
       shop: { ...shop, storefrontToken: null },

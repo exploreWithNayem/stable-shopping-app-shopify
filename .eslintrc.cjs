@@ -88,6 +88,7 @@ module.exports = {
         "shopify.server.{js,ts}",
         "**/*.server.{js,ts}",
         "prisma/*.{js,ts}",
+        "scripts/*.{js,mjs}",
       ],
       env: {
         node: true,

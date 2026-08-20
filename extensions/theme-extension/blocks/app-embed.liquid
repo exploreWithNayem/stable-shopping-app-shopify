@@ -14,7 +14,7 @@
   window.EasyReco.config = {
     proxy: "/apps/easy-reco",
     shop: {{ shop.permanent_domain | json }},
-    moneyFormat: {{ shop.money_format | json }},
+    moneyFormat: {{ shop.money_format | strip_html | json }},
     enabled: {% if block.settings.enable_tracking %}true{% else %}false{% endif %},
     strings: {
       addToCart: {{ 'recommendations.add_to_cart' | t | json }},

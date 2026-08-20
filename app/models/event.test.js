@@ -3,6 +3,7 @@ import prisma from "../db.server";
 import {
   countEvents,
   deleteEventsBefore,
+  deleteEventsForOrders,
   getEventsForRange,
   getSourceProductMetrics,
   normalizeEvent,
@@ -192,5 +193,63 @@ describe("retention", () => {
 
     await deleteEventsBefore(shopId, new Date("2026-06-01Z"));
     expect(await countEvents(shopId)).toBe(1);
+  });
+});
+
+describe("deleteEventsForOrders", () => {
+  /*
+   * The whole of customers/redact. `orderId` is the only field in this table
+   * that leads back to a person — everything else is a product id, a placement
+   * or an opaque session id — and it appears only on purchase rows.
+   */
+  const purchase = (orderId) => ({
+    type: "purchase",
+    sourceProductId: "1",
+    recoProductId: "2",
+    placement: "pdp",
+    source: "override",
+    orderId,
+    revenue: "10.00",
+  });
+
+  test("removes only the named orders", async () => {
+    await recordEvents(shopId, [purchase("111"), purchase("222"), purchase("333")]);
+
+    const { count } = await deleteEventsForOrders(shopId, ["111", "333"]);
+
+    expect(count).toBe(2);
+    const left = await prisma.recommendationEvent.findMany({ where: { shopId } });
+    expect(left.map((row) => row.orderId)).toEqual(["222"]);
+  });
+
+  test("leaves everything that is not tied to an order", async () => {
+    await recordEvents(shopId, [
+      purchase("111"),
+      { type: "click", sourceProductId: "1", recoProductId: "2", placement: "pdp", source: "shopify" },
+    ]);
+
+    await deleteEventsForOrders(shopId, ["111"]);
+
+    const left = await prisma.recommendationEvent.findMany({ where: { shopId } });
+    expect(left.map((row) => row.type)).toEqual(["click"]);
+  });
+
+  test("an empty list is a no-op, not a table wipe", async () => {
+    await recordEvents(shopId, [purchase("111")]);
+    expect(await deleteEventsForOrders(shopId, [])).toEqual({ count: 0 });
+    expect(await countEvents(shopId)).toBe(1);
+  });
+
+  test("never reaches another shop's rows", async () => {
+    const other = await prisma.shop.create({
+      data: { domain: "vitest-event-other.myshopify.com" },
+    });
+    await recordEvents(other.id, [purchase("111")]);
+    await recordEvents(shopId, [purchase("111")]);
+
+    await deleteEventsForOrders(shopId, ["111"]);
+
+    expect(await countEvents(other.id)).toBe(1);
+    await prisma.shop.delete({ where: { id: other.id } });
   });
 });

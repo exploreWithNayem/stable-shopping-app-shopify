@@ -252,7 +252,16 @@ export async function resolveRecommendations({
         items: override.items,
         graphql,
       });
-      return { source: "override", items: items.slice(0, safeLimit) };
+      if (items.length > 0) {
+        return { source: "override", items: items.slice(0, safeLimit) };
+      }
+      /*
+       * Every product on the curated list has since been deleted or
+       * unpublished, so there is nothing left to honour. Falling through to
+       * Shopify's own list beats returning an empty widget: the merchant's
+       * intent was "recommend something here", and an empty response also means
+       * the surface renders nothing at all rather than degrading gracefully.
+       */
     } catch (error) {
       return {
         source: "override",

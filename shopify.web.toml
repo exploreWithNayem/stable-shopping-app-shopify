@@ -2,5 +2,9 @@ name = "React Router"
 roles = ["frontend", "backend"]
 webhooks_path = "/webhooks/app/uninstalled"
 [commands]
-predev = "npm exec prisma generate"
-dev = "npm exec prisma migrate deploy && npm exec react-router dev"
+# Through scripts/prisma.js, not the CLI directly: the datasource is
+# env("DATABASE_URL") and the Prisma CLI is a separate process that only reads
+# .env if one exists. The wrapper applies the same dev fallback / production
+# throw the app uses. See CLAUDE.md §4.
+predev = "npm run prisma -- generate"
+dev = "npm run prisma -- migrate deploy && npm exec react-router dev"

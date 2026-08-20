@@ -8,9 +8,19 @@ generator client {
 // Note that some adapters may set a maximum length for the String type by default, please ensure your strings are long
 // enough when changing adapters.
 // See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
+// The URL is an environment variable, not a literal, so a deployment can point
+// at a durable path or a managed database instead of a file inside the
+// container image — a hardcoded `file:dev.sqlite` is recreated empty on every
+// redeploy. Relative file paths are resolved against this file's directory, so
+// `DATABASE_URL="file:dev.sqlite"` is the local default and matches what this
+// used to hardcode.
+//
+// Going to Postgres for production also needs `provider = "postgresql"` here
+// (Prisma requires a literal, so it cannot be an env var) and a fresh migration
+// history — see CLAUDE.md Phase 15.
 datasource db {
   provider = "sqlite"
-  url      = "file:dev.sqlite"
+  url      = env("DATABASE_URL")
 }
 
 model Session {

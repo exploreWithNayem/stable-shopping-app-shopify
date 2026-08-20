@@ -431,7 +431,9 @@ describe("two blocks, five sources", () => {
     // `source` differs by construction; `limit` differs by ceiling — 12 on the
     // PDP block, where an override list is capped by all_products, and 24 on
     // the showcase block, which iterates collection.products directly.
-    const differsByDesign = new Set(["source", "limit"]);
+    // `heading` differs too: "You may also like" answers the recommendation
+    // question, and there is no reading of it that fits a Recently viewed row.
+    const differsByDesign = new Set(["source", "limit", "heading"]);
 
     const strip = (setting) =>
       Object.fromEntries(
@@ -516,9 +518,45 @@ describe("two blocks, five sources", () => {
     // heading that changed with the source left the editor's own input showing
     // a different string from the storefront.
     const heading = schema.settings.find((entry) => entry.id === "heading");
-    expect(heading.default).toBe("Heading");
+    expect(heading.default).toBe("You may also like");
     expect(source).toContain("assign heading = block.settings.heading");
     expect(source).not.toContain("heading_is_default");
+  });
+
+  test("no block ships a placeholder heading", () => {
+    /*
+     * Both card blocks shipped with `"default": "Heading"`, which is not a
+     * default — it is the label leaking into the value. A merchant who added the
+     * block got a literal <h2>Heading</h2> on their live product page, because
+     * the panel renders the setting whenever it is non-blank.
+     */
+    for (const file of blockFiles) {
+      const heading = (readSchema(file).settings ?? []).find(
+        (entry) => entry.id === "heading",
+      );
+      if (!heading) continue;
+      expect(heading.default, `${file} has no heading default`).toBeTruthy();
+      expect(
+        String(heading.default).trim().toLowerCase(),
+        `${file} ships the label as its heading default`,
+      ).not.toBe("heading");
+    }
+  });
+
+  test("every client-rendering block carries the shop money format", () => {
+    /*
+     * reco.js formats prices for everything Liquid could not render, and its
+     * only other source for the format is the app embed — which is optional,
+     * and which every block is built to work without. Missing here, the fallback
+     * is a hardcoded "$" on every price in a non-USD store, and in the bundle a
+     * total in one currency under rows in another.
+     */
+    for (const markup of [panel, readLiquid(join(BLOCKS, UPSELL))]) {
+      expect(markup).toContain("data-reco-money-format=");
+      // strip_html because some stores still hold a <span class="money"> wrapper,
+      // which would land in textContent as literal tags.
+      expect(markup).toContain("shop.money_format | strip_html");
+    }
   });
 
   test("every editor hint has a translation", () => {

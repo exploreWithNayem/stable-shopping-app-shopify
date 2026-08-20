@@ -84,6 +84,12 @@
     class="upsell{% if block.settings.show_border %} upsell--bordered{% endif %} upsell--align-{{ block.settings.text_align }}"
     data-upsell-block
     data-reco-block
+    {%- comment -%}
+      Without this the running total would be formatted with reco.js's hardcoded
+      "$" fallback while the row prices above it use Liquid's `money` filter —
+      two currencies in one block on any store that never enabled the embed.
+    {%- endcomment -%}
+    data-reco-money-format="{{ shop.money_format | strip_html | escape }}"
     data-reco-placement="upsell"
     data-reco-source-product="{{ product.id }}"
     data-reco-source="{% if rows != blank %}override{% else %}shopify{% endif %}"
