@@ -28,6 +28,7 @@ const LAZY_ROLLUP_DAYS = 3;
 const PLACEMENT_LABELS = {
   pdp: 'Product page',
   related: 'Related products block',
+  upsell: 'Frequently bought together',
   checkout: 'Checkout',
   thank_you: 'Thank you page',
   order_status: 'Order status',

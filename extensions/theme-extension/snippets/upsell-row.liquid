@@ -1,0 +1,115 @@
+{%- comment -%}
+  One row of the Upsell (frequently bought together) block: checkbox, image,
+  title, variant picker when the product needs one, and price.
+
+  A row is not a `reco-card`. The card is a tile in a grid with its own add-to-cart
+  button; this is a line in a bundle whose only action is the block's single
+  button, so it shares the styling vocabulary and nothing else.
+
+  Accepts:
+    item       - the product to render (required)
+    block      - the block object, for the display toggles
+    is_current - true for the "This item" row, which is the product being viewed
+
+  The current row is deliberately NOT marked `data-reco-card`: it is the source
+  product, not a recommendation, so it must not be counted as an impression or
+  an add_to_cart against itself.
+{%- endcomment -%}
+
+{%- liquid
+  assign variant = item.selected_or_first_available_variant
+
+  comment
+    Only available variants are offered. A bundle button that fails because one
+    hidden line is sold out is worse than a shorter list.
+  endcomment
+  assign sellable = item.variants | where: 'available'
+  assign row_id = 'ups-' | append: block.id | append: '-' | append: item.id
+-%}
+
+<div
+  class="upsell__row{% if is_current %} upsell__row--current{% endif %}"
+  data-upsell-row
+  {%- if is_current %}
+    data-upsell-current
+  {%- else %}
+    data-reco-card
+    data-reco-product-id="{{ item.id }}"
+  {%- endif %}
+  data-upsell-handle="{{ item.handle }}"
+>
+  <input
+    type="checkbox"
+    id="{{ row_id }}"
+    class="upsell__check"
+    data-upsell-check
+    value="{{ variant.id }}"
+    checked
+  >
+
+  <label class="upsell__label" for="{{ row_id }}">
+    {%- if block.settings.show_image -%}
+      {%- if item.featured_image -%}
+        <img
+          class="upsell__image"
+          src="{{ item.featured_image | image_url: width: 120 }}"
+          srcset="{{ item.featured_image | image_url: width: 120 }} 120w, {{ item.featured_image | image_url: width: 240 }} 240w"
+          sizes="60px"
+          alt="{{ item.featured_image.alt | escape }}"
+          width="60"
+          height="60"
+          loading="lazy"
+        >
+      {%- else -%}
+        <span class="upsell__image upsell__image--placeholder"></span>
+      {%- endif -%}
+    {%- endif -%}
+
+    <span class="upsell__title">
+      {%- if is_current -%}
+        <span class="upsell__this">{{ 'upsell.this_item' | t }}</span>
+      {%- endif -%}
+      {{ item.title }}
+    </span>
+  </label>
+
+  <div class="upsell__meta">
+    {%- comment -%}
+      A variant picker rather than a guess. Adding "the first variant" is how a
+      shopper ends up with the wrong size in their cart, and skipping every
+      multi-variant product would empty the block on most stores.
+    {%- endcomment -%}
+    {%- if sellable.size > 1 -%}
+      <select
+        class="upsell__variant"
+        data-upsell-variant
+        aria-label="{{ 'upsell.choose_variant' | t }}"
+      >
+        {%- for option in sellable -%}
+          <option
+            value="{{ option.id }}"
+            data-upsell-cents="{{ option.price }}"
+            {% if option.id == variant.id %}selected{% endif %}
+          >
+            {{ option.title }}
+          </option>
+        {%- endfor -%}
+      </select>
+    {%- endif -%}
+
+    <span class="upsell__prices">
+      <span class="upsell__price" data-upsell-price data-upsell-cents="{{ variant.price }}">
+        {{ variant.price | money }}
+      </span>
+      {%- if block.settings.show_compare_price and item.compare_at_price > variant.price -%}
+        <s class="upsell__compare">{{ item.compare_at_price | money }}</s>
+      {%- endif -%}
+    </span>
+
+    {%- unless is_current -%}
+      <a class="upsell__link" href="{{ item.url }}" data-reco-link>
+        {{ 'upsell.view' | t }}
+      </a>
+    {%- endunless -%}
+  </div>
+</div>

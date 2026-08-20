@@ -1,0 +1,335 @@
+{%- liquid
+  assign limit = block.settings.limit
+
+  comment
+    Frequently bought together.
+
+    The product being viewed plus a few recommended ones, each with a checkbox, a
+    running total, and one button that adds every ticked line in a single
+    /cart/add.js call.
+
+    Named "Bought Together" on screen because that is what it does. It is a
+    cross-sell bundle: complementary products bought alongside this one. A true
+    upsell sells a better version of the same thing — an upgrade — and Shopify's
+    recommendation API cannot supply that (its `related` list is not ranked by
+    price or upgrade path), so this block does not attempt it.
+
+    Not "Frequently Bought Together": a block schema `name` is capped at 25
+    characters and that is 26, which fails the deploy rather than truncating.
+    The default heading carries the full phrase, where there is no limit.
+
+    `upsell` survives as the internal identifier only — the filename, the
+    placement key, the CSS prefix and the data attributes — because it names the
+    surface category and a placement key has to stay stable once events are
+    written against it (CLAUDE.md 7.4).
+
+    Its own block, not a `source` on Smart Recommendations, because nothing about
+    it is a row of cards: different markup, a variant picker per line, a price
+    total, and a multi-line cart add. It shares the tracking runtime and the
+    money formatting in reco.js and nothing else (CLAUDE.md 7.4).
+
+    Product pages only — like Custom and Related it needs a product to recommend
+    against, so it declares enabled_on templates: ["product"].
+
+    Where the list comes from is exactly the Custom source's rule: the override
+    metafield when the merchant has curated one, Shopify's own recommendations
+    in the browser when they have not. So a merchant's curated list drives the
+    bundle without them having to set it up twice.
+
+    App-owned metafields live in the reserved namespace app--{app_id}. Liquid
+    reaches it through the "$app" reserved prefix used as a bracket key.
+    `metafields.app` looks for a literal namespace named "app", finds nothing,
+    and resolves to nil — silently dropping every override to the fallback.
+  endcomment
+
+  assign overrides = product.metafields["$app"].reco_overrides.value
+-%}
+
+{%- capture rows -%}
+  {%- if overrides.items -%}
+    {%- assign rendered = 0 -%}
+    {%- for entry in overrides.items -%}
+      {%- if rendered >= limit -%}
+        {%- break -%}
+      {%- endif -%}
+      {%- assign reco = all_products[entry.handle] -%}
+      {%- comment -%}
+        `available` skips a product whose every variant is sold out, and the id
+        check stops a curated list that includes the product itself from
+        rendering it twice.
+      {%- endcomment -%}
+      {%- if reco.id and reco.available and reco.id != product.id -%}
+        {%- render 'upsell-row', item: reco, block: block, is_current: false -%}
+        {%- assign rendered = rendered | plus: 1 -%}
+      {%- endif -%}
+    {%- endfor -%}
+  {%- endif -%}
+{%- endcapture -%}
+
+{%- liquid
+  comment
+    No override, or none of its products are sellable: reco.js fills the list
+    from Shopify's Ajax recommendations API, exactly as the Custom source does.
+  endcomment
+  assign client_rendered = false
+  if rows == blank
+    assign client_rendered = true
+  endif
+-%}
+
+{%- if product -%}
+  {{ 'reco.css' | asset_url | stylesheet_tag }}
+
+  <div
+    class="upsell{% if block.settings.show_border %} upsell--bordered{% endif %} upsell--align-{{ block.settings.text_align }}"
+    data-upsell-block
+    data-reco-block
+    data-reco-placement="upsell"
+    data-reco-source-product="{{ product.id }}"
+    data-reco-source="{% if rows != blank %}override{% else %}shopify{% endif %}"
+    data-reco-intent="related"
+    data-reco-limit="{{ limit }}"
+    data-reco-atc="{{ block.settings.atc_behavior }}"
+    data-reco-server-rendered="{% if client_rendered %}false{% else %}true{% endif %}"
+    data-upsell-show-image="{{ block.settings.show_image }}"
+    data-upsell-show-compare="{{ block.settings.show_compare_price }}"
+    {%- comment -%}
+      The labels ride on the block rather than coming from the app embed, so the
+      block still reads correctly when a merchant has never enabled the embed.
+      reco.js substitutes [count].
+    {%- endcomment -%}
+    data-upsell-add-one="{{ 'upsell.add_one' | t | escape }}"
+    data-upsell-add-many="{{ 'upsell.add_many' | t | escape }}"
+    data-upsell-add-none="{{ 'upsell.add_none' | t | escape }}"
+    data-upsell-total-label="{{ 'upsell.total' | t | escape }}"
+    data-upsell-view="{{ 'upsell.view' | t | escape }}"
+    data-upsell-choose-variant="{{ 'upsell.choose_variant' | t | escape }}"
+    style="
+      --reco-accent: {{ block.settings.accent_color }};
+      --reco-padding-top: {{ block.settings.padding_top }}px;
+      --reco-padding-bottom: {{ block.settings.padding_bottom }}px;
+    "
+    {{ block.shopify_attributes }}
+  >
+    {%- if block.settings.heading != blank -%}
+      <h2 class="reco__heading reco__heading--{{ block.settings.heading_size }}">
+        {{ block.settings.heading }}
+      </h2>
+    {%- endif -%}
+
+    <div class="upsell__list" data-upsell-list>
+      {%- if block.settings.include_current and product.available -%}
+        {%- render 'upsell-row', item: product, block: block, is_current: true -%}
+      {%- endif -%}
+      {{ rows }}
+    </div>
+
+    <div class="upsell__footer">
+      <span class="upsell__total-line">
+        <span class="upsell__total-label" data-upsell-total-text></span>
+        <span class="upsell__total-value" data-upsell-total></span>
+      </span>
+
+      <button
+        type="button"
+        class="upsell__button upsell__button--{{ block.settings.button_style }}"
+        data-upsell-add
+      >
+        {{ 'upsell.add_none' | t }}
+      </button>
+    </div>
+
+    {%- if client_rendered -%}
+      {%- comment -%} Cloned by reco.js for each product it loads. {%- endcomment -%}
+      <template data-upsell-row-template>
+        <div class="upsell__row" data-upsell-row data-reco-card>
+          <input type="checkbox" class="upsell__check" data-upsell-check checked>
+          <label class="upsell__label">
+            <img class="upsell__image" width="60" height="60" loading="lazy" alt="" data-upsell-image>
+            <span class="upsell__title" data-upsell-title></span>
+          </label>
+          <div class="upsell__meta">
+            <select class="upsell__variant" data-upsell-variant hidden></select>
+            <span class="upsell__prices">
+              <span class="upsell__price" data-upsell-price></span>
+              <s class="upsell__compare" data-upsell-compare hidden></s>
+            </span>
+            <a class="upsell__link" data-reco-link data-upsell-view-link></a>
+          </div>
+        </div>
+      </template>
+    {%- endif -%}
+  </div>
+{%- elsif request.design_mode -%}
+  <div class="reco reco--empty" {{ block.shopify_attributes }}>
+    <p>{{ 'upsell.needs_product' | t }}</p>
+  </div>
+{%- endif -%}
+
+{% schema %}
+{
+  "name": "Bought Together",
+  "target": "section",
+  "enabled_on": {
+    "templates": ["product"]
+  },
+  "javascript": "reco.js",
+  "settings": [
+    {
+      "type": "text",
+      "id": "heading",
+      "label": "Heading",
+      "default": "Frequently bought together"
+    },
+    {
+      "type": "range",
+      "id": "limit",
+      "label": "Recommended products to show",
+      "min": 1,
+      "max": 5,
+      "step": 1,
+      "default": 3,
+      "info": "Besides the product being viewed. Shopify supplies at most 10 recommendations per product."
+    },
+    {
+      "type": "checkbox",
+      "id": "include_current",
+      "label": "Include the product being viewed",
+      "default": true,
+      "info": "Shown as \"This item\" and ticked by default."
+    },
+    {
+      "type": "header",
+      "content": "Row details"
+    },
+    {
+      "type": "checkbox",
+      "id": "show_image",
+      "label": "Show product image",
+      "default": true
+    },
+    {
+      "type": "checkbox",
+      "id": "show_compare_price",
+      "label": "Show original price when on sale",
+      "default": true
+    },
+    {
+      "type": "header",
+      "content": "Add to cart"
+    },
+    {
+      "type": "select",
+      "id": "atc_behavior",
+      "label": "After adding to cart",
+      "default": "ajax",
+      "options": [
+        {
+          "value": "ajax",
+          "label": "Stay on the page"
+        },
+        {
+          "value": "redirect_cart",
+          "label": "Go to the cart"
+        },
+        {
+          "value": "open_drawer",
+          "label": "Open the cart drawer"
+        }
+      ]
+    },
+    {
+      "type": "select",
+      "id": "button_style",
+      "label": "Button style",
+      "default": "solid",
+      "options": [
+        {
+          "value": "solid",
+          "label": "Solid"
+        },
+        {
+          "value": "outline",
+          "label": "Outline"
+        },
+        {
+          "value": "text",
+          "label": "Text"
+        }
+      ]
+    },
+    {
+      "type": "header",
+      "content": "Appearance"
+    },
+    {
+      "type": "select",
+      "id": "heading_size",
+      "label": "Heading size",
+      "default": "md",
+      "options": [
+        {
+          "value": "sm",
+          "label": "Small"
+        },
+        {
+          "value": "md",
+          "label": "Medium"
+        },
+        {
+          "value": "lg",
+          "label": "Large"
+        }
+      ]
+    },
+    {
+      "type": "select",
+      "id": "text_align",
+      "label": "Text alignment",
+      "default": "left",
+      "options": [
+        {
+          "value": "left",
+          "label": "Left"
+        },
+        {
+          "value": "center",
+          "label": "Centre"
+        }
+      ]
+    },
+    {
+      "type": "checkbox",
+      "id": "show_border",
+      "label": "Show panel border",
+      "default": true
+    },
+    {
+      "type": "color",
+      "id": "accent_color",
+      "label": "Accent colour",
+      "default": "#1a1a1a"
+    },
+    {
+      "type": "range",
+      "id": "padding_top",
+      "label": "Top padding",
+      "min": 0,
+      "max": 100,
+      "step": 4,
+      "default": 32,
+      "unit": "px"
+    },
+    {
+      "type": "range",
+      "id": "padding_bottom",
+      "label": "Bottom padding",
+      "min": 0,
+      "max": 100,
+      "step": 4,
+      "default": 32,
+      "unit": "px"
+    }
+  ]
+}
+{% endschema %}

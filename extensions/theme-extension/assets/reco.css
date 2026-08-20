@@ -320,3 +320,201 @@
     transition: none;
   }
 }
+
+/* --- Upsell (frequently bought together) ---------------------------------
+ *
+ * A stacked list of rows, not a grid of cards, so it shares the block's
+ * heading and accent tokens and nothing else. Deliberately no columns: a
+ * bundle reads down the page, and the total has to sit under the last line.
+ */
+
+.upsell {
+  padding-top: var(--reco-padding-top, 32px);
+  padding-bottom: var(--reco-padding-bottom, 32px);
+}
+
+.upsell--bordered {
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 8px;
+  padding-inline: 1.25rem;
+}
+
+.upsell--align-center {
+  text-align: center;
+}
+
+.upsell__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.upsell__row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  text-align: left;
+}
+
+.upsell__row:last-child {
+  border-bottom: 0;
+}
+
+/* Unticked lines stay legible — they are still an offer, not disabled UI. */
+.upsell__row--off {
+  opacity: 0.55;
+}
+
+.upsell__check {
+  flex: 0 0 auto;
+  width: 1.15rem;
+  height: 1.15rem;
+  accent-color: var(--reco-accent, currentColor);
+  cursor: pointer;
+}
+
+.upsell__label {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex: 1 1 auto;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.upsell__image {
+  flex: 0 0 auto;
+  width: 60px;
+  height: 60px;
+  object-fit: cover;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.upsell__image--placeholder {
+  display: block;
+}
+
+.upsell__title {
+  min-width: 0;
+  font-size: 0.95rem;
+  line-height: 1.35;
+}
+
+.upsell__this {
+  display: block;
+  font-weight: 600;
+  font-size: 0.8rem;
+  opacity: 0.7;
+}
+
+.upsell__meta {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.upsell__variant {
+  max-width: 10rem;
+  font-size: 0.85rem;
+  padding: 0.25rem 0.4rem;
+}
+
+.upsell__prices {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  white-space: nowrap;
+}
+
+.upsell__price {
+  font-weight: 600;
+}
+
+.upsell__compare {
+  opacity: 0.6;
+  font-size: 0.85em;
+}
+
+.upsell__link {
+  font-size: 0.8rem;
+  text-decoration: underline;
+  opacity: 0.7;
+}
+
+.upsell__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-top: 1.25rem;
+}
+
+.upsell__total-line {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: 1rem;
+}
+
+.upsell__total-value {
+  font-weight: 700;
+  font-size: 1.1rem;
+}
+
+.upsell__button {
+  flex: 0 0 auto;
+  padding: 0.7rem 1.4rem;
+  border-radius: 4px;
+  font: inherit;
+  cursor: pointer;
+  border: 1px solid var(--reco-accent, currentColor);
+}
+
+.upsell__button[disabled] {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.upsell__button--solid {
+  background: var(--reco-accent, #1a1a1a);
+  color: #fff;
+}
+
+.upsell__button--outline {
+  background: transparent;
+  color: var(--reco-accent, currentColor);
+}
+
+.upsell__button--text {
+  background: transparent;
+  border-color: transparent;
+  color: var(--reco-accent, currentColor);
+  text-decoration: underline;
+  padding-inline: 0;
+}
+
+/* One column below the phone breakpoint: 60px image, title, price and a
+ * variant picker do not fit on one line. */
+@media (max-width: 600px) {
+  .upsell__row {
+    flex-wrap: wrap;
+  }
+
+  .upsell__meta {
+    width: 100%;
+    justify-content: flex-start;
+    padding-left: calc(1.15rem + 0.75rem);
+  }
+
+  .upsell__footer {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}

@@ -33,6 +33,7 @@ export const EVENT_TYPES = [
 export const PLACEMENTS = [
   "pdp",
   "related",
+  "upsell",
   "checkout",
   "thank_you",
   "order_status",

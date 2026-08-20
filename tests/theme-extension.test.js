@@ -38,6 +38,7 @@ const blockFiles = readdirSync(BLOCKS).filter((name) => name.endsWith(".liquid")
  */
 const RECOMMENDATIONS = "recommendations.liquid";
 const SHOWCASE = "product-showcase.liquid";
+const UPSELL = "upsell.liquid";
 const PANEL = join(SNIPPETS, "reco-panel.liquid");
 const locales = JSON.parse(
   readFileSync(join(EXTENSION, "locales", "en.default.json"), "utf8"),
@@ -132,6 +133,20 @@ describe("block schemas", () => {
       const values = setting.options.map((option) => option.value);
       expect(values, `${setting.id} default is not an option`).toContain(setting.default);
     }
+  });
+
+  /*
+   * Shopify caps a block schema `name` at 25 characters and fails the deploy
+   * outright — `Invalid tag 'schema': name: must have a maximum of 25
+   * characters` — rather than truncating. Nothing else in this suite reads the
+   * name, so without this the only signal is a broken `shopify app dev`.
+   */
+  test.each(blockFiles)("%s has a name within Shopify's 25-character cap", (file) => {
+    const schema = readSchema(file);
+    if (!schema) return;
+    expect(schema.name, `"${schema.name}" is ${schema.name?.length} characters`)
+      .toBeTruthy();
+    expect(schema.name.length).toBeLessThanOrEqual(25);
   });
 
   test("both product blocks load their own assets", () => {
@@ -255,8 +270,10 @@ describe("two blocks, five sources", () => {
   const setting = schema.settings.find((entry) => entry.id === "source");
 
   test("the five sources are split across exactly two blocks", () => {
+    // Upsell is a third block but not a sixth source — it is the same Custom
+    // list in bundle form, so it does not belong to this split (CLAUDE.md 7.4).
     expect(blockFiles.sort()).toEqual(
-      ["app-embed.liquid", RECOMMENDATIONS, SHOWCASE].sort(),
+      ["app-embed.liquid", RECOMMENDATIONS, SHOWCASE, UPSELL].sort(),
     );
   });
 
@@ -455,7 +472,7 @@ describe("two blocks, five sources", () => {
     }
   });
 
-  test("every placement the block emits is one the server keeps", () => {
+  test("every placement any block emits is one the server keeps", () => {
     // An unlisted placement is coerced to "pdp" in normalizeEvent, which would
     // fold a merchandising row into a product's recommendation metrics and let
     // the serve dedupe swallow a second recommendation row on the same page.
@@ -465,9 +482,22 @@ describe("two blocks, five sources", () => {
     );
     const known = model.match(/PLACEMENTS = \[([\s\S]*?)\]/)[1].match(/"([a-z_]+)"/g);
 
-    for (const [, placement] of source.matchAll(
-      /data-reco-placement=["']([a-z_]+)["']/g,
-    )) {
+    // Every block, not just this one: a new storefront placement that the
+    // server does not know is silently coerced to "pdp" in normalizeEvent.
+    const everything = blockFiles
+      .map((file) => readLiquid(join(BLOCKS, file)))
+      .concat(readLiquid(PANEL))
+      .join("\n");
+
+    const emitted = [
+      ...new Set(
+        [...everything.matchAll(/data-reco-placement=["']([a-z_]+)["']/g)].map(
+          ([, placement]) => placement,
+        ),
+      ),
+    ];
+    expect(emitted.length).toBeGreaterThan(0);
+    for (const placement of emitted) {
       expect(known, `${placement} is not in PLACEMENTS`).toContain(`"${placement}"`);
     }
   });
@@ -551,5 +581,148 @@ describe("two blocks, five sources", () => {
     expect(embed).toContain("easy-reco:recently-viewed");
     expect(script).toContain("easy-reco:recently-viewed");
     expect(embed).toContain("template.name == 'product'");
+  });
+});
+
+/*
+ * The Upsell block — frequently bought together.
+ *
+ * A bundle, not a row of cards: several ticked lines, a running total, and one
+ * /cart/add.js call. It earns its own block on markup grounds, which is the
+ * structural test §7.3 settled for splits, and it shares the tracking runtime in
+ * reco.js rather than shipping a second asset (CLAUDE.md 7.4).
+ */
+describe("the upsell block", () => {
+  const source = readLiquid(join(BLOCKS, UPSELL));
+  const row = readLiquid(join(SNIPPETS, "upsell-row.liquid"));
+  const schema = readSchema(UPSELL);
+  const runtime = readFileSync(join(EXTENSION, "assets", "reco.js"), "utf8");
+
+  test("is named for what it does, not the category it sits in", () => {
+    // It is a cross-sell bundle. "Upsell" means a better version of the same
+    // product — an upgrade — which Shopify's `related` list cannot supply, so
+    // the merchant-facing name must not claim it. `upsell` stays as the internal
+    // identifier: filename, placement key, CSS prefix (CLAUDE.md 7.4).
+    expect(schema.name).toBe("Bought Together");
+    expect(schema.name.toLowerCase()).not.toContain("upsell");
+
+    // The name is the 25-character-capped short form; the heading, which has no
+    // cap, carries the full phrase and must still agree with it.
+    const heading = schema.settings.find((entry) => entry.id === "heading");
+    expect(heading.default).toBe("Frequently bought together");
+    expect(heading.default.toLowerCase()).toContain(schema.name.toLowerCase());
+  });
+
+  test("is pinned to product templates", () => {
+    // It bundles the product being viewed, so it cannot work anywhere else.
+    expect(schema.enabled_on).toEqual({ templates: ["product"] });
+  });
+
+  test("reads the override metafield through the reserved prefix", () => {
+    // `metafields.app` resolves to nil and silently drops every override.
+    expect(source).toContain('product.metafields["$app"].reco_overrides.value');
+    expect(source).not.toContain("product.metafields.app.reco_overrides");
+  });
+
+  test("bills like a recommendation", () => {
+    // It has a source product and answers "what goes with this", which is the
+    // line CLAUDE.md 7.1 draws between recommendation and merchandising — so it
+    // must not carry the merchandising opt-out.
+    expect(source).not.toContain('data-reco-serve="false"');
+    expect(hasAttribute(source, "data-reco-placement", "upsell")).toBe(true);
+    expect(runtime).toMatch(/type: "served"[\s\S]{0,160}placement: "upsell"/);
+  });
+
+  test("never attributes the shopper's own product to itself", () => {
+    // The "This item" row is the source product. Marking it as a reco card
+    // would book an impression, a click and an add_to_cart against the very
+    // product whose page it sits on.
+    expect(row).toContain("data-upsell-current");
+    expect(row).toMatch(/if is_current[\s\S]{0,80}data-upsell-current/);
+    // And its cart line carries no attribution properties.
+    expect(runtime).toContain("properties: isCurrent");
+  });
+
+  test("offers a variant picker instead of guessing a variant", () => {
+    // "Add the first variant" is how a shopper ends up with the wrong size in
+    // their cart; skipping every multi-variant product would empty the block on
+    // most stores. Both paths build a picker from the AVAILABLE variants only.
+    expect(row).toContain("item.variants | where: 'available'");
+    expect(row).toContain("data-upsell-variant");
+    expect(runtime).toContain("variant.available");
+    expect(runtime).toContain("if (sellable.length === 0) return;");
+  });
+
+  test("resolves the current product's variant at add time, not render time", () => {
+    // Most themes rewrite ?variant= without firing popstate, so a value read at
+    // render time goes stale the moment the shopper picks a different size.
+    expect(runtime).toContain("function currentVariantId(");
+    expect(runtime).toMatch(/searchParams\.get\("variant"\)/);
+  });
+
+  test("adds every ticked line in one cart call", () => {
+    // Not a loop of single adds: each one would fire its own cart-updated event
+    // and the theme would redraw the drawer once per product.
+    const calls = runtime.match(/fetch\("\/cart\/add\.js"/g) ?? [];
+    // One for the card blocks' per-card button, one for the bundle.
+    expect(calls.length).toBe(2);
+    expect(runtime).toContain("JSON.stringify({ items: items })");
+  });
+
+  test("counts one add_to_cart per recommended line", () => {
+    // A three-product bundle is three add_to_carts, otherwise the funnel
+    // under-reports every bundle as a single conversion.
+    expect(runtime).toMatch(/attributed\.forEach\([\s\S]{0,300}type: "add_to_cart"/);
+  });
+
+  test("reports ticking a line as a click", () => {
+    // There are no per-card buttons here, so the tick is the engagement signal;
+    // without it the funnel would jump impression → add_to_cart with no click.
+    expect(runtime).toContain("data-upsell-clicked");
+    expect(runtime).toMatch(/type: "click"[\s\S]{0,160}placement: "upsell"/);
+  });
+
+  test("carries its own labels so it works without the app embed", () => {
+    // The embed is optional; a block whose button says nothing until the embed
+    // is enabled is a broken block.
+    for (const attribute of [
+      "data-upsell-add-one",
+      "data-upsell-add-many",
+      "data-upsell-add-none",
+      "data-upsell-total-label",
+    ]) {
+      expect(source, `${attribute} is not emitted`).toContain(attribute);
+    }
+  });
+
+  test("every count placeholder has a matching substitution", () => {
+    // A label that keeps its [count] on screen is the visible symptom.
+    for (const key of ["upsell.add_many", "upsell.total"]) {
+      expect(lookupLocale(key), `${key} has no string`).toBeTruthy();
+      expect(lookupLocale(key), `${key} has no [count]`).toContain("[count]");
+    }
+    expect(lookupLocale("upsell.add_one")).not.toContain("[count]");
+    const substitutions = runtime.match(/replace\("\[count\]"/g) ?? [];
+    expect(substitutions.length).toBe(2);
+  });
+
+  test("every translation the block asks for exists", () => {
+    for (const [, key] of (source + row).matchAll(/'([a-z_]+\.[a-z_]+)'\s*\|\s*t\b/g)) {
+      expect(lookupLocale(key), `${key} has no string`).toBeTruthy();
+    }
+  });
+
+  test("does not render a lone This item row", () => {
+    // A bundle of one, with a total and an "Add 1 item to cart" button, is not
+    // an upsell — it is a second add-to-cart button on the product page.
+    expect(runtime).toContain('if (!block.querySelector("[data-reco-card]")) block.remove();');
+  });
+
+  test("claims itself so the card runtime skips it", () => {
+    // It carries data-reco-block for the shared tracking wiring, so without
+    // this both init loops would wire the same block.
+    expect(source).toContain("data-reco-block");
+    expect(runtime).toMatch(/initUpsell\(\);/);
+    expect(runtime).toContain('block.setAttribute("data-reco-ready", "true");');
   });
 });

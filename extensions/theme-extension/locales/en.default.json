@@ -19,5 +19,15 @@
   },
   "recently_viewed": {
     "empty": "Products a shopper has viewed will appear here. Nothing shows in the theme editor because this preview has no browsing history — and it needs the app embed enabled under Theme settings → App embeds."
+  },
+  "upsell": {
+    "this_item": "This item:",
+    "view": "View",
+    "choose_variant": "Choose a variant",
+    "add_none": "Select an item",
+    "add_one": "Add 1 item to cart",
+    "add_many": "Add [count] items to cart",
+    "total": "Total for [count] items",
+    "needs_product": "Add this block to a product page — it bundles the product being viewed with its recommendations."
   }
 }

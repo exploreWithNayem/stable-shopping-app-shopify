@@ -36,6 +36,7 @@
 | --- | --- | --- |
 | `recommendations` | Theme app block (`extensions/theme-extension`), shown as **Smart Recommendations** | **Product templates only** (`enabled_on`). One `source` setting: `custom` (per-product lists, billable) · `related` (Shopify's own recommendations, billable) |
 | `product-showcase` | Theme app block, shown as **Product Showcase** | Any template. One `source` setting: `popular` (best sellers, collection optional) · `collection` (the picked collection) · `recently_viewed` (the shopper's own history). Owns the Collection picker. Free — no `served` beacon |
+| `upsell` | Theme app block, shown as **Bought Together** | **Product templates only.** The product being viewed plus its recommendations, checkboxes, a running total, one multi-line add to cart. A cross-sell bundle, not an upsell — `upsell` is the internal key only (§7.4). Billable |
 | `checkout-recommendations` | Checkout UI extension | `purchase.checkout.block.render`, `purchase.thank-you.block.render`, `customer-account.order-status.block.render` |
 | `reco-pixel` | Web pixel extension (optional, Phase 12) | Purchase attribution |
 
@@ -134,18 +135,20 @@ index.
 
 **Event types**: `served` · `impression` · `click` · `add_to_cart` · `purchase`
 
-**Placements**: `pdp` · `related` · `checkout` · `thank_you` · `order_status` · `popular` ·
-`collection` · `recently_viewed`. The last three are merchandising (§7.1), not recommendation
-surfaces — they have no source product (sentinel `"*"`) and never emit `served`. Keeping them in the
-list rather than coercing them to `pdp` is what stops a home-page row landing in some product's
-recommendation metrics. `related` (§7.2) is the reverse case: a real recommendation that bills, given its own
-placement because a product page can carry a Custom row *and* a Related row, and the serve dedupe
-keys on `(session, product, placement)` — sharing `pdp` would make one of the two free.
+**Placements**: `pdp` · `related` · `upsell` · `checkout` · `thank_you` · `order_status` ·
+`popular` · `collection` · `recently_viewed`. The last three are merchandising (§7.1), not
+recommendation surfaces — they have no source product (sentinel `"*"`) and never emit `served`.
+Keeping them in the list rather than coercing them to `pdp` is what stops a home-page row landing in
+some product's recommendation metrics. `related` (§7.2) and `upsell` (§7.4) are the reverse case:
+real recommendations that bill, each given its own placement because one product page can carry a
+Custom row, a Related row *and* an Upsell bundle, and the serve dedupe keys on
+`(session, product, placement)` — sharing `pdp` would make all but one of them free.
 
 The list is enforced in one place, `PLACEMENTS` in `app/models/event.server.js`. Anything absent
 from it is coerced to `pdp` silently, so a new storefront placement must be added there in the same
-change — `tests/theme-extension.test.js` asserts every `data-reco-placement` the block emits is
-known to the server.
+change — `tests/theme-extension.test.js` asserts every `data-reco-placement` **any** block emits is
+known to the server. `PLACEMENT_LABELS` in `app/routes/app.analytics.jsx` needs the same addition, or
+the analytics breakdown shows a raw key.
 
 **Attribution**: when a shopper adds to cart from a widget, attach cart line attributes
 `_reco_src` (source product ID) and `_reco_cid` (client event ID). The `orders/create` webhook
@@ -379,11 +382,14 @@ extensions/theme-extension/
 │   │                                #   enabled_on: templates: ["product"]
 │   ├── product-showcase.liquid      # Product Showcase — popular + collection +
 │   │                                #   recently_viewed, any template (§7.1, §7.3)
+│   ├── upsell.liquid                # Bought Together — product templates
+│   │                                #   only (§7.4)
 │   └── app-embed.liquid             # app embed: loads tracker JS site-wide
 ├── snippets/
-│   ├── reco-panel.liquid            # block chrome, shared by both blocks
+│   ├── reco-panel.liquid            # block chrome, shared by the two card blocks
 │   ├── reco-collection-cards.liquid # merchandising product loop, shared
-│   └── reco-card.liquid             # single product card
+│   ├── reco-card.liquid             # single product card
+│   └── upsell-row.liquid            # single bundle line (§7.4)
 ├── assets/
 │   ├── reco.js                      # fetch fallback + tracking beacons
 │   └── reco.css
@@ -596,6 +602,94 @@ cannot: a store with no collections at all.
 > at all, and the two schemas must agree on everything they share.
 
 ---
+
+### 7.4 Bought Together block (`blocks/upsell.liquid`)
+
+Added 2026-08-19. The product being viewed plus a few recommended products, each on its own line with
+a checkbox, a running total underneath, and one button that adds every ticked line in a single
+`/cart/add.js` call.
+
+> **Named for what it does, not the category it sits in.** It shipped as "Upsell" and was renamed the
+> same day. This is a **cross-sell** bundle — complementary products bought alongside this one. A true
+> upsell sells a *better version of the same thing*, and Shopify's recommendation API cannot supply
+> that: `related` is not ranked by price or upgrade path (§7.2), so there is no "the better version of
+> this" query. Building one would mean curating it in an override, filtering recommendations by price,
+> or using the product's own variants — none of which this block does, so it must not claim the word.
+>
+> **"Bought Together", not "Frequently Bought Together".** A block schema `name` is capped at
+> **25 characters** and Shopify fails the deploy rather than truncating —
+> `Invalid tag 'schema': name: must have a maximum of 25 characters`. The full phrase is 26. The
+> default *heading* carries it in full, where there is no cap.
+> `tests/theme-extension.test.js` now checks the cap for every block, since nothing else in the suite
+> read the name and the only other signal was a broken `shopify app dev`.
+>
+> `upsell` survives as the **internal identifier only**: the filename, the `upsell` placement key, the
+> `.upsell__*` CSS prefix and the `data-upsell-*` attributes. It names the surface category, and a
+> placement key has to stay stable once events are written against it. A test pins the merchant-facing
+> name and requires the default heading to match it.
+
+**Why it is a block and not a sixth `source`.** §7.3 settled the test for a split — a new block needs
+a structural reason, not a cosmetic one — and this one clears it on markup. Every other source
+renders `reco-card` tiles into a grid, slider or list; this renders a stacked list of rows with a
+variant picker per line, a price total, and a multi-line cart add. None of `reco-panel`'s layout,
+column, slider or per-card-button machinery applies. Like Custom and Related it needs a product, so
+it also declares `"enabled_on": { "templates": ["product"] }`.
+
+**It is not a sixth source either.** The list comes from exactly the Custom source's rule — the
+`$app:reco_overrides` metafield when the merchant has curated one, Shopify's Ajax recommendations in
+the browser when they have not. A merchant who curates a list for a product gets it in both the row
+*and* the bundle without setting anything up twice.
+
+| | Custom row (§7 / 7.2) | Upsell bundle |
+| --- | --- | --- |
+| Product list | override → Ajax fallback | **the same** |
+| Markup | `reco-card` tiles via `reco-panel` | `upsell-row` lines, own footer |
+| Add to cart | one button per card, one line | one button, every ticked line at once |
+| Variant handling | single-variant only; others link to the PDP | **picker per line** |
+| `click` signal | clicking the card | ticking the line (or its View link) |
+| `served` / quota | yes | yes |
+| Placement | `pdp` / `related` | `upsell` |
+
+**It bills.** It has a source product and answers "what goes with this", which is the line §7.1 draws
+between recommendation and merchandising. Its own placement, for the §3.2 reason: one product page
+can carry a Custom row, a Related row and this bundle, and a shared placement would let the 30-minute
+serve dedupe swallow two of the three.
+
+**Where it differs from every other surface, and why:**
+
+- **A variant picker per line, not a guess.** §7's rule elsewhere is that add-to-cart appears only for
+  single-variant products, because "add the first variant" puts the wrong size in someone's cart. A
+  bundle cannot do that — a line the shopper cannot buy fails the whole add — and skipping every
+  multi-variant product would empty the block on most stores. So each line offers a `<select>` built
+  from that product's **available** variants only. Sold-out products are dropped entirely.
+- **The current product's variant is resolved at click time.** The theme owns the PDP variant picker
+  and most themes record a change by rewriting `?variant=` without firing `popstate`, so a value read
+  at render time goes stale the moment the shopper picks a different size. `currentVariantId()` reads
+  the URL when the button is pressed. Best-effort, in the same sense as `open_drawer` (§9 Phase 8).
+- **The "This item" line is never attributed to itself.** It carries no `data-reco-card`, so it emits
+  no impression or click, and its cart line carries **no** `_reco_*` properties — otherwise the
+  `orders/create` webhook would book the shopper's own product as a recommendation-driven sale.
+- **One `add_to_cart` event per recommended line.** A three-product bundle reports three, not one,
+  or every bundle would under-report as a single conversion.
+- **Ticking a line reports `click`.** There is no per-card button to click here, so the tick is the
+  engagement signal — once per row per page view, which keeps
+  served → impression → click → add_to_cart intact. The View link fires the same event, deduped.
+- **A bundle of one does not render.** If the fetch finds nothing to bundle with, the block removes
+  itself rather than showing a lone "This item" row with a total, which is just a second add-to-cart
+  button on the product page.
+
+**The runtime lives in `reco.js`, not a second asset.** It needs the beacon queue, the session id and
+the money formatter, and two assets would mean a load-order dependency between them for no gain. The
+block carries `data-reco-block` so the shared tracking wiring applies, and `initUpsell()` marks it
+`data-reco-ready` so the card-based loop skips it.
+
+**Its labels ride on the block, not the app embed.** `data-upsell-add-one` / `-add-many` /
+`-add-none` / `-total-label` are rendered from the locale file, with `[count]` substituted in JS. The
+embed is optional, and a button that says nothing until someone enables it is a broken button.
+
+> `limit` maxes at **5** recommended products, and its `info` says out loud that Shopify supplies at
+> most 10 per product (§7.2). The fetch over-fetches by 4, capped at Shopify's 10, to leave room for
+> the lines this block drops for having no sellable variant.
 
 ## 8. Checkout UI extension
 
@@ -921,8 +1015,9 @@ storefront is **two** theme blocks: **Smart Recommendations** (Custom, Related �
 only) and **Product Showcase** (Popular, Collection products, Recently viewed — any template), split
 so the first can declare `enabled_on` and the second can own a real collection picker (§7.1–7.3).
 They share their markup through `reco-panel` and `reco-collection-cards`; only the schema JSON
-duplicates, and a test pins the two copies together. 261 Vitest tests pass; lint and typecheck are
-clean.
+duplicates, and a test pins the two copies together. A third block, **Upsell**, is a
+**Bought Together** bundle over the same Custom list (§7.4) — product templates only, its own
+`upsell` placement, billable. 285 Vitest tests pass; lint and typecheck are clean.
 
 Custom recommendations are no longer a paid-only feature: **Free covers 10 products** and the
 allowance is enforced in the editor's action as well as the UI (§5).
@@ -965,6 +1060,7 @@ once per source, walk the QA checklist in §11).
 | 8.3 Related products source | ✅ Done | 2026-08-19 | Fourth `source` option (§7.2): Shopify's own recommendations with the override skipped entirely, PDP only, client-rendered, `intent` fixed to `related`. Billable like `custom`, on its own `related` placement so a Custom row and a Related row on one page are not deduped into a single serve. No `reco.js` change was needed. Fixed alongside: `recently_viewed` was missing from `PLACEMENTS` in `event.server.js`, so every event from that source had been silently recorded as `pdp` — the analytics page has had a label for it since 8.2 that could never appear. 239 tests. |
 | 8.4 Collection products source | ✅ Done | 2026-08-19 | Fifth `source` option (§7.3): the merchant picks a collection and the block renders it. Shares `popular`'s Liquid branch and its `sort_by` / `exclude_current` / `hide_sold_out` settings; the one behavioural difference is what an untouched picker falls back to — the store's first collection here, `collections.all` for `popular`. New `collection` placement, no `served` beacon. **Where the picker lives changed twice the same day — see 8.5 and 8.6.** |
 | 8.5 Collection picker, attempt 1 | ⛔ Superseded | 2026-08-19 | Recorded because the dead ends matter. The Collection field showed on all five sources, doing nothing on four. `visible_if` is rejected on resource inputs, so the field was changed to `"type": "url"` scoped to `source == 'collection'`, parsing the handle out of the stored link — **rejected on its picker**, which also lists Products, Pages, Blogs and Policies with no way to filter them. A Collection-only third block was then built and **reverted** as one block too many. Superseded by 8.6. |
+| 8.7 Bought Together block | ✅ Done | 2026-08-19 | (§7.4) Shipped as "Upsell" and renamed the same day: it is a **cross-sell** bundle, and an upsell means a better version of the same product, which Shopify's `related` list cannot supply. Named "Bought Together" because a block `name` is capped at 25 characters and the full phrase is 26 — a cap the suite now checks for every block. `upsell` remains the internal key — filename, placement, CSS prefix. Build: `blocks/upsell.liquid` + `snippets/upsell-row.liquid`, product templates only. The viewed product plus its recommendations as ticked lines, a running total, and one `/cart/add.js` carrying every ticked variant. List comes from the Custom source's own rule — override metafield, else Shopify's Ajax recommendations — so a curated list drives the bundle too. New `upsell` placement (billable, own placement so it is not deduped against a Custom or Related row on the same page) added to `PLACEMENTS` and `PLACEMENT_LABELS`. A variant `<select>` per line built from available variants only, rather than the guess the card blocks refuse to make; the current product's variant is read from `?variant=` at click time; the "This item" line carries no `_reco_*` properties so it is never attributed to itself; one `add_to_cart` per recommended line; ticking a line reports `click`. Runtime added to `reco.js` (not a second asset) so it reuses the beacon queue and money formatter. 285 tests. |
 | 8.6 Two blocks, split PDP vs merchandising | ✅ Done | 2026-08-19 | The Collection field showed on all five sources of the single block, doing nothing on four, and Shopify rejects `visible_if` on resource inputs by design. A `"type": "url"` field was built first and rejected on its picker (it also lists Products, Pages, Blogs and Policies, with no attribute to filter them); a Collection-only third block was built and reverted. Settled shape: **`recommendations.liquid`** = Custom + Related with `enabled_on: templates: ["product"]` — declarable for the first time, since both need a product — and **`product-showcase.liquid`** = Popular + Collection products + Recently viewed, any template, owning a real `"type": "collection"` picker that two of its three sources read. `popular` regained its optional collection narrowing. Markup shared through new `reco-panel` / `reco-collection-cards` snippets; only the schema duplicates, held together by a test comparing the two settings arrays. `limit` maxes at 12 on the PDP block and 24 on the showcase block. The **Recommendation type (`intent`) picker was removed** the same day: it governed only Custom's fallback and read as a contradiction beside the Related source, so both now send `data-reco-intent="related"` — `complementary` still works through the proxy and the engine, see §7.2 and §12 Q2. 261 tests. See §7.3 — settled, with tests blocking each dead end. |
 
 | 9. Analytics pipeline | ✅ Done | 2026-08-12 | `rollupDay`/`rollupRange` (idempotent, refuses pruned days), `getDashboardMetrics` (totals + prior-period deltas + gapless series), `getFunnel`, `WIDGET_TOTAL` sentinel; `attribution.server.js` + `orders/create` webhook with order-derived idempotency keys; `cron.rollup` route with retention pruning. 202 tests. Analytics page (`/app/analytics`) built 2026-08-18: range selector, impressions-vs-clicks trend, funnel bars, per-placement breakdown (`getPlacementBreakdown`), sortable 50-row per-product table, CSV export gated by `canExportCsv`. |

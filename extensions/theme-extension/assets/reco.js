@@ -110,10 +110,11 @@
     queue.push({
       clientId: uid(),
       sessionId: sessionId(),
-      // One per source: "pdp" (custom), "related", "popular",
-      // "recently_viewed". The server keeps them apart so a home-page row never
-      // lands in a product's recommendation metrics, and so two recommendation
-      // rows on one product page are not deduped into a single serve.
+      // One per source: "pdp" (custom), "related", "upsell", "popular",
+      // "collection", "recently_viewed". The server keeps them apart so a
+      // home-page row never lands in a product's recommendation metrics, and so
+      // two recommendation rows on one product page are not deduped into a
+      // single serve.
       placement: event.placement || "pdp",
       type: event.type,
       sourceProductId: String(event.sourceProductId),
@@ -570,7 +571,424 @@
     }
   }
 
+
+  // --- Upsell (frequently bought together) ---------------------------------
+
+  /*
+   * A bundle, not a row of cards: several lines the shopper ticks, one running
+   * total, and one /cart/add.js call carrying every ticked variant. It lives
+   * here rather than in its own asset so it can reuse the beacon queue, the
+   * session id and the money formatter directly, with no load-order dependency
+   * between two files.
+   */
+
+  function upsellRows(block) {
+    return Array.prototype.slice.call(block.querySelectorAll("[data-upsell-row]"));
+  }
+
+  /** The variant a row currently resolves to: its picker, else its checkbox. */
+  function rowVariantId(row) {
+    var select = row.querySelector("[data-upsell-variant]");
+    if (select && !select.hidden && select.value) return select.value;
+
+    var check = row.querySelector("[data-upsell-check]");
+    return check ? check.value : null;
+  }
+
+  function rowCents(row) {
+    var select = row.querySelector("[data-upsell-variant]");
+    if (select && !select.hidden) {
+      var option = select.options[select.selectedIndex];
+      if (option) return Number(option.getAttribute("data-upsell-cents") || 0);
+    }
+    var price = row.querySelector("[data-upsell-price]");
+    return Number((price && price.getAttribute("data-upsell-cents")) || 0);
+  }
+
+  /**
+   * The theme owns the variant picker on the page, and most themes record a
+   * change by rewriting ?variant= without firing popstate — so the current row
+   * is resolved from the URL at the moment it is read rather than trusted from
+   * render time.
+   */
+  function currentVariantId(row) {
+    try {
+      var fromUrl = new URL(window.location.href).searchParams.get("variant");
+      if (fromUrl) return fromUrl;
+    } catch (error) {
+      /* fall through to the rendered value */
+    }
+    return rowVariantId(row);
+  }
+
+  function label(block, name) {
+    return block.getAttribute("data-upsell-" + name) || "";
+  }
+
+  function refreshUpsell(block) {
+    var total = 0;
+    var count = 0;
+
+    upsellRows(block).forEach(function (row) {
+      var check = row.querySelector("[data-upsell-check]");
+      var on = check && check.checked;
+      row.classList.toggle("upsell__row--off", !on);
+      if (!on) return;
+      count += 1;
+      total += rowCents(row);
+
+      var price = row.querySelector("[data-upsell-price]");
+      var select = row.querySelector("[data-upsell-variant]");
+      // Keep the row's own price honest when its variant changes.
+      if (price && select && !select.hidden) {
+        price.textContent = formatMoney(rowCents(row), config().moneyFormat);
+      }
+    });
+
+    var totalText = block.querySelector("[data-upsell-total-text]");
+    var totalValue = block.querySelector("[data-upsell-total]");
+    var button = block.querySelector("[data-upsell-add]");
+
+    if (totalText) {
+      totalText.textContent = count
+        ? label(block, "total-label").replace("[count]", String(count))
+        : "";
+    }
+    if (totalValue) {
+      totalValue.textContent = count ? formatMoney(total, config().moneyFormat) : "";
+    }
+    if (button) {
+      button.textContent = count === 0
+        ? label(block, "add-none")
+        : count === 1
+          ? label(block, "add-one")
+          : label(block, "add-many").replace("[count]", String(count));
+      button.disabled = count === 0;
+    }
+  }
+
+  /** Build the rows reco.js had to fetch, from Shopify's product JSON. */
+  function renderUpsellRows(block, products) {
+    var template = block.querySelector("[data-upsell-row-template]");
+    var list = block.querySelector("[data-upsell-list]");
+    if (!template || !list) return false;
+
+    var limit = Number(block.getAttribute("data-reco-limit") || 3);
+    var sourceProductId = block.getAttribute("data-reco-source-product");
+    var showImage = block.getAttribute("data-upsell-show-image") !== "false";
+    var showCompare = block.getAttribute("data-upsell-show-compare") !== "false";
+    var format = config().moneyFormat;
+    var fragment = document.createDocumentFragment();
+    var rendered = 0;
+
+    products.forEach(function (item) {
+      if (rendered >= limit) return;
+      if (String(item.id) === String(sourceProductId)) return;
+
+      var sellable = (item.variants || []).filter(function (variant) {
+        return variant.available;
+      });
+      // A bundle line that cannot be bought would fail the whole add.
+      if (sellable.length === 0) return;
+
+      var node = template.content.firstElementChild.cloneNode(true);
+      var rowId = "ups-fetched-" + item.id;
+
+      node.setAttribute("data-reco-product-id", String(item.id));
+      node.setAttribute("data-upsell-handle", item.handle || "");
+
+      var check = node.querySelector("[data-upsell-check]");
+      var checkLabel = node.querySelector(".upsell__label");
+      check.id = rowId;
+      check.value = String(sellable[0].id);
+      if (checkLabel) checkLabel.setAttribute("for", rowId);
+
+      var image = node.querySelector("[data-upsell-image]");
+      if (image) {
+        if (showImage && item.featured_image) {
+          image.src = item.featured_image;
+          image.alt = item.title || "";
+        } else {
+          image.remove();
+        }
+      }
+
+      var title = node.querySelector("[data-upsell-title]");
+      if (title) title.textContent = item.title || "";
+
+      var select = node.querySelector("[data-upsell-variant]");
+      if (select) {
+        if (sellable.length > 1) {
+          select.setAttribute("aria-label", label(block, "choose-variant"));
+          sellable.forEach(function (variant) {
+            var option = document.createElement("option");
+            option.value = String(variant.id);
+            option.textContent = variant.title;
+            option.setAttribute("data-upsell-cents", String(variant.price));
+            select.appendChild(option);
+          });
+          select.hidden = false;
+        } else {
+          select.remove();
+        }
+      }
+
+      var price = node.querySelector("[data-upsell-price]");
+      if (price) {
+        price.setAttribute("data-upsell-cents", String(sellable[0].price));
+        price.textContent = formatMoney(sellable[0].price, format);
+      }
+
+      var compare = node.querySelector("[data-upsell-compare]");
+      if (compare) {
+        if (showCompare && item.compare_at_price > sellable[0].price) {
+          compare.textContent = formatMoney(item.compare_at_price, format);
+          compare.hidden = false;
+        } else {
+          compare.remove();
+        }
+      }
+
+      var link = node.querySelector("[data-upsell-view-link]");
+      if (link) {
+        link.href = item.url || "/products/" + item.handle;
+        link.textContent = label(block, "view");
+      }
+
+      fragment.appendChild(node);
+      rendered += 1;
+    });
+
+    if (rendered === 0) return false;
+    list.appendChild(fragment);
+    return true;
+  }
+
+  function fetchUpsell(block) {
+    var productId = block.getAttribute("data-reco-source-product");
+    var limit = block.getAttribute("data-reco-limit") || 3;
+
+    var url =
+      "/recommendations/products.json?product_id=" +
+      encodeURIComponent(productId) +
+      // Shopify excludes sold-out products itself, but an over-fetch leaves room
+      // for the ones this block drops for having no sellable variant.
+      "&limit=" +
+      encodeURIComponent(Math.min(Number(limit) + 4, 10)) +
+      "&intent=related";
+
+    block.setAttribute("data-reco-loading", "true");
+
+    return fetch(url, { headers: { Accept: "application/json" } })
+      .then(function (response) {
+        return response.ok ? response.json() : { products: [] };
+      })
+      .then(function (data) {
+        block.removeAttribute("data-reco-loading");
+        return renderUpsellRows(block, (data && data.products) || []);
+      })
+      .catch(function () {
+        block.removeAttribute("data-reco-loading");
+        return false;
+      });
+  }
+
+  function addUpsellToCart(block, button) {
+    var rows = upsellRows(block).filter(function (row) {
+      var check = row.querySelector("[data-upsell-check]");
+      return check && check.checked;
+    });
+    if (rows.length === 0) return;
+
+    var sourceProductId = block.getAttribute("data-reco-source-product");
+    var source = block.getAttribute("data-reco-source") || "shopify";
+    var behavior = block.getAttribute("data-reco-atc") || "ajax";
+
+    var items = [];
+    var attributed = [];
+
+    rows.forEach(function (row) {
+      var isCurrent = row.hasAttribute("data-upsell-current");
+      var variantId = isCurrent ? currentVariantId(row) : rowVariantId(row);
+      if (!variantId) return;
+
+      var clickId = uid();
+      items.push({
+        id: Number(variantId),
+        quantity: 1,
+        // The source product is never attributed to itself: its line carries no
+        // reco properties, so the orders/create webhook does not book the
+        // shopper's own product as a recommendation-driven sale.
+        properties: isCurrent
+          ? {}
+          : {
+              _reco_src: sourceProductId,
+              _reco_cid: clickId,
+              _reco_source: source,
+            },
+      });
+
+      if (!isCurrent) {
+        attributed.push(row.getAttribute("data-reco-product-id"));
+      }
+    });
+
+    if (items.length === 0) return;
+
+    button.setAttribute("aria-busy", "true");
+    button.disabled = true;
+
+    fetch("/cart/add.js", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ items: items }),
+    })
+      .then(function (response) {
+        if (!response.ok) throw new Error("cart/add failed");
+        return response.json();
+      })
+      .then(function () {
+        // One event per recommended line, so a three-product bundle reports
+        // three add_to_carts rather than one.
+        attributed.forEach(function (recoProductId) {
+          track({
+            type: "add_to_cart",
+            sourceProductId: sourceProductId,
+            recoProductId: recoProductId,
+            source: source,
+            placement: "upsell",
+          });
+        });
+        flush();
+
+        if (behavior === "redirect_cart") {
+          window.location.href = "/cart";
+          return;
+        }
+
+        document.dispatchEvent(new CustomEvent("cart:refresh", { bubbles: true }));
+        document.dispatchEvent(new CustomEvent("cart:updated", { bubbles: true }));
+
+        if (behavior === "open_drawer") {
+          var drawer = document.querySelector("cart-drawer, #CartDrawer");
+          if (drawer && typeof drawer.open === "function") drawer.open();
+        }
+
+        button.textContent = config().strings.added || "Added";
+        setTimeout(function () {
+          button.disabled = false;
+          refreshUpsell(block);
+        }, 1800);
+      })
+      .catch(function () {
+        button.textContent = config().strings.error || "Try again";
+        setTimeout(function () {
+          button.disabled = false;
+          refreshUpsell(block);
+        }, 1800);
+      })
+      .finally(function () {
+        // The label is not restored here: refreshUpsell() rewrites it from the
+        // live tick count once the confirmation has been shown.
+        button.removeAttribute("aria-busy");
+      });
+  }
+
+  function wireUpsell(block) {
+    observeImpressions(block);
+
+    var sourceProductId = block.getAttribute("data-reco-source-product");
+    var source = block.getAttribute("data-reco-source");
+
+    block.addEventListener("change", function (event) {
+      if (!event.target.closest("[data-upsell-check], [data-upsell-variant]")) return;
+      refreshUpsell(block);
+
+      // Ticking a line is this block's engagement signal — there are no
+      // per-card buttons to click — so it reports `click`, once per row per page
+      // view, keeping impression → click → add_to_cart intact.
+      var row = event.target.closest("[data-upsell-row]");
+      var check = event.target.closest("[data-upsell-check]");
+      if (!row || !check || !check.checked) return;
+      if (row.hasAttribute("data-upsell-current")) return;
+      if (row.hasAttribute("data-upsell-clicked")) return;
+      row.setAttribute("data-upsell-clicked", "true");
+
+      track({
+        type: "click",
+        sourceProductId: sourceProductId,
+        recoProductId: row.getAttribute("data-reco-product-id"),
+        source: source,
+        placement: "upsell",
+      });
+    });
+
+    block.addEventListener("click", function (event) {
+      var button = event.target.closest("[data-upsell-add]");
+      if (button) {
+        event.preventDefault();
+        addUpsellToCart(block, button);
+        return;
+      }
+
+      var link = event.target.closest("[data-reco-link]");
+      if (!link) return;
+
+      var row = link.closest("[data-upsell-row]");
+      if (row && !row.hasAttribute("data-upsell-clicked")) {
+        row.setAttribute("data-upsell-clicked", "true");
+        track({
+          type: "click",
+          sourceProductId: sourceProductId,
+          recoProductId: row.getAttribute("data-reco-product-id"),
+          source: source,
+          placement: "upsell",
+        });
+        flush();
+      }
+    });
+
+    refreshUpsell(block);
+
+    // Billable like Custom and Related: it has a source product and answers
+    // "what goes with this", so one serve per render that showed something.
+    track({
+      type: "served",
+      sourceProductId: sourceProductId,
+      source: source,
+      placement: "upsell",
+    });
+  }
+
+  function initUpsell() {
+    document.querySelectorAll("[data-upsell-block]").forEach(function (block) {
+      if (block.hasAttribute("data-upsell-ready")) return;
+      block.setAttribute("data-upsell-ready", "true");
+      // Claimed here so the card-based init below skips it.
+      block.setAttribute("data-reco-ready", "true");
+
+      if (block.getAttribute("data-reco-server-rendered") === "true") {
+        wireUpsell(block);
+        return;
+      }
+
+      fetchUpsell(block).then(function (rendered) {
+        if (rendered) {
+          wireUpsell(block);
+          return;
+        }
+        // Nothing to bundle with. A lone "This item" row with a total is not an
+        // upsell, so the block removes itself rather than pretending.
+        if (!block.querySelector("[data-reco-card]")) block.remove();
+      });
+    });
+  }
+
   function init() {
+    // Upsell blocks first: they mark themselves ready so the card loop skips
+    // them, since both carry data-reco-block for the shared tracking wiring.
+    initUpsell();
+
     document.querySelectorAll("[data-reco-block]").forEach(function (block) {
       if (block.hasAttribute("data-reco-ready")) return;
       block.setAttribute("data-reco-ready", "true");
