@@ -85,10 +85,44 @@ async function missingFor(admin, ownerType) {
   return wanted.filter((definition) => !existing.has(definition.key));
 }
 
-export async function ensureMetafieldDefinitions(admin, shop) {
-  if (checked.has(shop.id)) return { created: [] };
+/**
+ * Which definitions this store has, and which it is missing.
+ *
+ * Read-only, and read on every Settings load rather than cached: a merchant looks at
+ * this precisely when the storefront is not behaving, and a cached "present" would be
+ * the least useful thing the page could say.
+ *
+ * The distinction matters because **the Admin API can read a metafield with no
+ * definition and Liquid cannot**. So the app can report an offer as live, and the
+ * storefront still shows nothing — which is exactly the shape of "specific products
+ * works, all products does not": the product definition was created by hand months
+ * ago, the shop one never was.
+ */
+export async function readDefinitionStatus(admin) {
+  const ownerTypes = [...new Set(DEFINITIONS.map((definition) => definition.ownerType))];
+  const status = [];
+
+  for (const ownerType of ownerTypes) {
+    const missing = new Set((await missingFor(admin, ownerType)).map((entry) => entry.key));
+
+    for (const definition of DEFINITIONS.filter((entry) => entry.ownerType === ownerType)) {
+      status.push({
+        ownerType,
+        key: definition.key,
+        name: definition.name,
+        present: !missing.has(definition.key),
+      });
+    }
+  }
+
+  return status;
+}
+
+export async function ensureMetafieldDefinitions(admin, shop, { force = false } = {}) {
+  if (!force && checked.has(shop.id)) return { created: [], errors: [] };
 
   const created = [];
+  const errors = [];
   const ownerTypes = [...new Set(DEFINITIONS.map((definition) => definition.ownerType))];
 
   for (const ownerType of ownerTypes) {
@@ -112,7 +146,6 @@ export async function ensureMetafieldDefinitions(admin, shop) {
       });
 
       const body = await response.json();
-      const errors = body?.data?.metafieldDefinitionCreate?.userErrors ?? [];
 
       /*
        * TAKEN means another request won the race, which is a success from here.
@@ -120,12 +153,21 @@ export async function ensureMetafieldDefinitions(admin, shop) {
        * cannot be created must not take the admin down, and the paths that need it
        * already degrade to Shopify's own recommendations.
        */
-      const real = errors.filter((error) => error.code !== "TAKEN");
+      const real = (body?.data?.metafieldDefinitionCreate?.userErrors ?? []).filter(
+        (error) => error.code !== "TAKEN",
+      );
       if (real.length > 0) {
-        console.error(
-          `[easy-reco] metafieldDefinitionCreate ${ownerType}/${definition.key} failed`,
-          real.map((error) => error.message).join(", "),
-        );
+        /*
+         * Collected *and* logged. Swallowing this into the console is how the shop
+         * definition could be missing for days: the app kept reporting offers as live
+         * while Liquid read nil, and nothing on screen said the storefront could not
+         * see them.
+         */
+        const message = `${ownerType}/${definition.key}: ${real
+          .map((error) => error.message)
+          .join(", ")}`;
+        console.error("[easy-reco] metafieldDefinitionCreate failed", message);
+        errors.push(message);
         continue;
       }
 
@@ -133,8 +175,9 @@ export async function ensureMetafieldDefinitions(admin, shop) {
     }
   }
 
-  checked.add(shop.id);
-  return { created };
+  // Only a clean run is remembered: a failure has to be retried on the next load.
+  if (errors.length === 0) checked.add(shop.id);
+  return { created, errors };
 }
 
 /** Test seam: the in-process cache would otherwise leak between cases. */

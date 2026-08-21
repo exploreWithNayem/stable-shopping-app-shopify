@@ -220,6 +220,41 @@
   aspect-ratio: 1/1;
 }
 
+/*
+ * The injected block, wherever it lands.
+ *
+ * `insertionTarget` in reco.js keeps it out of flex rows and multi-column grids, but a
+ * theme can lay things out in ways this app has never seen — so if it does end up a
+ * flex item, it claims a whole line rather than squeezing in beside the buy buttons
+ * and rebuilding the row. Both properties are inert in normal flow.
+ */
+.reco--embedded {
+  /*
+   * A full line if it ever lands in a flex row, and never wider than its column.
+   * Both are inert in normal flow.
+   */
+  flex-basis: 100%;
+  inline-size: 100%;
+  max-inline-size: 100%;
+}
+
+/*
+ * Nothing inside sets a floor under the column's width.
+ *
+ * The problem this addresses: a page whose media and info columns are flex items with
+ * `flex-basis: auto` distributes width by each column's **content**, so the offer's
+ * content made the info column grow and the product image shrank to pay for it.
+ *
+ * ⚠️ `contain: layout inline-size` was tried here first and **hid the widget** on a real
+ * theme, so it is not coming back: taking an element's inline size out of the layout
+ * entirely depends on the parent chain in ways this app cannot see from the admin. These
+ * rules only lower the block's *minimum* contribution, which can shrink a column's
+ * demand but can never collapse the block.
+ */
+.reco--embedded > * {
+  min-inline-size: 0;
+}
+
 /* --- Offer carousel (app embed) ------------------------------------------ */
 
 /*
@@ -263,6 +298,15 @@
  * font is whatever it is — that part cannot be matched — but the weight
  * relationship between the name and the price can be.
  */
+/*
+ * Long titles wrap rather than setting a floor under the card's width. A single
+ * unbreakable word — a SKU, a URL — would otherwise be the widest thing on the page.
+ */
+.reco--offer .reco-card__title,
+.reco__countdown {
+  overflow-wrap: anywhere;
+}
+
 .reco--offer .reco-card__title {
   font-weight: 600;
 }

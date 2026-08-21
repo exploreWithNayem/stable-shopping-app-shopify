@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test } from "vitest";
 import {
   ensureMetafieldDefinitions,
+  readDefinitionStatus,
   resetDefinitionCache,
 } from "./metafield-definitions.server";
 
@@ -113,6 +114,68 @@ describe("ensureMetafieldDefinitions", () => {
   test("TAKEN is a success — another request won the race", async () => {
     const admin = stubAdmin({ errors: [{ code: "TAKEN", message: "Key is in use" }] });
     expect((await ensureMetafieldDefinitions(admin, shop)).created).toHaveLength(2);
+  });
+
+  test("a real error is reported, not only logged", async () => {
+    /*
+     * Swallowing this into the console is how the shop definition could be missing for
+     * days: the app kept reporting offers as live while Liquid read nil, and nothing on
+     * screen said the storefront could not see them.
+     */
+    const admin = stubAdmin({ errors: [{ code: "INVALID_VALUE", message: "Nope" }] });
+    const result = await ensureMetafieldDefinitions(admin, shop);
+
+    expect(result.errors).toHaveLength(2);
+    expect(result.errors[0]).toContain("Nope");
+  });
+
+  test("a failed run is retried on the next load", async () => {
+    // Only a clean run is remembered; caching a failure would hide it until restart.
+    const failing = stubAdmin({ errors: [{ code: "INVALID_VALUE", message: "Nope" }] });
+    await ensureMetafieldDefinitions(failing, shop);
+
+    const retry = stubAdmin();
+    expect((await ensureMetafieldDefinitions(retry, shop)).created).toHaveLength(2);
+  });
+
+  test("force re-checks a shop this process already cleared", async () => {
+    // The Settings button is a deliberate retry, not a page load.
+    const admin = stubAdmin({
+      existing: { PRODUCT: ["reco_overrides"], SHOP: ["reco_offers"] },
+    });
+
+    await ensureMetafieldDefinitions(admin, shop);
+    const after = admin.calls.length;
+    await ensureMetafieldDefinitions(admin, shop, { force: true });
+
+    expect(admin.calls.length).toBeGreaterThan(after);
+  });
+});
+
+describe("readDefinitionStatus", () => {
+  test("says which of the two the storefront can read", async () => {
+    /*
+     * The Admin API reads a metafield with no definition; Liquid does not. So this is
+     * the difference between "the app saved it" and "the storefront can see it" — the
+     * exact shape of "specific products works, all products does not".
+     */
+    const status = await readDefinitionStatus(
+      stubAdmin({ existing: { PRODUCT: ["reco_overrides"] } }),
+    );
+
+    expect(status).toEqual([
+      { ownerType: "PRODUCT", key: "reco_overrides", name: "Recommendation Overrides", present: true },
+      { ownerType: "SHOP", key: "reco_offers", name: "Recommendation Offers", present: false },
+    ]);
+  });
+
+  test("is not cached — it is read when the storefront looks wrong", async () => {
+    const admin = stubAdmin();
+    await readDefinitionStatus(admin);
+    const after = admin.calls.length;
+    await readDefinitionStatus(admin);
+
+    expect(admin.calls.length).toBeGreaterThan(after);
   });
 
   test("a real error is skipped, not thrown", async () => {

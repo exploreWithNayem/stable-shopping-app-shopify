@@ -1286,6 +1286,63 @@
   }
 
   /**
+   * Where to actually insert, once the anchor's parent is taken into account.
+   *
+   * Inserting next to the anchor is right in normal flow and wrong inside a row: a
+   * theme that lays quantity and Add to cart out as a **flex row** treats the injected
+   * block as a third item, so the row wraps and the buy area rebuilds itself — the
+   * quantity box on one line, the button stretched across the next. The offer was
+   * correct and the product page was broken.
+   *
+   * So the insertion point climbs out of horizontal parents and only those:
+   *
+   *   - flex **row** — a new item lands beside the others. Climb.
+   *   - **grid** with more than one column track — same. Climb.
+   *   - flex **column** — a new item is a new row, which is exactly the intent. Stay.
+   *   - anything in normal flow. Stay.
+   *
+   * Bounded to three levels. A theme built entirely out of flex rows would otherwise
+   * walk to `<body>`, and an offer slightly below the buy area beats one that rebuilt
+   * it.
+   */
+  function insertionTarget(anchor) {
+    var node = anchor;
+
+    for (var depth = 0; depth < 3; depth += 1) {
+      var parent = node.parentNode;
+      if (!parent || parent.nodeType !== 1) return node;
+
+      var style = null;
+      try {
+        style = window.getComputedStyle(parent);
+      } catch (error) {
+        return node;
+      }
+      if (!style) return node;
+
+      var display = style.display;
+      var horizontal = false;
+
+      if (display === "flex" || display === "inline-flex") {
+        var direction = style.flexDirection || "row";
+        horizontal = direction === "row" || direction === "row-reverse";
+      } else if (display === "grid" || display === "inline-grid") {
+        /*
+         * One track is a column of rows, which behaves like normal flow for this
+         * purpose. More than one means the block would sit *beside* something.
+         */
+        var tracks = String(style.gridTemplateColumns || "").trim();
+        horizontal = tracks !== "" && tracks !== "none" && tracks.indexOf(" ") !== -1;
+      }
+
+      if (!horizontal) return node;
+      node = parent;
+    }
+
+    return node;
+  }
+
+  /**
    * Offer types the admin previews as a carousel: one product at a time, laid out
    * as a row.
    *
@@ -1831,7 +1888,20 @@
      * and never fires a serve beacon for something no shopper saw.
      */
     offerIsLive(offer).then(function (live) {
-      if (!live) return;
+      /*
+       * One line in the console for each outcome.
+       *
+       * Every round of "the widget is missing" / "the widget is showing when it should
+       * not" has been diagnosed by guessing at a store nobody debugging it can inspect.
+       * This is the cheapest possible end to that: it says which offer, whether the app
+       * vouched for it, and where it went.
+       */
+      if (!live) {
+        console.info(
+          "[easy-reco] offer " + offer.offerId + " not rendered: the app did not confirm it",
+        );
+        return;
+      }
       // A second run — a theme editor section reload — must not inject twice while
       // the first check was still in flight.
       if (document.querySelector("[data-reco-embedded]")) return;
@@ -1844,11 +1914,28 @@
   function renderEmbeddedOffer(offer, anchor, automated) {
     var block = buildBlock(offer);
     var position = offer.render && offer.render.position === "before" ? "before" : "after";
+    // Not the anchor itself: see insertionTarget for why a flex row cannot host it.
+    var target = insertionTarget(anchor);
 
     if (position === "before") {
-      anchor.parentNode.insertBefore(block, anchor);
+      target.parentNode.insertBefore(block, target);
     } else {
-      anchor.parentNode.insertBefore(block, anchor.nextSibling);
+      target.parentNode.insertBefore(block, target.nextSibling);
+    }
+
+    try {
+      console.info(
+        "[easy-reco] offer rendered",
+        {
+          offer: offer.offerId,
+          anchor: anchor.className || anchor.tagName,
+          // Where it actually went, which is the part `insertionTarget` decides.
+          insertedAfter: target.className || target.tagName,
+          width: block.getBoundingClientRect().width,
+        },
+      );
+    } catch (error) {
+      /* a diagnostic must never be the thing that breaks a product page */
     }
 
     initCountdown(block, offer.copy || {}, String(offer.productId));

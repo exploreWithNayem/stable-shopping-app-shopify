@@ -255,13 +255,38 @@ describe("route tree", () => {
     );
     expect(runtime).toContain("function offerIsLive(offer)");
     expect(runtime).toContain("offerIsLive(offer).then(function (live) {");
-    expect(runtime).toContain("if (!live) return;");
+    // Says why, in the console, when it decides not to render — every round of "the
+    // widget is missing" so far has been diagnosed by guessing.
+    expect(runtime).toContain("not rendered: the app did not confirm it");
     /*
      * No offer id, no injection. The metafield also holds lists curated on the
      * recommendations page; injecting those made a widget appear the moment the app
      * embed was switched on, with no offer anywhere in the admin.
      */
     expect(runtime).toContain("if (!offer.offerId) return Promise.resolve(false)");
+  });
+
+  test("Settings reports whether the storefront can read the app's data at all", () => {
+    /*
+     * The Admin API reads a metafield with no definition; **Liquid does not**. So the
+     * app can report an offer as live while the storefront shows nothing — which is the
+     * exact shape of "specific products works, all products does not": the product
+     * definition was created by hand months ago, the shop one never was.
+     *
+     * The /app loader creates missing definitions and logs failures to the console,
+     * where no merchant will see them. This is the one that says so on screen, and
+     * offers the retry.
+     */
+    const settings = readFileSync(`${appDirectory}routes/app.settings.jsx`, "utf8");
+
+    expect(settings).toContain("readDefinitionStatus(admin)");
+    expect(settings).toContain("intent === 'create-definitions'");
+    expect(settings).toContain("ensureMetafieldDefinitions(admin, shop, { force: true })");
+    // Reported, not swallowed.
+    expect(settings).toContain("definitionErrors");
+    // Read on every load: a cached "present" is the least useful thing this page could
+    // say to someone whose storefront is misbehaving.
+    expect(settings).not.toContain("checked.has");
   });
 
   test("Settings can read what the storefront is actually showing", () => {

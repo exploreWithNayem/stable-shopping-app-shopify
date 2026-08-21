@@ -904,10 +904,42 @@ themselves.
 | --- | --- |
 | Anchor | The offer's own CSS selector first, then a built-in chain (`.product-form__buttons`, the submit button, `.shopify-payment-button`, `product-form`, the cart form, then the info wrapper). A selector that matches nothing **falls through to the chain** — a theme rename should cost a worse position, not the offer |
 | Visibility | Ancestors are walked for `display:none` / `visibility:hidden` / `[hidden]`, and `querySelectorAll` is used so a hidden duplicate earlier in the document does not consume the selector's turn. Themes ship duplicate buy forms for drawers and quick-add |
-| Position | `before` / `after` the anchor, from the offer |
+| Position | `before` / `after` the **insertion target**, from the offer |
+| Insertion target | The anchor, unless its parent lays children out horizontally — a flex **row** or a grid with more than one column track. Then the point climbs to that parent, bounded to three levels |
 | A theme block wins | If any `[data-reco-block][data-reco-placement="pdp"]` is on the page, nothing is injected. The merchant placed it and said where they want it; rendering both would double the products *and* bill two serves for one page view (§3.3) |
 | Idempotent | `data-reco-embedded` guards re-entry, so `shopify:section:load` cannot inject twice |
 | Escaping | The title, badge and button text are merchant-authored and reach the page through `innerHTML`, so they go through `escapeHtml()` |
+
+> ⚠️ **The insertion point is not always the anchor** (fixed 2026-08-21). A theme that
+> lays the quantity box and Add to cart out as a **flex row** treats the injected block
+> as a third item: the row wraps, the quantity takes its own line, the button stretches
+> across the next. The offer rendered perfectly and rebuilt the buy area doing it.
+> `insertionTarget()` climbs out of flex **rows** and multi-column grids and only those —
+> a flex **column** is exactly the layout the offer wants to join, and climbing out of one
+> would push the offer away from the buy area for nothing. Bounded to three levels,
+> because a theme built entirely from flex rows would otherwise walk to `<body>`, and an
+> offer slightly below the buy area beats one that rebuilt it. `.reco--embedded` also
+> carries `flex-basis: 100%` — inert in normal flow, and if the block ever does land in a
+> row it claims a whole line instead of squeezing in.
+>
+> **It must also not *size* its column** — a page whose media and info columns are flex
+> items with `flex-basis: auto` distributes width by each column's **content**, so the
+> offer's content made the info column grow and the product image shrank to pay for it.
+>
+> ⛔ **`contain: layout inline-size` is not the answer, though it looks like it.** It was
+> shipped for exactly this and **hid the widget** on the merchant's theme. Taking an
+> element's inline size out of layout makes its width depend on the parent chain in ways
+> this app cannot see from the admin, and `min-inline-size` as a floor did not save it.
+> A test pins `contain:` out of the stylesheet. What is left — `max-inline-size: 100%`,
+> `min-inline-size: 0` on the children, `overflow-wrap: anywhere` on the text — only
+> lowers the block's *minimum* contribution: it can reduce a column's demand and can
+> never collapse the block.
+>
+> **`reco.js` logs one line per outcome** (`[easy-reco] offer rendered {…}` with the
+> anchor, the insertion target and the measured width, or `not rendered: the app did not
+> confirm it`). Every round of "the widget is missing" and "the widget shows when it
+> should not" was diagnosed by guessing at a store nobody debugging it can inspect; this
+> is the cheapest end to that.
 
 > ⚠️ **Not `offsetParent !== null` for the visibility check.** That is the usual shorthand and it is
 > wrong here: it reports null for `position: fixed` elements, so a theme with a sticky add-to-cart bar
@@ -1164,9 +1196,13 @@ recommendations. The Offer tab turns both halves into rules.
   walks the shop list and takes the first offer that matches the product in front of
   it. That is what makes "all products" include products added *after* the offer was
   published — an expansion would have frozen the catalogue at publish time.
-- **A product's own list wins.** The embed reads `reco_overrides` first and only
-  falls through to the shop list when there is none: a merchant who named this
-  product meant this product, and a catalogue-wide offer must not overrule it.
+- **An *offer* published onto the product wins — not any list on it.** The precedence
+  test is `reco.offerId`, and getting that wrong cost a long debugging session: it used
+  to be "does this product have items in its metafield", so a list curated on the
+  recommendations page (no offer behind it, never injected — §7.9) **shadowed the shop
+  list and then rendered nothing itself**. On a store with curated lists, an "all
+  products" offer went missing on exactly the products that already had one, which is
+  the hardest version of the bug to notice.
 - **Exclusions are checked after the trigger and beat it** — they exist to carve
   pages out of a match, so an excluded product is never a match even when the
   trigger says every product.
@@ -1186,6 +1222,20 @@ recommendations. The Offer tab turns both halves into rules.
   showing on none. A failed *unpublish* is **not** rolled back for the mirror-image
   reason: the offer is meant to be off, and re-marking it published would say it is
   live when the merchant just took it down.
+> ⚠️ **"Specific products works, all products does not" is almost always the missing shop
+> definition.** The two paths differ in exactly one way that is invisible from the admin:
+> the **Admin API reads a metafield with no definition, and Liquid does not**. The
+> product definition on the dev store was created by hand in August; the shop one never
+> was — so an all-products publish wrote a value the app could read back happily and the
+> storefront could not see at all. Nothing failed, nothing logged, and the Settings
+> diagnostic still reported the offer as live, because it reads through the Admin API too.
+>
+> Settings now leads with a **Storefront access** section: one row per definition, Ready
+> or Missing, and a button that creates what is missing and **reports the userErrors on
+> screen**. The automatic run in the `/app` loader only logged them, which is how this
+> stayed invisible; a failed run is no longer cached either, so the next page load
+> retries.
+
 - **The definitions are created by the app, not by the deploy.** Declaring
   `[shop.metafields.app.reco_offers]` in `shopify.app.toml` is **not** enough — the
   same trap the product metafield hit in August: the block ships in the deploy bundle
@@ -2016,7 +2066,7 @@ so the first can declare `enabled_on` and the second can own a real collection p
 They share their markup through `reco-panel` and `reco-collection-cards`; only the schema JSON
 duplicates, and a test pins the two copies together. A third block, **Upsell**, is a
 **Bought Together** bundle over the same Custom list (§7.4) — product templates only, its own
-`upsell` placement, billable. 621 Vitest tests pass; lint and typecheck are clean — though see the
+`upsell` placement, billable. 633 Vitest tests pass; lint and typecheck are clean — though see the
 warning in §4: typecheck does not read a single `.js`/`.jsx` file, which is all of them.
 
 Custom recommendations are no longer a paid-only feature: **Free covers 10 products** and the

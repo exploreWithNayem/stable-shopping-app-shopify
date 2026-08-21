@@ -10,6 +10,10 @@ import {
   syncAllOverrides,
 } from '../lib/metafields.server';
 import { deleteShopOffers, readShopOffers, syncShopOffers } from '../lib/shop-offers.server';
+import {
+  ensureMetafieldDefinitions,
+  readDefinitionStatus,
+} from '../lib/metafield-definitions.server';
 import { formatNumber } from '../lib/format';
 import QuotaBanner from '../components/QuotaBanner';
 
@@ -36,10 +40,29 @@ export const loader = async ({ request }) => {
     storefront = { present: false, offers: [], updatedAt: null, error: error.message };
   }
 
+  /*
+   * Whether the storefront can *see* the metafields at all.
+   *
+   * The Admin API reads a metafield with no definition; **Liquid does not**. So the app
+   * can report an offer as live while the storefront shows nothing — which is the exact
+   * shape of "specific products works, all products does not": the product definition
+   * was created by hand months ago, the shop one never was. Read every load, because a
+   * merchant looks at this page precisely when the storefront is misbehaving.
+   */
+  let definitions = [];
+  let definitionError = null;
+  try {
+    definitions = await readDefinitionStatus(admin);
+  } catch (error) {
+    definitionError = error.message;
+  }
+
   return {
     overrideCount: total,
     unsyncedCount: unsynced.length,
     storefront,
+    definitions,
+    definitionError,
   };
 };
 
@@ -49,6 +72,24 @@ export const action = async ({ request }) => {
 
   const formData = await request.formData();
   const intent = String(formData.get('intent') ?? '');
+
+  /*
+   * Create whatever definition is missing, and **report** what happened. The
+   * automatic run in the /app loader logs failures to the console, where a merchant
+   * will never see them; this is the one that says so on screen.
+   */
+  if (intent === 'create-definitions') {
+    try {
+      const result = await ensureMetafieldDefinitions(admin, shop, { force: true });
+      return {
+        ok: result.errors.length === 0,
+        definitionsCreated: result.created,
+        definitionErrors: result.errors,
+      };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  }
 
   /*
    * Read one product's metafield. The diagnostic that ends "I deleted the offer and it
@@ -139,7 +180,8 @@ export const action = async ({ request }) => {
  * write leaves the storefront stale with no other way to fix it.
  */
 export default function SettingsPage() {
-  const { overrideCount, unsyncedCount, storefront } = useLoaderData();
+  const { overrideCount, unsyncedCount, storefront, definitions, definitionError } =
+    useLoaderData();
   const fetcher = useFetcher();
   const shopify = useAppBridge();
   const result = fetcher.data;
@@ -206,6 +248,61 @@ export default function SettingsPage() {
           >
             Re-sync recommendations
           </s-button>
+        </s-stack>
+      </s-section>
+
+      {/*
+        Whether the storefront can read the app's data at all.
+
+        First, because everything below it is meaningless when the answer is no: a
+        definition is what makes a metafield visible to Liquid, and without one the app
+        writes values nobody can read.
+      */}
+      <s-section heading="Storefront access">
+        <s-stack direction="block" gap="base">
+          <s-paragraph>
+            Your theme can only read the app&rsquo;s data when these exist on your store. Without
+            them the app saves normally and the storefront shows nothing.
+          </s-paragraph>
+
+          {definitionError && <s-text tone="critical">{definitionError}</s-text>}
+
+          {definitions.map((definition) => (
+            <s-stack
+              key={`${definition.ownerType}-${definition.key}`}
+              direction="inline"
+              gap="small"
+              alignItems="center"
+            >
+              <s-badge tone={definition.present ? 'success' : 'critical'}>
+                {definition.present ? 'Ready' : 'Missing'}
+              </s-badge>
+              <s-text>
+                {definition.ownerType === 'SHOP'
+                  ? 'Catalogue-wide offers (all products, collections)'
+                  : 'Per-product recommendations'}
+              </s-text>
+            </s-stack>
+          ))}
+
+          {definitions.some((definition) => !definition.present) && (
+            <s-button
+              variant="primary"
+              onClick={() => fetcher.submit({ intent: 'create-definitions' }, { method: 'POST' })}
+              {...(isSyncing ? { loading: true } : {})}
+            >
+              Set up storefront access
+            </s-button>
+          )}
+
+          {result?.definitionsCreated?.length > 0 && (
+            <s-text tone="success">
+              {`Created ${result.definitionsCreated.join(', ')}. Reload a product page to confirm.`}
+            </s-text>
+          )}
+          {result?.definitionErrors?.length > 0 && (
+            <s-text tone="critical">{result.definitionErrors.join(' ')}</s-text>
+          )}
         </s-stack>
       </s-section>
 

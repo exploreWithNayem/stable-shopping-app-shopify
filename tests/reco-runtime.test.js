@@ -1384,6 +1384,88 @@ describe("app embed injection", () => {
     });
   });
 
+  /*
+   * Where the block lands matters as much as whether it renders. A theme that lays
+   * quantity and Add to cart out as a flex row treats the injected block as a third
+   * item: the row wraps, the quantity box gets its own line and the button stretches
+   * across the next. The offer was right and the product page was broken.
+   */
+  describe("insertion point", () => {
+    /** Report a display for chosen elements, as a theme's stylesheet would. */
+    function stubLayout(map) {
+      const real = window.getComputedStyle.bind(window);
+      window.getComputedStyle = (element, ...rest) => {
+        for (const [selector, style] of map) {
+          if (element.matches?.(selector)) return { ...real(element, ...rest), ...style };
+        }
+        return real(element, ...rest);
+      };
+    }
+
+    /*
+     * The anchor is `.product-form__buttons`, so the decision is about **its parent**,
+     * the form: that is the box a new sibling would join.
+     */
+    test("climbs out of a flex row rather than joining it", async () => {
+      stubLayout([['form', { display: 'flex', flexDirection: 'row' }]]);
+
+      bootEmbed(productPage(), offer());
+      await tick(1000);
+
+      const block = document.querySelector('[data-reco-embedded]');
+      // Past the form, so the buy row keeps exactly the items the theme put in it.
+      expect(document.querySelector('form').nextElementSibling).toBe(block);
+      expect(document.querySelector('form [data-reco-embedded]')).toBeNull();
+    });
+
+    test("stays in a flex column, where a new item is a new row", async () => {
+      // Climbing out of a column would push the offer away from the buy area for no
+      // reason — a column is the layout the offer wants to join.
+      stubLayout([['form', { display: 'flex', flexDirection: 'column' }]]);
+
+      bootEmbed(productPage(), offer());
+      await tick(1000);
+
+      expect(document.querySelector('.product-form__buttons').nextElementSibling).toBe(
+        document.querySelector('[data-reco-embedded]'),
+      );
+    });
+
+    test("climbs out of a multi-column grid but not a single-column one", async () => {
+      stubLayout([['form', { display: 'grid', gridTemplateColumns: '1fr 1fr' }]]);
+      bootEmbed(productPage(), offer());
+      await tick(1000);
+      expect(document.querySelector('form [data-reco-embedded]')).toBeNull();
+
+      document.body.innerHTML = '';
+      stubLayout([['form', { display: 'grid', gridTemplateColumns: '1fr' }]]);
+      bootEmbed(productPage(), offer());
+      await tick(1000);
+      expect(document.querySelector('form [data-reco-embedded]')).toBeTruthy();
+    });
+
+    test("normal flow is left alone", async () => {
+      // jsdom reports `block` for everything, so this is the untouched default.
+      bootEmbed(productPage(), offer());
+      await tick(1000);
+
+      expect(document.querySelector('.product-form__buttons').nextElementSibling).toBe(
+        document.querySelector('[data-reco-embedded]'),
+      );
+    });
+
+    test("a page that is flex rows all the way up still renders", async () => {
+      // Bounded climb: an offer slightly below the buy area beats one that rebuilt it,
+      // and beats none at all.
+      stubLayout([['*', { display: 'flex', flexDirection: 'row' }]]);
+
+      bootEmbed(productPage(), offer());
+      await tick(1000);
+
+      expect(document.querySelector('[data-reco-embedded]')).toBeTruthy();
+    });
+  });
+
   test("a hidden anchor is skipped", async () => {
     // Themes ship duplicate buy forms for drawers and quick-add; injecting into
     // one puts the offer somewhere the shopper never sees.

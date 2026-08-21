@@ -71,12 +71,22 @@
            here, against the product in front of us, which is what makes "all
            products" include products added after the offer was published.
 
-      The product's own list wins. A merchant who named this product meant this
-      product, and a catalogue-wide offer must not overrule that.
+      An **offer** published onto this product wins: a merchant who named this product
+      meant this product, and a catalogue-wide offer must not overrule that.
+
+      A list curated on the recommendations page does **not** win, and this is the
+      distinction that was wrong. The condition used to be "does this product have any
+      items in its metafield", so a curated list — which has no offer behind it and is
+      therefore never injected (7.9) — shadowed the shop list and then rendered nothing
+      itself. On a store with curated lists, an "all products" offer went missing on
+      exactly the products that already had one, which is the hardest possible version
+      of the bug to see.
+
+      `offerId` is what separates the two: only a publish writes it.
     endcomment
     assign reco = product.metafields["$app"].reco_overrides.value
 
-    if reco.items == blank
+    if reco.offerId == blank
       assign shop_offers = shop.metafields["$app"].reco_offers.value.offers
 
       for candidate_offer in shop_offers

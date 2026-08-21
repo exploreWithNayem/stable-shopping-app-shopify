@@ -759,6 +759,47 @@ describe("two blocks, six sources", () => {
     expect(runtime).toContain("var COUNTDOWN_HIDE_MS = 24 * 60 * 60 * 1000");
   });
 
+  test("the injected block never joins a horizontal row", () => {
+    /*
+     * A theme that lays quantity and Add to cart out as a flex row treats the injected
+     * block as a third item: the row wraps, the quantity box takes its own line and the
+     * button stretches across the next. The offer rendered correctly and rebuilt the
+     * buy area doing it.
+     *
+     * A flex *column* is left alone — there a new item is a new row, which is the
+     * intent — and the CSS carries a fallback for layouts this app has never seen.
+     */
+    const runtime = readFileSync(join(EXTENSION, "assets", "reco.js"), "utf8");
+    const css = readFileSync(join(EXTENSION, "assets", "reco.css"), "utf8");
+
+    expect(runtime).toContain("function insertionTarget(anchor)");
+    expect(runtime).toContain('direction === "row" || direction === "row-reverse"');
+    // Bounded, or a fully flex-based theme walks to <body>.
+    expect(runtime).toContain("depth < 3");
+    expect(runtime).toContain("var target = insertionTarget(anchor)");
+
+    expect(css).toContain(".reco--embedded");
+    expect(css).toContain("flex-basis: 100%");
+
+    /*
+     * And it must not *size* the column either. A product page whose media and info
+     * columns are flex items with `flex-basis: auto` distributes width by content size,
+     * so the offer's content made the info column grow and the product image shrink to
+     * pay for it. Containment takes the block's contents out of that calculation; the
+     * floor stops it collapsing to nothing in a column that holds only the widget.
+     */
+    /*
+     * ⚠️ `contain: layout inline-size` was tried here and **hid the widget** on a real
+     * theme. Taking an element's inline size out of layout depends on the parent chain in
+     * ways this app cannot see from the admin, so it is pinned out. What is left only
+     * lowers the block's *minimum* contribution: it can shrink a column's demand, and it
+     * can never collapse the block.
+     */
+    expect(css).not.toMatch(/^\s*contain:/m);
+    expect(css).toContain(".reco--embedded > * {");
+    expect(css).toContain("overflow-wrap: anywhere");
+  });
+
   test("the embed injects offers, and nothing else", () => {
     /*
      * The same metafield holds lists curated on the recommendations page, which have no
@@ -789,7 +830,16 @@ describe("two blocks, six sources", () => {
     expect(embed.indexOf('product.metafields["$app"].reco_overrides.value')).toBeLessThan(
       embed.indexOf("reco_offers"),
     );
-    expect(embed).toContain("if reco.items == blank");
+    /*
+     * The precedence test is `offerId`, not "does this product have items".
+     *
+     * A list curated on the recommendations page has no offer behind it and is never
+     * injected (§7.9) — but while the check was items-based it still *shadowed* the shop
+     * list, so an "all products" offer went missing on exactly the products that already
+     * had a curated list, and nothing rendered there at all.
+     */
+    expect(embed).toContain("if reco.offerId == blank");
+    expect(embed).not.toContain("if reco.items == blank");
 
     // Trigger: all, or this product's collections by handle.
     expect(embed).toContain("candidate_offer.trigger.mode == 'all'");
