@@ -498,6 +498,7 @@ All handlers start with `await authenticate.public.appProxy(request)`.
 | --- | --- | --- | --- |
 | `GET /apps/easy-reco/recommendations` | `proxy.recommendations.jsx` | `productId` (required), `limit`, `placement`, `intent`, `sessionId` | `{ source, items: [...] }`, plus `quotaExceeded: true` when over the limit |
 | `POST /apps/easy-reco/track` | `proxy.track.jsx` | `{ events: [{ clientId, type, ... }] }` | `204` |
+| `GET /apps/easy-reco/offer` | `proxy.offer.jsx` | `offerId` (required), `productId` | `{ live: true \| false }` |
 
 Rules:
 - Always `application/json`, never throw a 500 at the storefront — degrade to `{ items: [] }`.
@@ -1092,6 +1093,51 @@ metafield (§3.1).
 
 ---
 
+### 7.9 The widget renders only when the app says the offer is live
+
+Added 2026-08-21, after "I deleted the offer and it is still showing" survived four
+attempted fixes. The rule the merchant asked for is **both or nothing**: the app embed
+is on **and** there is an offer.
+
+The first half was already true — the embed is what puts an offer on the page. The
+second was not, and could not be: a metafield is a **mirror the app writes**, and a
+mirror cannot say whether the thing it mirrors still exists. Any write that fails, or
+any path that forgets to rewrite it, leaves an offer rendering that no longer exists in
+the admin — and from Liquid's side mirror-says-offer *is* offer. Every fix before this
+one closed a *specific* way the mirror went stale; this closes the class.
+
+**So the mirror proposes and the app confirms.**
+
+- The metafield carries `offerId` (per-product) or `id` (shop list). `reco.js` sends it
+  to `GET /apps/easy-reco/offer?offerId=…&productId=…` and injects **nothing** until the
+  answer is `{ live: true }`.
+- **Checked before the container exists**, so a withdrawn offer never flashes and never
+  fires a `served` beacon for a widget no shopper saw (§3.3).
+- **Anything that is not an explicit yes is a no** — a 401, a network failure, an
+  unparseable body. "Render when there *is* an offer" makes an unanswerable question a
+  no, and hiding the widget is the safer side for a shopper who cannot be offered a deal
+  the store has withdrawn.
+- **No `offerId` means no injection at all** (tightened the same day). The
+  `$app:reco_overrides` metafield also holds lists curated on the recommendations page,
+  which have no offer behind them — and injecting those made a widget appear on a
+  product page the moment the app embed was switched on, with the admin showing **no
+  offers**. That is not what enabling an embed asks for. Those lists still render
+  wherever the merchant *places* a theme block: they chose that. What they never chose
+  is a block appearing on its own. So the embed path is offers-only, gated in Liquid
+  (`offer_id != blank`) and again in `reco.js`.
+- `isOfferLive()` answers three questions in one: does the offer still exist for this
+  shop, is it still published, does it still cover this product. The trigger is only
+  re-checked where it is cheap — `products` compares the stored target list, `all` needs
+  nothing, `collections` is trusted because Liquid already matched `product.collections`
+  for free and redoing it here would mean an Admin API call per page view. An excluded
+  product is never covered whatever the trigger says.
+
+> ⚠️ **This is the one place the app accepts a network hop on the product page.** §3.1's
+> "the PDP never waits on this app" still governs *rendering* — the products and their
+> prices come from the metafield with no hop — but whether to render at all is now the
+> app's answer. The trade was deliberate and merchant-directed: a widget that appears a
+> beat late is better than one that shows an offer that no longer exists.
+
 ### 7.8 The Offer tab: triggers, sources and visibility
 
 Added 2026-08-21. Until now an offer was a list of product pages and a list of
@@ -1140,6 +1186,61 @@ recommendations. The Offer tab turns both halves into rules.
   showing on none. A failed *unpublish* is **not** rolled back for the mirror-image
   reason: the offer is meant to be off, and re-marking it published would say it is
   live when the merchant just took it down.
+- **The definitions are created by the app, not by the deploy.** Declaring
+  `[shop.metafields.app.reco_offers]` in `shopify.app.toml` is **not** enough — the
+  same trap the product metafield hit in August: the block ships in the deploy bundle
+  and no definition appears on the store, so `metafieldsSet` writes the value, the
+  app reports success, and Liquid reads **nil**. `ensureMetafieldDefinitions()` runs
+  in the `/app` loader beside `ensureStorefrontToken()` and creates whatever is
+  missing with `storefront: PUBLIC_READ`. A definition adopts values already written,
+  so it repairs a store retroactively with no re-sync.
+- **Switching a live offer's trigger cleans up what it published before.** Going from
+  "specific products" to all-products or collections deletes the Override rows and
+  metafields the earlier publish left on the named products — otherwise those pages
+  keep rendering the *old* list (a product's own metafield wins over the shop list)
+  while still counting against the per-product allowance.
+- **A shop-scope publish is not reported as a page count.** It said "1 of 1 product
+  page now show the new version" about an offer on the whole catalogue; the result
+  carries `everyProduct` and the banner says "Every product page in your store" — or
+  names the collections — because there is no number to give.
+- **`Override.offerId` records which offer wrote each row**, and a takedown works from
+  that rather than from the offer's current target list. Without it, "I deleted the
+  offer but it is still showing" was reachable in several ways: editing a published
+  offer's product list, or switching its trigger, left rows and metafields behind that
+  nothing could find afterwards, and those pages rendered forever with no way in the
+  admin to stop them.
+  - **Ownership transfers on write.** A second offer publishing onto the same product
+    takes the row, and the first offer's takedown must then leave it alone — row *and*
+    metafield.
+  - **An unowned row loses to the takedown.** It is indistinguishable from one written
+    before the column existed, and leaving those is the bug being fixed. Only a row
+    owned by a *different* offer is spared.
+  - **A target with no row still has its metafield deleted** — that is the repair for
+    an orphan, which the Settings re-sync cannot see because it iterates rows.
+  - **"Reset to Shopify defaults" is offered on every product**, not only ones with an
+    override. It was behind `{override && …}`, which hid the one repair for a leftover
+    metafield behind the existence of the row that was supposed to own it — so a
+    product whose row was gone but whose metafield survived rendered recommendations
+    forever with the fix unreachable. The action always deleted the metafield; only
+    the button was conditional. Shopify offers no way to enumerate products carrying
+    an app metafield (`products(query: "metafields.…")` needs a filterable definition,
+    which a `json` type is not), so a per-product repair the merchant can reach is the
+    sweep.
+  - **Delete always takes down, even for a draft.** Skipping it when the row said
+    "draft" is how a footprint survived a delete: any path that drafts a row without
+    clearing the storefront (a failed unpublish, an interrupted trigger switch) left
+    one behind. On a genuinely clean draft the takedown finds nothing and costs a query.
+> ⚠️ **The shop list is rebuilt on every publish, unpublish and delete — not only for
+> shop-scope offers.** The rebuild used to live inside the `isShopScope` branches, which
+> left a whole class of stale storefront behind: an offer published as **all products**
+> and later switched to **specific products** took the per-product path on republish,
+> nothing rebuilt the list, and the offer stayed in it — rendering on *every* product
+> page while the admin showed a two-product offer. Unpublish and delete had the same
+> hole. `rebuildShopList()` is one query and one write, idempotent (it always rebuilds
+> from what is published, so a store with nothing shop-scope gets an empty list), and
+> unconditional. That was the cause of "the app embed is on and the UI shows even though
+> there is no offer".
+
 - **The Settings re-sync repairs it too.** `syncAllOverrides()` iterates Override
   rows, and a shop-scope offer has none — so `app.settings.jsx` calls
   `syncShopOffers()` as well, or a failed shop write would have no repair path but
@@ -1175,6 +1276,41 @@ the embed injected:
 impression and a block left with nothing reports no `served` — a hidden
 recommendation was not shown, and counting it would overstate the offer's reach and
 bill for it.
+
+**"Only offer items that are in stock" is enforced, not decoration.** The tab states
+it as a fact about offers, so the offer path drops unavailable products — Liquid for
+an inlined list (`candidate.available == false`), `renderFallback` for a fetched one,
+gated on `data-reco-in-stock-only` which every injected offer carries. A **theme
+block still renders Sold out**: that is the documented behaviour of its own settings
+(§8 deviations), and the merchant chose those. The attribute is the only thing
+separating the two, and a block never carries it.
+
+**Exclusions bite on a named-products trigger too**, not just shop-scope: `publishOffer`
+filters the target list, and because the dropped ones fall out of the keep set,
+republishing after adding an exclusion also removes the row and metafield the earlier
+publish left on that product. `newlyOccupiedTargets` skips them as well — an excluded
+product is never published, so it costs no allowance slot. Excluded *collections* are
+not applied to that mode: knowing which collections a target belongs to needs a query
+per product, and a merchant naming pages by hand can simply not name them.
+
+**The exclusion checkboxes control their pickers.** They first shipped with the picker
+rendered whenever the list was empty — always on screen, with the checkbox controlling
+nothing. Ticking reveals it, unticking clears the list, and the initial state is seeded
+from whatever was saved.
+
+> ⚠️ **A controlled `s-choice-list` must read the choice that changed, not its own
+> `values`.** Every radio in this tab did nothing at all when clicked. `ChoiceList`
+> exposes `values` as a **getter** over its children and overrides `addEventListener`
+> to filter change/input to events dispatched `AT_TARGET` on itself — so a handler
+> running on the change that bubbles from the clicked choice reads back the array that
+> was passed *in*, and setting state to that old value re-asserts the controlled prop
+> and cancels the element's own update. `chosenValue()` reads `event.target.value`
+> (`s-choice` documents `value`) and falls back to the list's getter; every choice
+> also carries `selected`, the documented per-choice controlled prop. Wired to
+> **both** `onChange` and `onInput`, because React's `onChange` is its own synthetic
+> event rather than the DOM one and which arrives for a custom element cannot be
+> checked without a browser — setting the same value twice is idempotent, a dead radio
+> is not. The Content tab's offer-type list had the same latent bug and is fixed with it.
 
 **Not built, and shown as such** (the same treatment the unbuilt placement cards
 get, §9 Phase 10 item 9):
@@ -1733,6 +1869,18 @@ marking done.
 4. Add to cart with `useApplyCartLinesChange`; track `click` / `add_to_cart` with `placement: "checkout"`.
 5. Gate on plan; document the Plus-only limitation for the checkout target in the app listing.
 
+> ⚠️ **Settings has a "What the storefront is showing" panel** (added 2026-08-21), and it is the only
+> thing on that page that does not reason from the database. It asks Shopify what the metafields
+> actually hold — the shop offer list, and one product's `reco_overrides` — and offers to delete
+> either. It exists because "I deleted the offer and it is still showing" was unanswerable otherwise:
+> a delete whose metafield write failed leaves an offer live with **nothing in the admin** to explain
+> it, and the row it belonged to is gone. The raw value is shown rather than a summary, because a
+> summary is exactly what hides the mismatch the panel exists to reveal.
+>
+> The merchant has to point at a product because Shopify cannot *find* them: searching products by
+> metafield needs a filterable definition, and a `json` definition cannot be filterable. There is no
+> query that answers "which products carry this metafield".
+
 ### Phase 13 — Settings page
 1. `app/routes/app.settings.jsx` storing into `Shop.settings` (JSON):
    - Global defaults for new blocks (layout, limit, and `intent` if §12 Q2 says yes).
@@ -1868,7 +2016,7 @@ so the first can declare `enabled_on` and the second can own a real collection p
 They share their markup through `reco-panel` and `reco-collection-cards`; only the schema JSON
 duplicates, and a test pins the two copies together. A third block, **Upsell**, is a
 **Bought Together** bundle over the same Custom list (§7.4) — product templates only, its own
-`upsell` placement, billable. 580 Vitest tests pass; lint and typecheck are clean — though see the
+`upsell` placement, billable. 621 Vitest tests pass; lint and typecheck are clean — though see the
 warning in §4: typecheck does not read a single `.js`/`.jsx` file, which is all of them.
 
 Custom recommendations are no longer a paid-only feature: **Free covers 10 products** and the

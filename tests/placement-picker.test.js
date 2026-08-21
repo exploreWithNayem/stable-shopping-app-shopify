@@ -696,6 +696,83 @@ describe("the offer editor", () => {
     expect(source).toContain('would not show on the storefront');
   });
 
+  test("every choice list reads the choice that changed, not the list's values", () => {
+    /*
+     * The Offer tab's radios did nothing at all. `ChoiceList` exposes `values` as a
+     * getter over its children and filters change listeners to events dispatched
+     * `AT_TARGET` on itself, so a handler running on the change that bubbles from the
+     * clicked choice reads back the array we passed *in* — and setting state to that
+     * old value re-asserts the controlled prop and cancels the element's own update.
+     *
+     * `s-choice` documents `value`, so the event target carries the new selection.
+     * Every list goes through one helper, and each choice also gets `selected`, the
+     * documented per-choice controlled prop.
+     */
+    expect(source).toContain('function chosenValue(event, fallback)');
+    expect(source).toContain('target !== event.currentTarget');
+
+    // No list may go back to reading the container.
+    expect(source).not.toContain('currentTarget.values?.[0] ??');
+
+    /*
+     * Both handlers on every list: React's `onChange` is its own synthetic event
+     * rather than the DOM one, and which arrives for a custom element cannot be
+     * checked here without a browser. Setting the same value twice is idempotent; a
+     * radio that does not move is not.
+     */
+    for (const wiring of [
+      'setOfferType(chosenValue(event, offerType))',
+      'trigger.setMode(chosenValue(event, trigger.mode))',
+      'offer.setSource(chosenValue(event, offer.source))',
+      'offer.setIntent(chosenValue(event, offer.intent))',
+    ]) {
+      expect(source.match(new RegExp(wiring.replace(/[.()]/g, '\\$&'), 'g')), wiring).toHaveLength(
+        2,
+      );
+    }
+
+    // One `selected` per choice: 4 offer types + 3 triggers + 2 sources + 2 intents.
+    expect(source.match(/selected: true/g)).toHaveLength(8);
+  });
+
+  test("an all-products publish is not reported as a page count", () => {
+    /*
+     * It said "1 of 1 product page now show the new version" about an offer on the
+     * whole catalogue — the counts alone read as the opposite of what it does. A
+     * shop-scope offer is matched on the storefront, so there is no number to give.
+     */
+    expect(source).toContain('everyProduct: Boolean(result.everyProduct)');
+    expect(source).toContain('Every product page in your store');
+    expect(source).toContain('Every product in the collections you chose');
+  });
+
+  test("the exclusion checkboxes control their pickers", () => {
+    /*
+     * They shipped with the picker rendered whenever the list was empty — so it was
+     * always on screen and the checkbox controlled nothing. Ticking reveals the
+     * picker; unticking clears the list, because exclusions stored but hidden would
+     * carve pages out of the offer with nothing on screen saying why.
+     */
+    expect(source).toContain("const [showExcludeProducts, setShowExcludeProducts] = useState(");
+    expect(source).toContain("if (!on) trigger.setExcludeProducts([])");
+    expect(source).toContain("{showExcludeProducts && (");
+    expect(source).toContain("{showExcludeCollections && (");
+    // Seeded from the saved list, so an offer with exclusions opens with them shown.
+    expect(source).toContain("trigger.excludeProducts.length > 0,");
+    // The always-on adder is gone.
+    expect(source).not.toContain("ExcludeAdder");
+  });
+
+  test("the preview does not pretend to know an automated offer's products", () => {
+    // Shopify picks them in the shopper's browser; cards without that line would
+    // read as a promise about which products appear.
+    expect(source).toContain("offerSource === 'automated' && (");
+    expect(source).toContain('stand in for them');
+    // And the quantity picker shows in the preview when the offer asked for one, so
+    // the row is the width the shopper will see.
+    expect(source).toContain('{showQuantityPicker && (');
+  });
+
   test("the Offer tab picks both product lists", () => {
     // Renamed with the Trigger / Offer split, so the labels match the design.
     expect(source).toContain('label="Product pages"');

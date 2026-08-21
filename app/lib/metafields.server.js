@@ -109,7 +109,10 @@ function countdownCopy(presentation) {
   };
 }
 
-export function buildMetafieldValue(items, { now = new Date(), presentation = null } = {}) {
+export function buildMetafieldValue(
+  items,
+  { now = new Date(), presentation = null, offerId = null } = {},
+) {
   const copy = presentation
     ? {
         title: presentation.title ?? "",
@@ -162,6 +165,14 @@ export function buildMetafieldValue(items, { now = new Date(), presentation = nu
   return JSON.stringify({
     v: METAFIELD_VERSION,
     updatedAt: now.toISOString(),
+    /*
+     * Which offer wrote this, when one did. The storefront sends it back to
+     * `/apps/easy-reco/offer` to ask whether that offer is still live — a mirror
+     * cannot answer that about itself. Absent for a list curated on the
+     * recommendations page: there is no offer behind it, so there is nothing to
+     * confirm and the list renders on its own authority.
+     */
+    ...(offerId ? { offerId } : {}),
     ...(type ? { type } : {}),
     ...(copy ? { copy } : {}),
     ...(anchor ? { render: anchor } : {}),
@@ -180,6 +191,8 @@ function metafieldInput(override, options = {}) {
     type: METAFIELD_TYPE,
     value: buildMetafieldValue(override.items, {
       ...options,
+      // From the row, like the copy: the Settings re-sync has no offer in hand.
+      offerId: override.offerId ?? null,
       // Taken from the row, not the caller: the re-sync repair action has no
       // offer in hand, and reading it here is what keeps a repair lossless.
       presentation: override.presentation ?? null,
@@ -222,6 +235,50 @@ async function deleteBatch(admin, productIds) {
   const body = await response.json();
   assertNoUserErrors(body?.data?.metafieldsDelete, "metafieldsDelete");
   return body?.data?.metafieldsDelete?.deletedMetafields ?? [];
+}
+
+const READ_QUERY = `#graphql
+  query RecoReadOverrideMetafield($id: ID!, $namespace: String!, $key: String!) {
+    product(id: $id) {
+      id
+      title
+      metafield(namespace: $namespace, key: $key) {
+        id
+        updatedAt
+        value
+      }
+    }
+  }`;
+
+/**
+ * What one product's metafield actually holds, straight from Shopify.
+ *
+ * The database is not the answer to "why is this product page showing an offer": a
+ * row and its metafield can disagree, and when they do it is the metafield that
+ * renders. A row deleted without its metafield — a takedown that missed it, a failed
+ * delete — leaves an orphan that nothing in the admin can explain and no query can
+ * find, because Shopify cannot search products by an unfilterable app metafield.
+ */
+export async function readOverrideMetafield(admin, productId) {
+  const response = await admin.graphql(READ_QUERY, {
+    variables: {
+      id: toProductGid(productId),
+      namespace: METAFIELD_NAMESPACE,
+      key: METAFIELD_KEY,
+    },
+  });
+
+  const body = await response.json();
+  const product = body?.data?.product ?? null;
+  const metafield = product?.metafield ?? null;
+
+  return {
+    found: Boolean(product),
+    title: product?.title ?? null,
+    present: Boolean(metafield),
+    updatedAt: metafield?.updatedAt ?? null,
+    raw: metafield?.value ?? null,
+  };
 }
 
 export function deleteOverrideMetafield(admin, productId) {

@@ -1,7 +1,7 @@
 import { afterAll, beforeEach, describe, expect, test } from "vitest";
 import prisma from "../db.server";
 import { saveOffer } from "../models/offer.server";
-import { getOverride } from "../models/override.server";
+import { getOverride, upsertOverride } from "../models/override.server";
 import { getOffer } from "../models/offer.server";
 import {
   newlyOccupiedTargets,
@@ -352,6 +352,227 @@ describe("the offer's wording reaches the metafield", () => {
   });
 });
 
+describe("an offer never outlives its storefront footprint", () => {
+  /*
+   * The bug: "I deleted the offer but it is still showing." Takedown worked from the
+   * offer's *current* targets, so a merchant who edited the product list, or switched
+   * the trigger, left rows and metafields behind that nothing could find afterwards —
+   * and those pages kept rendering with no way in the admin to stop them.
+   *
+   * `Override.offerId` records who wrote each row, so a takedown can find everything
+   * regardless of what the offer says now.
+   */
+  const named = (overrides = {}) => ({
+    name: "Offer",
+    placement: "PRODUCT_PAGE",
+    offerType: "cross_sell",
+    title: "You may also like",
+    triggerMode: "products",
+    targets: [product(1), product(2)],
+    items: [product(10)],
+    ...overrides,
+  });
+
+  test("publishing records which offer wrote each row", async () => {
+    const offer = await saveOffer(shopId, named());
+    await publishOffer({ admin: stubAdmin(), shopId, offer });
+
+    const row = await getOverride({ shopId, productId: "1", placement: "pdp" });
+    expect(row.offerId).toBe(offer.id);
+  });
+
+  test("unpublishing removes rows the offer no longer targets", async () => {
+    const offer = await saveOffer(shopId, named());
+    await publishOffer({ admin: stubAdmin(), shopId, offer });
+
+    // The merchant drops product 2 from the list and saves — but does not republish.
+    const narrowed = await saveOffer(shopId, named({ id: offer.id, targets: [product(1)] }));
+
+    const admin = stubAdmin();
+    const result = await unpublishOffer({ admin, shopId, offer: narrowed });
+
+    // Both rows go, including the one the offer had stopped naming.
+    expect(result.removed).toBe(2);
+    expect(await getOverride({ shopId, productId: "1", placement: "pdp" })).toBeNull();
+    expect(await getOverride({ shopId, productId: "2", placement: "pdp" })).toBeNull();
+
+    const deletes = JSON.stringify(
+      admin.calls.filter((call) => call.query.includes("metafieldsDelete")),
+    );
+    expect(deletes).toContain("/Product/1");
+    expect(deletes).toContain("/Product/2");
+  });
+
+  test("taking one offer down leaves another offer's row alone", async () => {
+    /*
+     * Ownership transfers on write: if a second offer publishes onto the same
+     * product, the row is that offer's now.
+     */
+    const first = await saveOffer(shopId, named({ name: "First", targets: [product(1)] }));
+    await publishOffer({ admin: stubAdmin(), shopId, offer: first });
+
+    const second = await saveOffer(shopId, named({ name: "Second", targets: [product(1)] }));
+    await publishOffer({ admin: stubAdmin(), shopId, offer: second });
+
+    const admin = stubAdmin();
+    const result = await unpublishOffer({ admin, shopId, offer: first });
+
+    // The row belongs to the second offer now, so the first one's takedown leaves it
+    // — row *and* metafield. Taking one offer down must not take another's list with
+    // it, and nothing was removed on the first offer's behalf.
+    expect(await getOverride({ shopId, productId: "1", placement: "pdp" })).toBeTruthy();
+    expect(result.removed).toBe(0);
+    expect(admin.calls.some((call) => call.query.includes("metafieldsDelete"))).toBe(false);
+  });
+
+  test("switching back to specific products takes the offer out of the shop list", async () => {
+    /*
+     * The bug behind "the app embed is on and the UI shows even though there is no
+     * offer": an offer published as **all products** and later switched to specific
+     * products took the per-product path on republish, nothing rebuilt the shop list,
+     * and the offer stayed in it — rendering on *every* product page while the admin
+     * showed a two-product offer.
+     */
+    const broad = await saveOffer(shopId, named({ triggerMode: "all", targets: [] }));
+    await publishOffer({ admin: stubAdmin(), shopId, offer: broad });
+
+    const narrowed = await saveOffer(
+      shopId,
+      named({ id: broad.id, triggerMode: "products", targets: [product(1)] }),
+    );
+
+    const admin = stubAdmin();
+    await publishOffer({ admin, shopId, offer: narrowed });
+
+    // The shop list is rewritten from what is published and shop-scope — which is now
+    // nothing, so it goes out empty.
+    const write = admin.calls.find(
+      (call) =>
+        call.query.includes("metafieldsSet") &&
+        call.variables.metafields?.[0]?.key === "reco_offers",
+    );
+    expect(write).toBeTruthy();
+    expect(JSON.parse(write.variables.metafields[0].value).offers).toEqual([]);
+  });
+
+  test("taking a per-product offer down also rewrites the shop list", async () => {
+    // Same hole, other direction: unpublish used to skip the rebuild for a
+    // products-mode offer, so one that had been shop-scope stayed live everywhere.
+    const offer = await saveOffer(shopId, named({ targets: [product(1)] }));
+    await publishOffer({ admin: stubAdmin(), shopId, offer });
+
+    const admin = stubAdmin();
+    await unpublishOffer({ admin, shopId, offer });
+
+    expect(
+      admin.calls.some(
+        (call) =>
+          call.query.includes("metafieldsSet") &&
+          call.variables.metafields?.[0]?.key === "reco_offers",
+      ),
+    ).toBe(true);
+  });
+
+  test("switching a trigger cleans up by ownership, not by the caller's memory", async () => {
+    // No `previousTargets` passed at all: the rows are the authority.
+    const offer = await saveOffer(shopId, named({ targets: [product(1)] }));
+    await publishOffer({ admin: stubAdmin(), shopId, offer });
+
+    const broadened = await saveOffer(
+      shopId,
+      named({ id: offer.id, triggerMode: "all", targets: [] }),
+    );
+
+    const result = await publishOffer({ admin: stubAdmin(), shopId, offer: broadened });
+
+    expect(result.removed).toBe(1);
+    expect(await getOverride({ shopId, productId: "1", placement: "pdp" })).toBeNull();
+  });
+
+  test("an unowned row loses to the takedown, but another offer's does not", async () => {
+    // Unowned is indistinguishable from a legacy row this offer wrote, and leaving
+    // those behind is exactly the bug being fixed.
+    const offer = await saveOffer(shopId, named({ targets: [product(1)] }));
+    await publishOffer({ admin: stubAdmin(), shopId, offer });
+
+    // The recommendations page saves without an offer id.
+    await upsertOverride({
+      shopId,
+      productId: "1",
+      productTitle: "Product 1",
+      productHandle: "p1",
+      items: [product(99)],
+    });
+
+    const result = await unpublishOffer({ admin: stubAdmin(), shopId, offer });
+
+    /*
+     * Taken down. An unowned row is indistinguishable from one this offer wrote
+     * before `offerId` existed, and leaving those behind is the bug being fixed — so
+     * unowned loses to the takedown. Only a row owned by a *different* offer is
+     * spared.
+     */
+    expect(await getOverride({ shopId, productId: "1", placement: "pdp" })).toBeNull();
+    expect(result.removed).toBe(1);
+  });
+});
+
+describe("exclusions", () => {
+  test("an excluded product is never published, and is removed on republish", async () => {
+    /*
+     * A merchant who names ten pages and excludes one means nine. And because the
+     * dropped target falls out of the keep set, republishing after adding the
+     * exclusion also removes the row and metafield the earlier publish left there —
+     * otherwise the page would keep rendering an offer that no longer claims it.
+     */
+    const first = await saveOffer(shopId, {
+      name: "Offer",
+      placement: "PRODUCT_PAGE",
+      offerType: "cross_sell",
+      title: "You may also like",
+      triggerMode: "products",
+      targets: [product(1), product(2)],
+      items: [product(10)],
+    });
+    await publishOffer({ admin: stubAdmin(), shopId, offer: first });
+
+    const narrowed = await saveOffer(shopId, {
+      id: first.id,
+      name: "Offer",
+      placement: "PRODUCT_PAGE",
+      offerType: "cross_sell",
+      title: "You may also like",
+      triggerMode: "products",
+      targets: [product(1), product(2)],
+      excludeProducts: [product(2)],
+      items: [product(10)],
+    });
+
+    const admin = stubAdmin();
+    const result = await publishOffer({
+      admin,
+      shopId,
+      offer: narrowed,
+      previousTargets: first.targets,
+    });
+
+    expect(result.synced).toBe(1);
+    expect(result.removed).toBe(1);
+    expect(await getOverride({ shopId, productId: "1", placement: "pdp" })).toBeTruthy();
+    expect(await getOverride({ shopId, productId: "2", placement: "pdp" })).toBeNull();
+  });
+
+  test("an excluded product costs no allowance slot", () => {
+    // Counting one would refuse a publish over a page the offer will not appear on.
+    const offer = {
+      targets: [product(1), product(2)],
+      excludeProducts: [product(2)],
+    };
+
+    expect(newlyOccupiedTargets(offer, new Set()).map((entry) => entry.id)).toEqual(["1"]);
+  });
+});
+
 describe("shop-scope offers publish to the shop metafield", () => {
   /*
    * "All products" and a collections trigger cannot write a row per product, so
@@ -404,6 +625,50 @@ describe("shop-scope offers publish to the shop metafield", () => {
     expect(await getOffer(shopId, offer.id)).toMatchObject({ status: "draft" });
   });
 
+  test("switching a live offer to all-products cleans up what it published per product", async () => {
+    /*
+     * The leak this closes: rows and metafields left on the products a
+     * "specific products" offer had named keep rendering the *old* list — a
+     * product's own metafield wins over the shop list — while still counting against
+     * the per-product plan allowance.
+     */
+    const named = await saveOffer(shopId, {
+      name: "Offer",
+      placement: "PRODUCT_PAGE",
+      offerType: "cross_sell",
+      title: "You may also like",
+      triggerMode: "products",
+      targets: [product(1)],
+      items: [product(10)],
+    });
+    await publishOffer({ admin: stubAdmin(), shopId, offer: named });
+    expect(await getOverride({ shopId, productId: "1", placement: "pdp" })).toBeTruthy();
+
+    const broadened = await saveOffer(shopId, {
+      id: named.id,
+      name: "Offer",
+      placement: "PRODUCT_PAGE",
+      offerType: "cross_sell",
+      title: "You may also like",
+      triggerMode: "all",
+      targets: [],
+      items: [product(10)],
+    });
+
+    const admin = stubAdmin();
+    const result = await publishOffer({
+      admin,
+      shopId,
+      offer: broadened,
+      previousTargets: named.targets,
+    });
+
+    expect(result.everyProduct).toBe(true);
+    expect(result.removed).toBe(1);
+    expect(await getOverride({ shopId, productId: "1", placement: "pdp" })).toBeNull();
+    expect(admin.calls.some((call) => call.query.includes("metafieldsDelete"))).toBe(true);
+  });
+
   test("unpublishing drops it from the list and touches no product", async () => {
     const offer = await saveOffer(shopId, shopScope());
     const published = await publishOffer({ admin: stubAdmin(), shopId, offer });
@@ -449,9 +714,17 @@ describe("unpublishOffer", () => {
     expect(await getOverride({ shopId, productId: "1", placement: "pdp" })).toBeNull();
     expect(await getOverride({ shopId, productId: "2", placement: "pdp" })).toBeNull();
 
-    // The metafield has to go too: leaving it behind keeps the old list
-    // rendering on the product page.
-    expect(admin.calls.length).toBe(2);
+    /*
+     * Two metafieldsDelete calls — the metafield has to go with the row, or the old
+     * list keeps rendering on the product page.
+     *
+     * Counted by shape rather than by total calls: the takedown also rebuilds the shop
+     * offer list (a shop id lookup plus a metafieldsSet), because an offer that was
+     * once "all products" is otherwise left in that list forever.
+     */
+    const deletes = admin.calls.filter((call) => call.query.includes("metafieldsDelete"));
+    expect(deletes).toHaveLength(2);
+    expect(admin.calls.some((call) => call.query.includes("metafieldsSet"))).toBe(true);
   });
 
   test("is idempotent", async () => {

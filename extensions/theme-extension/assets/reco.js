@@ -305,7 +305,17 @@
     var format = moneyFormat(block);
     var fragment = document.createDocumentFragment();
 
+    /*
+     * An offer says out loud that only in-stock items are shown, so the offer path
+     * drops them rather than drawing a card with a disabled Sold out button. A
+     * theme block keeps Sold out — that is the documented behaviour of its own
+     * settings (§8 deviations), and the merchant chose those.
+     */
+    var inStockOnly = block.getAttribute("data-reco-in-stock-only") === "true";
+
     products.forEach(function (product) {
+      if (inStockOnly && product.available === false) return;
+
       var node = template.content.firstElementChild.cloneNode(true);
       node.setAttribute("data-reco-product-id", product.id);
       node.setAttribute("data-reco-handle", product.handle);
@@ -1594,6 +1604,12 @@
       block.setAttribute("data-reco-limit", "4");
     }
 
+    /*
+     * Every injected offer, not a setting: the Offer tab states it as a fact about
+     * offers rather than offering it as a choice.
+     */
+    block.setAttribute("data-reco-in-stock-only", "true");
+
     if (visibility.hideInCart) block.setAttribute("data-reco-hide-in-cart", "true");
     if (visibility.quantityPicker) block.setAttribute("data-reco-quantity", "true");
 
@@ -1728,6 +1744,53 @@
   }
 
   /**
+   * Ask the app whether an offer is still live.
+   *
+   * The metafield is a mirror the app writes, and a mirror cannot say whether the
+   * thing it mirrors still exists: any write that fails, or any path that forgets to
+   * rewrite it, leaves an offer rendering that was deleted in the admin. From here
+   * mirror-says-offer *is* offer, so the mirror proposes and the app confirms.
+   *
+   * Resolves false for everything that is not an explicit yes. "Render when there is
+   * an offer" makes an unanswerable question a no — a proxy problem hides the widget
+   * rather than showing a deal the store may have withdrawn.
+   *
+   * No offer id means there is nothing to confirm: a list curated on the
+   * recommendations page has no offer behind it and renders on its own authority.
+   */
+  function offerIsLive(offer) {
+    /*
+     * No offer id, no injection. The metafield also holds lists curated on the
+     * recommendations page, and injecting those made a widget appear the moment the
+     * app embed was switched on, with no offer anywhere in the admin. A curated list
+     * renders where the merchant *placed* a block — that they chose.
+     */
+    if (!offer.offerId) return Promise.resolve(false);
+
+    var url =
+      config().proxy +
+      "/offer?offerId=" +
+      encodeURIComponent(offer.offerId) +
+      "&productId=" +
+      encodeURIComponent(String(offer.productId));
+
+    try {
+      return fetch(url, { headers: { Accept: "application/json" } })
+        .then(function (response) {
+          return response.ok ? response.json() : { live: false };
+        })
+        .then(function (data) {
+          return Boolean(data && data.live);
+        })
+        .catch(function () {
+          return false;
+        });
+    } catch (error) {
+      return Promise.resolve(false);
+    }
+  }
+
+  /**
    * Render the embed's offer, when there is no theme block already doing it.
    *
    * The block always wins: a merchant who placed one has said where they want it,
@@ -1759,6 +1822,26 @@
     var anchor = findAnchor(offer);
     if (!anchor) return;
 
+    /*
+     * Nothing is injected until the app has confirmed the offer.
+     *
+     * Both conditions have to hold for the widget to appear: the app embed is on
+     * (which is what put this offer on the page at all) and the app says the offer is
+     * live. Checked *before* the container exists, so a withdrawn offer never flashes
+     * and never fires a serve beacon for something no shopper saw.
+     */
+    offerIsLive(offer).then(function (live) {
+      if (!live) return;
+      // A second run — a theme editor section reload — must not inject twice while
+      // the first check was still in flight.
+      if (document.querySelector("[data-reco-embedded]")) return;
+
+      renderEmbeddedOffer(offer, anchor, automated);
+    });
+  }
+
+  /** The injection itself, once the app has vouched for the offer. */
+  function renderEmbeddedOffer(offer, anchor, automated) {
     var block = buildBlock(offer);
     var position = offer.render && offer.render.position === "before" ? "before" : "after";
 

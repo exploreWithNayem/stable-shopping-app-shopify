@@ -233,6 +233,7 @@ export function upsertOverride({
   items,
   enabled = true,
   presentation,
+  offerId = null,
 }) {
   const normalized = normalizeItems(items);
   const copy = normalizePresentation(presentation);
@@ -248,6 +249,13 @@ export function upsertOverride({
       items: normalized,
       enabled,
       ...(presentation === undefined ? {} : { presentation: copy }),
+      /*
+       * Ownership transfers on write. If a second offer publishes onto the same
+       * product, the row is that offer's — and taking the first one down must not
+       * remove it. A write from the recommendations page passes nothing and clears
+       * the link, which is correct: the row is the merchant's now, not an offer's.
+       */
+      offerId,
       syncedAt: null,
     },
     create: {
@@ -258,8 +266,14 @@ export function upsertOverride({
       enabled,
       // Nothing to preserve on a first write.
       presentation: copy,
+      offerId,
     },
   });
+}
+
+/** Every row a given offer wrote, whatever it targets now. */
+export function listOverridesForOffer(shopId, offerId) {
+  return prisma.override.findMany({ where: { shopId, offerId } });
 }
 
 export function setOverrideEnabled(id, enabled) {

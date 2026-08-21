@@ -1,5 +1,7 @@
 import {
   deleteOverride,
+  getOverridesForProducts,
+  listOverridesForOffer,
   markOverrideSynced,
   upsertOverride,
 } from "../models/override.server";
@@ -24,6 +26,35 @@ import { syncShopOffers } from "./shop-offers.server";
  */
 
 /**
+ * Rewrite the shop offer list, whatever this offer's trigger is.
+ *
+ * Unconditional on purpose. The rebuild used to live only inside the shop-scope
+ * branches, which left one whole class of stale storefront behind: an offer published
+ * as **all products** and later switched to **specific products** took the per-product
+ * path on republish, nothing rebuilt the shop list, and the offer stayed in it —
+ * rendering on *every* product page while the admin showed a two-product offer. The
+ * same hole swallowed unpublish and delete.
+ *
+ * It is one query and one metafield write, and it is idempotent: the list is always
+ * rebuilt from what is published, so calling it when nothing shop-scope exists writes
+ * an empty list, which is exactly what a store with no catalogue-wide offer needs.
+ *
+ * Failures are collected rather than thrown — the per-product work has already
+ * happened and must not be lost.
+ */
+async function rebuildShopList({ admin, shopId, failures }) {
+  try {
+    await syncShopOffers({ admin, shopId });
+  } catch (error) {
+    failures.push({
+      productId: "*",
+      title: "Storefront offer list",
+      message: error.message,
+    });
+  }
+}
+
+/**
  * Never throws. A metafield write can fail per product — a deleted product, a
  * throttled shop — and one failure must not roll back the rest or leave the
  * merchant with no idea which products are live. Each result is reported and
@@ -45,6 +76,30 @@ export async function publishOffer({ admin, shopId, offer, previousTargets = [] 
    * changes would leave the offer out of its own publish.
    */
   if (isShopScope(offer)) {
+    /*
+     * Anything the offer published per product before the trigger changed has to go.
+     * A merchant switching "specific products" to "all products" leaves rows and
+     * metafields behind on the products they had named, and those keep rendering the
+     * *old* list — the product's own metafield wins over the shop list (§7.8) — while
+     * still counting against the per-product plan allowance. Reported like any other
+     * per-product failure rather than thrown.
+     */
+    const owned = await listOverridesForOffer(shopId, offer.id);
+    const leftovers = [];
+
+    for (const row of owned) {
+      try {
+        await deleteOverride({ shopId, productId: row.productId, placement: row.placement });
+        await deleteOverrideMetafield(admin, row.productId);
+      } catch (error) {
+        leftovers.push({
+          productId: String(row.productId),
+          title: row.productTitle || String(row.productId),
+          message: error.message,
+        });
+      }
+    }
+
     const published = await markPublished(offer.id);
 
     try {
@@ -62,27 +117,70 @@ export async function publishOffer({ admin, shopId, offer, previousTargets = [] 
         synced: 0,
         total: 1,
         removed: 0,
-        failures: [{ productId: "*", title: "Storefront offer list", message: error.message }],
+        failures: [
+          ...leftovers,
+          { productId: "*", title: "Storefront offer list", message: error.message },
+        ],
       };
     }
 
-    return { offer: published, synced: 1, total: 1, removed: 0, failures: [] };
+    return {
+      offer: published,
+      synced: 1,
+      total: 1,
+      // Every product page, which is not a number — the caller says so in words.
+      everyProduct: true,
+      removed: owned.length - leftovers.length,
+      failures: leftovers,
+    };
   }
 
-  const targets = offer.targets ?? [];
+  /*
+   * Excluded products are dropped here, not just on the shop-scope path. A merchant
+   * who names ten pages and then excludes one means nine — and because the dropped
+   * ones fall out of `keeping` below, republishing after adding an exclusion also
+   * removes the row and metafield the earlier publish left on that product.
+   *
+   * Excluded *collections* are not applied to this mode: knowing which collections
+   * a target belongs to needs a query per product, and a merchant naming pages by
+   * hand can simply not name them (§7.8).
+   */
+  const excluded = new Set((offer.excludeProducts ?? []).map((entry) => String(entry.id)));
+  const targets = (offer.targets ?? []).filter((entry) => !excluded.has(String(entry.id)));
   const items = offer.items ?? [];
   const failures = [];
   let synced = 0;
 
   const keeping = new Set(targets.map((target) => String(target.id)));
-  const dropped = (previousTargets ?? []).filter(
-    (target) => !keeping.has(String(target.id)),
-  );
+
+  /*
+   * What this offer owns *now*, not what the caller remembered. `previousTargets` is
+   * still honoured — a caller that knows the old list is welcome to say so — but the
+   * rows themselves are the authority: a row written by an earlier publish and since
+   * dropped from the offer is only findable this way.
+   */
+  const owned = await listOverridesForOffer(shopId, offer.id);
+  const dropped = new Map();
+
+  for (const row of owned) {
+    if (keeping.has(String(row.productId))) continue;
+    dropped.set(String(row.productId), {
+      id: row.productId,
+      placement: row.placement,
+      title: row.productTitle,
+    });
+  }
+  for (const target of previousTargets ?? []) {
+    const id = String(target.id);
+    if (keeping.has(id) || dropped.has(id)) continue;
+    dropped.set(id, { id, placement: "pdp", title: target.title });
+  }
+
   let removed = 0;
 
-  for (const target of dropped) {
+  for (const target of dropped.values()) {
     try {
-      await deleteOverride({ shopId, productId: target.id, placement: "pdp" });
+      await deleteOverride({ shopId, productId: target.id, placement: target.placement });
       await deleteOverrideMetafield(admin, target.id);
       removed += 1;
     } catch (error) {
@@ -106,6 +204,8 @@ export async function publishOffer({ admin, shopId, offer, previousTargets = [] 
         placement: "pdp",
         items,
         enabled: true,
+        // So a takedown can find this row later even if the offer's targets change.
+        offerId: offer.id,
         // Projected onto the row so the metafield carries the offer's wording,
         // and so the Settings re-sync can rewrite it without the offer.
         presentation: {
@@ -148,6 +248,13 @@ export async function publishOffer({ admin, shopId, offer, previousTargets = [] 
       });
     }
   }
+
+  /*
+   * The shop list too, even though this offer is per-product now: if it *was*
+   * shop-scope before, it is still in that list, and nothing else would ever take it
+   * out.
+   */
+  await rebuildShopList({ admin, shopId, failures });
 
   /*
    * Published when at least one product went live. A partial publish is still a
@@ -198,9 +305,56 @@ export async function unpublishOffer({ admin, shopId, offer }) {
     return { offer: drafted, removed: failures.length === 0 ? 1 : 0, failures };
   }
 
+  /*
+   * Every row this offer owns, plus whatever it currently targets.
+   *
+   * Targets alone were not enough: a merchant who edited a published offer's product
+   * list, or switched its trigger, left rows and metafields behind that nothing could
+   * find afterwards — and those pages went on rendering the offer with no way in the
+   * admin to stop them. That is the "I deleted the offer and it is still showing" bug.
+   */
+  const owned = await listOverridesForOffer(shopId, offer.id);
+  const takedown = new Map();
+
+  for (const row of owned) {
+    takedown.set(String(row.productId), {
+      id: row.productId,
+      placement: row.placement,
+      title: row.productTitle,
+    });
+  }
+
+  /*
+   * The offer's current targets as well, but only where the row is this offer's, is
+   * unowned, or is gone entirely:
+   *
+   *   - unowned covers every row written before `offerId` existed, and rows a publish
+   *     wrote when the column was still null. Those look exactly like a legacy row
+   *     from this offer, and leaving them is the bug being fixed.
+   *   - gone entirely still deletes the *metafield*, which is the repair for an
+   *     orphan: a metafield with no row is invisible to the Settings re-sync and
+   *     would render forever.
+   *   - a row owned by a **different** offer is left alone, row and metafield. That
+   *     offer is live there, and taking this one down must not take its list with it.
+   */
+  const rows = await getOverridesForProducts(
+    shopId,
+    (offer.targets ?? []).map((target) => String(target.id)),
+  );
+
   for (const target of offer.targets ?? []) {
+    const id = String(target.id);
+    if (takedown.has(id)) continue;
+
+    const row = rows.get(id);
+    if (row && row.offerId && row.offerId !== offer.id) continue;
+
+    takedown.set(id, { id, placement: row?.placement ?? "pdp", title: target.title });
+  }
+
+  for (const target of takedown.values()) {
     try {
-      await deleteOverride({ shopId, productId: target.id, placement: "pdp" });
+      await deleteOverride({ shopId, productId: target.id, placement: target.placement });
       await deleteOverrideMetafield(admin, target.id);
       removed += 1;
     } catch (error) {
@@ -212,7 +366,14 @@ export async function unpublishOffer({ admin, shopId, offer }) {
     }
   }
 
-  return { offer: await markDraft(offer.id), removed, failures };
+  /*
+   * Same reason as the publish path: a trigger switch leaves the offer in the shop
+   * list, and taking it down has to take it out of there as well.
+   */
+  const drafted = await markDraft(offer.id);
+  await rebuildShopList({ admin, shopId, failures });
+
+  return { offer: drafted, removed, failures };
 }
 
 /**
@@ -224,10 +385,13 @@ export async function unpublishOffer({ admin, shopId, offer }) {
  */
 export function newlyOccupiedTargets(offer, alreadyPublishedIds) {
   const seen = new Set();
+  // Excluded products are never published, so they cost no slot — counting them
+  // would refuse a publish over pages the offer will not appear on.
+  const excluded = new Set((offer.excludeProducts ?? []).map((entry) => String(entry.id)));
 
   return (offer.targets ?? []).filter((target) => {
     const id = String(target.id);
-    if (alreadyPublishedIds.has(id) || seen.has(id)) return false;
+    if (excluded.has(id) || alreadyPublishedIds.has(id) || seen.has(id)) return false;
     seen.add(id);
     return true;
   });

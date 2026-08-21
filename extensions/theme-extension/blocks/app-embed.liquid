@@ -136,9 +136,44 @@
     if reco.source.mode == 'automated'
       assign automated = true
     endif
+
+    comment
+      The embed injects **offers**, and nothing else.
+
+      The same `$app:reco_overrides` metafield also holds lists curated on the
+      recommendations page, which have no offer behind them. Injecting those made a
+      widget appear on a product page the moment the app embed was enabled, with the
+      admin showing no offers at all — which is not what enabling an embed asks for.
+
+      Those lists still render wherever the merchant *places* a theme block: they
+      chose that. What they never chose is a block appearing on its own.
+
+      `offerId` is the per-product shape, `id` the shop-list one.
+    endcomment
+    assign offer_id = reco.offerId
+    if offer_id == blank
+      assign offer_id = reco.id
+    endif
+
+    comment
+      Spelled out rather than written as `a and b or c and d` — Liquid has no operator
+      precedence and evaluates a mixed and/or chain right to left, so that form says
+      something other than it reads. There is a test for exactly this shape.
+
+      Renderable means: an offer stands behind this data, and there is something to
+      draw — a resolved list, or an automated source that will fetch one.
+    endcomment
+    assign renderable_offer = false
+    if offer_id != blank
+      if reco.items != blank
+        assign renderable_offer = true
+      elsif automated
+        assign renderable_offer = true
+      endif
+    endif
   -%}
 
-  {%- if reco.items or automated -%}
+  {%- if renderable_offer -%}
     {%- capture offer_items -%}
       {%- assign rendered = 0 -%}
       {%- comment -%}
@@ -164,6 +199,19 @@
           {%- elsif hide_trigger == false -%}
             {%- assign include_candidate = true -%}
           {%- endif -%}
+        {%- endif -%}
+        {%- comment -%}
+          Out of stock never ships. The Offer tab says out loud that "only offer
+          items that are in stock will be displayed on product pages", and the card
+          would otherwise render with a disabled Sold out button — a recommendation
+          the shopper cannot act on, sitting where a buyable one could be.
+
+          This is the one place the offer path and the theme block differ on
+          availability: a block the merchant placed keeps Sold out, because that is
+          the documented behaviour of its own settings (§8 deviations).
+        {%- endcomment -%}
+        {%- if include_candidate and candidate.available == false -%}
+          {%- assign include_candidate = false -%}
         {%- endif -%}
         {%- if include_candidate -%}
           {%- if rendered > 0 %},{% endif -%}
@@ -212,6 +260,14 @@
             the offer editor previews — and the bundle types as a grid. Null for a
             list curated on the recommendations page, which never had a type.
           {%- endcomment -%}
+          {%- comment -%}
+            The offer behind this data, when there is one. reco.js asks the app
+            whether it is still live before rendering anything — a metafield cannot
+            say whether the offer it mirrors still exists. `reco.offerId` is the
+            per-product shape, `reco.id` the shop-list one; a list curated on the
+            recommendations page has neither and renders on its own authority.
+          {%- endcomment -%}
+          offerId: {{ offer_id | json }},
           type: {%- if reco.type -%}{{ reco.type | json }}{%- else -%}null{%- endif -%},
           copy: {%- if reco.copy -%}{{ reco.copy | json }}{%- else -%}null{%- endif -%},
           render: {%- if reco.render -%}{{ reco.render | json }}{%- else -%}null{%- endif -%},

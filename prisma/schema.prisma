@@ -158,11 +158,21 @@ model Override {
   /// it has to carry everything the metafield needs — otherwise the Settings
   /// re-sync, which reads rows and not offers, would silently drop the copy.
   presentation  Json?
+  /// The Offer that wrote this row, when one did.
+  ///
+  /// Without it, taking an offer down could only look at the targets the offer
+  /// *currently* names — so a merchant who switched a published offer's trigger, or
+  /// deleted it after switching, left rows and metafields behind that nothing could
+  /// find, and those pages went on rendering the offer forever. Ownership transfers
+  /// on write: if a second offer publishes onto the same product, the row is that
+  /// offer's, and taking the first one down must not remove it.
+  offerId       String?
   syncedAt      DateTime? // last successful metafield sync
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
   @@unique([shopId, productId, placement])
+  @@index([shopId, offerId])
   @@index([shopId, enabled])
 }
 

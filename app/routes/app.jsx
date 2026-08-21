@@ -5,6 +5,7 @@ import { authenticate } from "../shopify.server";
 import { ensureShop } from "../models/shop.server";
 import { getQuotaStatusForShop } from "../models/usage.server";
 import { ensureStorefrontToken } from "../lib/storefront.server";
+import { ensureMetafieldDefinitions } from "../lib/metafield-definitions.server";
 
 export const loader = async ({ request }) => {
   const { admin, session } = await authenticate.admin(request);
@@ -30,6 +31,20 @@ export const loader = async ({ request }) => {
     await ensureStorefrontToken(admin, shop);
   } catch (error) {
     console.error("[easy-reco] storefront token provisioning failed", error);
+  }
+
+  /*
+   * The metafield *definitions*, which declaring them in shopify.app.toml does not
+   * reliably create — see app/lib/metafield-definitions.server.js. Without them the
+   * values write fine and Liquid reads nil, so overrides and offers silently render
+   * as Shopify's own recommendations.
+   *
+   * Same treatment as the token: never fatal, cached per process.
+   */
+  try {
+    await ensureMetafieldDefinitions(admin, shop);
+  } catch (error) {
+    console.error("[easy-reco] metafield definition provisioning failed", error);
   }
 
   const quota = await getQuotaStatusForShop(shop);

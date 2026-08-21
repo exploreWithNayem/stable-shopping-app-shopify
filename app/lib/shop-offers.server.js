@@ -193,5 +193,89 @@ export async function syncShopOffers({ admin, shopId, now = new Date() }) {
   return { count: offers.length };
 }
 
+const READ_QUERY = `#graphql
+  query RecoReadShopOffers($namespace: String!, $key: String!) {
+    shop {
+      id
+      metafield(namespace: $namespace, key: $key) {
+        id
+        updatedAt
+        value
+      }
+    }
+  }`;
+
+const DELETE_MUTATION = `#graphql
+  mutation RecoDeleteShopOffers($metafields: [MetafieldIdentifierInput!]!) {
+    metafieldsDelete(metafields: $metafields) {
+      deletedMetafields {
+        key
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }`;
+
+/**
+ * What the storefront currently reads, straight from Shopify.
+ *
+ * Not derived from the database — that is the whole point. The two can disagree, and
+ * when they do it is always the metafield that is rendering: a delete whose metafield
+ * write failed leaves an offer live with nothing left in the admin to explain it. The
+ * only way to answer "what is the shopper seeing" is to ask Shopify.
+ */
+export async function readShopOffers(admin) {
+  const response = await admin.graphql(READ_QUERY, {
+    variables: { namespace: METAFIELD_NAMESPACE, key: SHOP_OFFERS_KEY },
+  });
+  const body = await response.json();
+  const metafield = body?.data?.shop?.metafield ?? null;
+
+  if (!metafield) return { present: false, updatedAt: null, offers: [], raw: null };
+
+  let offers = [];
+  try {
+    offers = JSON.parse(metafield.value ?? "{}").offers ?? [];
+  } catch {
+    // A value we cannot parse is still a value the storefront is reading, so it is
+    // reported as present rather than hidden.
+  }
+
+  return {
+    present: true,
+    updatedAt: metafield.updatedAt ?? null,
+    offers,
+    raw: metafield.value ?? null,
+  };
+}
+
+/**
+ * Remove the shop offer list outright.
+ *
+ * `syncShopOffers` rewrites it from what is published, which is the normal repair.
+ * This is the blunt one, for when the list holds an offer that no longer exists
+ * anywhere in the admin — a delete whose metafield write failed — and there is
+ * nothing left to rebuild *from*.
+ */
+export async function deleteShopOffers(admin) {
+  const ownerId = await shopGid(admin);
+
+  const response = await admin.graphql(DELETE_MUTATION, {
+    variables: {
+      metafields: [{ ownerId, namespace: METAFIELD_NAMESPACE, key: SHOP_OFFERS_KEY }],
+    },
+  });
+
+  const body = await response.json();
+  const errors = body?.data?.metafieldsDelete?.userErrors ?? [];
+  if (errors.length > 0) {
+    throw new Error(errors.map((error) => error.message).join(", "));
+  }
+
+  return { deleted: (body?.data?.metafieldsDelete?.deletedMetafields ?? []).length };
+}
+
 /** Whether this offer publishes to the shop metafield rather than to products. */
 export { isShopScope };

@@ -66,6 +66,12 @@ beforeEach(() => {
   cartAdds = [];
   observers = [];
   fetchRoutes = new Map();
+  /*
+   * The embed injects offers only, and only ones the app vouches for — so the
+   * liveness check is part of every embed path now. Answered yes by default; the
+   * tests about the check itself override or remove this.
+   */
+  fetchRoutes.set("/apps/easy-reco/offer", { live: true });
 
   // sendBeacon is the primary transport; jsdom does not implement it.
   Object.defineProperty(window.navigator, "sendBeacon", {
@@ -501,6 +507,9 @@ describe("app embed injection", () => {
 
   const offer = (overrides = {}) => ({
     productId: '1001',
+    // An offer, so it has one. Without it the embed injects nothing at all — a
+    // curated list renders where a block is placed, not on its own.
+    offerId: 'offer-1',
     copy: { title: 'You may also like', badge: '', buttonText: 'Add', countdown: false },
     render: null,
     items: [offerProduct(2001), offerProduct(2002)],
@@ -1237,6 +1246,47 @@ describe("app embed injection", () => {
       expect(cartAdds[0].items[0].quantity).toBe(1);
     });
 
+    test("an out-of-stock product is left out, not drawn as Sold out", async () => {
+      /*
+       * The Offer tab says out loud that only in-stock items show. A disabled Sold
+       * out button is a recommendation the shopper cannot act on, sitting where a
+       * buyable one could be — so the offer path drops it. A theme block keeps Sold
+       * out, which is the documented behaviour of its own settings.
+       */
+      bootEmbed(
+        productPage(),
+        offer({
+          items: [
+            offerProduct(2001),
+            { ...offerProduct(2002), available: false },
+          ],
+        }),
+      );
+      await tick(1000);
+
+      const shown = [...document.querySelectorAll('[data-reco-card]')].map((card) =>
+        card.getAttribute('data-reco-product-id'),
+      );
+      expect(shown).toEqual(['2001']);
+      expect(document.querySelector('[data-reco-embedded]').getAttribute('data-reco-in-stock-only')).toBe(
+        'true',
+      );
+    });
+
+    test("a theme block still shows Sold out", async () => {
+      // Same renderFallback, opposite answer: the attribute is what separates them,
+      // and a block never carries it.
+      fetchRoutes.set('/recommendations/products.json', {
+        products: [{ ...ajaxProduct(8001), available: false }],
+      });
+      boot(panel({ attrs: customAttrs, serverRendered: false }), { enabled: true });
+      await tick(1000);
+
+      const button = document.querySelector('[data-reco-add]');
+      expect(document.querySelectorAll('[data-reco-card]')).toHaveLength(1);
+      expect(button.disabled).toBe(true);
+    });
+
     test("no picker unless the offer asked for one", async () => {
       bootEmbed(productPage(), offer());
       await tick(1000);
@@ -1245,6 +1295,92 @@ describe("app embed injection", () => {
       document.querySelector('[data-reco-add]').click();
       await tick(200);
       expect(cartAdds[0].items[0].quantity).toBe(1);
+    });
+  });
+
+  /*
+   * Both conditions, or nothing renders: the app embed is on (which is what put the
+   * offer on the page) **and** the app says the offer is live.
+   *
+   * The metafield is a mirror the app writes, and a mirror cannot say whether the
+   * thing it mirrors still exists — a failed write, or a path that forgot to rewrite
+   * it, leaves a deleted offer rendering forever. So the mirror proposes and the app
+   * confirms.
+   */
+  describe("the app confirms the offer before anything renders", () => {
+    const mirrored = (extra) => offer({ ...extra });
+
+    test("renders when the app says the offer is live", async () => {
+      fetchRoutes.set('/apps/easy-reco/offer', { live: true });
+
+      bootEmbed(productPage(), mirrored());
+      await tick(1000);
+
+      expect(document.querySelector('[data-reco-embedded]')).toBeTruthy();
+      expect(await typesOf('served')).toHaveLength(1);
+
+      // Asks about the offer *and* the product: a named-products offer covers named
+      // products only, so the answer depends on both.
+      const asked = window.fetch.mock.calls.map(([url]) => String(url));
+      expect(asked.some((url) => url.includes('offerId=offer-1'))).toBe(true);
+      expect(asked.some((url) => url.includes('productId=1001'))).toBe(true);
+    });
+
+    test("renders nothing when the app says it is not", async () => {
+      // The deleted-offer case. Nothing is injected, so nothing flashes and no serve
+      // is billed for a widget no shopper saw.
+      fetchRoutes.set('/apps/easy-reco/offer', { live: false });
+
+      bootEmbed(productPage(), mirrored());
+      await tick(1000);
+
+      expect(document.querySelector('[data-reco-embedded]')).toBeNull();
+      expect(await typesOf('served')).toHaveLength(0);
+    });
+
+    test("an unanswerable check is a no", async () => {
+      /*
+       * The stub answers `ok: false` with no route, so this is the proxy being
+       * unreachable. "Render when there is an offer" makes an unknown a no — a proxy
+       * problem hides the widget rather than showing a deal the store may have
+       * withdrawn.
+       */
+      fetchRoutes.delete('/apps/easy-reco/offer');
+      bootEmbed(productPage(), mirrored());
+      await tick(1000);
+
+      expect(document.querySelector('[data-reco-embedded]')).toBeNull();
+    });
+
+    test("a list with no offer behind it is not injected at all", async () => {
+      /*
+       * The same metafield holds lists curated on the recommendations page, which have
+       * no offer behind them. Injecting those made a widget appear the moment the app
+       * embed was switched on, with the admin showing no offers — which is not what
+       * enabling an embed asks for. Those lists still render wherever the merchant
+       * *places* a block; that they chose.
+       */
+      bootEmbed(productPage(), offer({ offerId: null }));
+      await tick(1000);
+
+      expect(document.querySelector('[data-reco-embedded]')).toBeNull();
+      // Not even asked: there is no offer to ask about.
+      expect(
+        window.fetch.mock.calls.some(([url]) => String(url).includes('/offer?')),
+      ).toBe(false);
+    });
+
+    test("two runs cannot inject twice while a check is in flight", async () => {
+      // The theme editor re-runs init on every section load, and the guard that stops
+      // double injection is a DOM marker the first run has not written yet.
+      fetchRoutes.set('/apps/easy-reco/offer', { live: true });
+
+      bootEmbed(productPage(), mirrored());
+      window.EasyReco.init();
+      window.EasyReco.init();
+      await tick(1000);
+
+      expect(document.querySelectorAll('[data-reco-embedded]')).toHaveLength(1);
     });
   });
 

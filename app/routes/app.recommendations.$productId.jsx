@@ -664,14 +664,28 @@ export default function OverrideEditor() {
             </>
           )}
 
-          {override && (
-            <>
-              <s-divider />
-              <s-button variant="secondary" tone="critical" onClick={reset}>
-                Reset to Shopify defaults
-              </s-button>
-            </>
-          )}
+          {/*
+            Always offered, even with no override row on this product.
+            
+            It used to be `{override && ...}`, which put the one repair for a
+            **leftover metafield** behind the existence of the row that was supposed
+            to own it. A product whose row is gone but whose `$app:reco_overrides`
+            metafield survived — a deleted offer whose takedown missed it, a failed
+            metafield delete — kept rendering recommendations forever, and this button
+            was the only thing that could clear it. The action already deletes the
+            metafield unconditionally; only the button was conditional.
+          */}
+          <s-divider />
+          <s-stack direction="block" gap="small-300">
+            <s-button variant="secondary" tone="critical" onClick={reset}>
+              Reset to Shopify defaults
+            </s-button>
+            <s-text color="subdued">
+              {override
+                ? 'Removes the custom list and its storefront data, so this product page falls back to Shopify’s own recommendations.'
+                : 'This product has no custom list. Use this if its product page is still showing an offer you deleted — it clears the leftover storefront data.'}
+            </s-text>
+          </s-stack>
         </s-stack>
       </s-section>
     </s-page>

@@ -263,6 +263,44 @@ const shape = (input) => ({
   discountType: DISCOUNT_TYPES.includes(input.discountType) ? input.discountType : "none",
 });
 
+/**
+ * Whether an offer is live for a product, right now.
+ *
+ * The storefront's authoritative check (proxy.offer.jsx). Three questions in one:
+ * does the offer still exist for this shop, is it still published, and does it still
+ * cover this product?
+ *
+ * The trigger is only re-checked where it is cheap. `products` compares against the
+ * stored target list; `all` needs nothing; `collections` is answered **true**, because
+ * Liquid already matched the product's collections for free and doing it again here
+ * would mean an Admin API call per page view — the offer being published is the part
+ * the mirror cannot be trusted about.
+ */
+export async function isOfferLive(shopId, offerId, productId = null) {
+  const offer = await prisma.offer.findFirst({
+    where: { id: String(offerId), shopId, status: "published" },
+    select: { triggerMode: true, targets: true, excludeProducts: true },
+  });
+
+  if (!offer) return false;
+
+  const id = productId === null || productId === undefined ? null : String(productId);
+
+  // An excluded product is never covered, whatever the trigger says.
+  if (id && (offer.excludeProducts ?? []).some((entry) => String(entry.id) === id)) {
+    return false;
+  }
+
+  if (offer.triggerMode === "products") {
+    // No product to check means the caller cannot vouch for coverage, and neither
+    // can this: a named-products offer covers named products only.
+    if (!id) return false;
+    return (offer.targets ?? []).some((target) => String(target.id) === id);
+  }
+
+  return true;
+}
+
 export function getOffer(shopId, id) {
   return prisma.offer.findFirst({ where: { id, shopId } });
 }

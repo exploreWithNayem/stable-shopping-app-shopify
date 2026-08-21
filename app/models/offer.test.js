@@ -9,6 +9,7 @@ import {
 import {
   MAX_ITEMS,
   MAX_TARGETS,
+  isOfferLive,
   isShopScope,
   normalizeCollections,
   countOffers,
@@ -224,6 +225,83 @@ describe("trigger and offer source", () => {
     expect(
       (await saveOffer(shopId, draft({ hideTriggerProduct: false }))).hideTriggerProduct,
     ).toBe(false);
+  });
+});
+
+describe("isOfferLive", () => {
+  /*
+   * The storefront's authoritative check. A metafield is a mirror the app writes, and
+   * a mirror cannot say whether the offer it mirrors still exists — so the storefront
+   * proposes an offer id and this answers whether it is live for that product.
+   */
+  test("a published offer covering the product is live", async () => {
+    const offer = await saveOffer(shopId, draft({ triggerMode: "products", targets: [product(1)] }));
+    await markPublished(offer.id);
+
+    expect(await isOfferLive(shopId, offer.id, "1")).toBe(true);
+  });
+
+  test("a draft is not live", async () => {
+    const offer = await saveOffer(shopId, draft({ triggerMode: "products", targets: [product(1)] }));
+    expect(await isOfferLive(shopId, offer.id, "1")).toBe(false);
+  });
+
+  test("a deleted offer is not live", async () => {
+    // The whole point: this is what a stale metafield keeps rendering.
+    const offer = await saveOffer(shopId, draft());
+    await markPublished(offer.id);
+    await deleteOffer(shopId, offer.id);
+
+    expect(await isOfferLive(shopId, offer.id, "1")).toBe(false);
+  });
+
+  test("another shop's offer is not live here", async () => {
+    const offer = await saveOffer(shopId, draft({ triggerMode: "products", targets: [product(1)] }));
+    await markPublished(offer.id);
+
+    expect(await isOfferLive("not-a-shop", offer.id, "1")).toBe(false);
+  });
+
+  test("a named-products offer covers named products only", async () => {
+    const offer = await saveOffer(shopId, draft({ triggerMode: "products", targets: [product(1)] }));
+    await markPublished(offer.id);
+
+    expect(await isOfferLive(shopId, offer.id, "2")).toBe(false);
+    // No product to check means coverage cannot be vouched for either way.
+    expect(await isOfferLive(shopId, offer.id, null)).toBe(false);
+  });
+
+  test("an all-products offer covers any product, including one it never named", async () => {
+    const offer = await saveOffer(shopId, draft({ triggerMode: "all", targets: [] }));
+    await markPublished(offer.id);
+
+    expect(await isOfferLive(shopId, offer.id, "99")).toBe(true);
+  });
+
+  test("a collections offer trusts the match Liquid already made", async () => {
+    /*
+     * Re-checking would mean an Admin API call per page view, and `product.collections`
+     * is free in Liquid. What the mirror cannot be trusted about is whether the offer
+     * is still published — which is what this answers.
+     */
+    const offer = await saveOffer(
+      shopId,
+      draft({ triggerMode: "collections", targets: [], triggerCollections: [{ handle: "sale" }] }),
+    );
+    await markPublished(offer.id);
+
+    expect(await isOfferLive(shopId, offer.id, "99")).toBe(true);
+  });
+
+  test("an excluded product is never covered, whatever the trigger says", async () => {
+    const offer = await saveOffer(
+      shopId,
+      draft({ triggerMode: "all", targets: [], excludeProducts: [product(7)] }),
+    );
+    await markPublished(offer.id);
+
+    expect(await isOfferLive(shopId, offer.id, "7")).toBe(false);
+    expect(await isOfferLive(shopId, offer.id, "8")).toBe(true);
   });
 });
 

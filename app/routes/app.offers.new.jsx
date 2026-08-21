@@ -325,10 +325,17 @@ export const action = async ({ request }) => {
     const offer = await getOffer(shop.id, formData.get('id'));
     if (!offer) return { ok: false, error: 'That offer no longer exists.' };
 
-    const takedown =
-      offer.status === 'published'
-        ? await unpublishOffer({ admin, shopId: shop.id, offer })
-        : { failures: [] };
+    /*
+     * Always, even for a draft.
+     *
+     * Skipping it when the row said "draft" is how an offer could be deleted and go
+     * on rendering: a publish leaves Override rows and metafields behind, and any
+     * path that drafts the row without clearing them — a failed unpublish, an
+     * interrupted trigger switch — leaves a footprint the delete then walked past.
+     * `unpublishOffer` works from what the offer *owns*, so on a genuinely clean
+     * draft it finds nothing and costs one query.
+     */
+    const takedown = await unpublishOffer({ admin, shopId: shop.id, offer });
 
     /*
      * A metafield that would not delete is reported, but the offer still goes:
@@ -438,6 +445,13 @@ export const action = async ({ request }) => {
     updated: intent === 'save',
     synced: result.synced,
     total: result.total,
+    /*
+     * An "all products" or collections offer is not on a countable number of pages —
+     * it is matched on the storefront. Saying "1 of 1 product page" about it, which
+     * is what the counts alone produced, reads as the opposite of what it does.
+     */
+    everyProduct: Boolean(result.everyProduct),
+    triggerMode: saved.triggerMode,
     removed: result.removed,
     failures: result.failures,
   };
@@ -691,6 +705,42 @@ function toLocalInput(value) {
 /** Today, as the stored value's date half. */
 function todayLocal() {
   return toLocalInput(Date.now()).slice(0, 10);
+}
+
+/**
+ * The value a choice list just moved to.
+ *
+ * Read from the **event target**, not from the list's `values`. `ChoiceList` exposes
+ * `values` as a getter over its children and filters change listeners to events
+ * dispatched `AT_TARGET` on itself, so a handler running on the inner change — the
+ * one that bubbles from the choice the shopper clicked — sees the array we passed
+ * *in*, not the new selection. Setting state back to that old value then re-asserts
+ * the controlled prop and cancels the element's own update, which is why every radio
+ * in the Offer tab looked dead: clicking one changed nothing at all.
+ *
+ * `s-choice` documents `value`, so the target carries the answer. The list's getter
+ * stays as the fallback for a re-dispatched event whose target *is* the list.
+ *
+ * Every list wires this to **both** `onChange` and `onInput`. Polaris declares both
+ * on the choice list, React's `onChange` is its own synthetic event rather than the
+ * DOM one, and which of the two arrives for a custom element is not something this
+ * repo can check without a browser. Setting the same value twice is idempotent; a
+ * radio that does not move is not.
+ */
+function chosenValue(event, fallback) {
+  const target = event?.target;
+
+  if (
+    target &&
+    target !== event.currentTarget &&
+    typeof target.value === 'string' &&
+    target.value
+  ) {
+    return target.value;
+  }
+
+  const values = event?.currentTarget?.values;
+  return Array.isArray(values) && values.length > 0 ? values[0] : fallback;
 }
 
 /** The fields an offer actually stores per product. */
@@ -1139,13 +1189,19 @@ function OfferEditor({ type, offer, maxItems, maxTargets }) {
           dismissible
         >
           <s-paragraph>
-            {formatNumber(result.synced)} of {formatNumber(result.total)} product page
-            {result.total === 1 ? '' : 's'}{' '}
-            {result.updated ? 'now show the new version' : 'now show this offer'}.
+            {result.everyProduct
+              ? `${
+                  result.triggerMode === 'collections'
+                    ? 'Every product in the collections you chose'
+                    : 'Every product page in your store'
+                } ${result.updated ? 'now shows the new version' : 'now shows this offer'}.`
+              : `${formatNumber(result.synced)} of ${formatNumber(result.total)} product page${
+                  result.total === 1 ? '' : 's'
+                } ${result.updated ? 'now show the new version' : 'now show this offer'}.`}
             {result.removed > 0
               ? ` Removed from ${formatNumber(result.removed)} product page${
                   result.removed === 1 ? '' : 's'
-                } you took out of the offer.`
+                } the offer no longer covers.`
               : ''}
             {result.failures?.length > 0 ? ' Re-sync from Settings to try the rest again.' : ''}
           </s-paragraph>
@@ -1201,12 +1257,15 @@ function OfferEditor({ type, offer, maxItems, maxTargets }) {
                       label="Offer type"
                       name="offerType"
                       values={[offerType]}
-                      onChange={(event) =>
-                        setOfferType(event.currentTarget.values?.[0] ?? offerType)
-                      }
+                      onChange={(event) => setOfferType(chosenValue(event, offerType))}
+                      onInput={(event) => setOfferType(chosenValue(event, offerType))}
                     >
                       {OFFER_TYPES.map((entry) => (
-                        <s-choice key={entry.value} value={entry.value}>
+                        <s-choice
+                          key={entry.value}
+                          value={entry.value}
+                          {...(entry.value === offerType ? { selected: true } : {})}
+                        >
                           {entry.label}
                         </s-choice>
                       ))}
@@ -1498,6 +1557,9 @@ function OfferEditor({ type, offer, maxItems, maxTargets }) {
           {/* ---------------------------------------------------- preview */}
           <OfferPreview
             offerType={offerType}
+            offerSource={offerSource}
+            offerIntent={offerIntent}
+            showQuantityPicker={showQuantityPicker}
             title={title}
             badge={badge}
             buttonText={buttonText}
@@ -1626,6 +1688,19 @@ function CollectionList({ label, help, collections, onChange, max = 50 }) {
  * §7.8), and the second answers "what does it show" and only ever affects rendering.
  */
 function OfferTab({ trigger, offer, maxItems, maxTargets, onContinue }) {
+  /*
+   * Whether the exclusion pickers are showing. Local, and seeded from whether
+   * anything is excluded: a saved offer with exclusions opens with them visible, and
+   * a merchant who ticks the box gets an empty picker to fill — a state the stored
+   * list cannot represent on its own.
+   */
+  const [showExcludeProducts, setShowExcludeProducts] = useState(
+    trigger.excludeProducts.length > 0,
+  );
+  const [showExcludeCollections, setShowExcludeCollections] = useState(
+    trigger.excludeCollections.length > 0,
+  );
+
   return (
     <>
       <Card>
@@ -1640,11 +1715,26 @@ function OfferTab({ trigger, offer, maxItems, maxTargets, onContinue }) {
             labelAccessibilityVisibility="exclusive"
             name="triggerMode"
             values={[trigger.mode]}
-            onChange={(event) => trigger.setMode(event.currentTarget.values?.[0] ?? trigger.mode)}
+            onChange={(event) => trigger.setMode(chosenValue(event, trigger.mode))}
+            onInput={(event) => trigger.setMode(chosenValue(event, trigger.mode))}
           >
-            <s-choice value="all">All products</s-choice>
-            <s-choice value="products">Specific products</s-choice>
-            <s-choice value="collections">Products in specific collections</s-choice>
+            {/*
+              `selected` as well as the list's `values`: the per-choice prop is the
+              documented controlled input, and it is what keeps the radio where the
+              state says it is rather than where the element last put it.
+            */}
+            <s-choice value="all" {...(trigger.mode === 'all' ? { selected: true } : {})}>
+              All products
+            </s-choice>
+            <s-choice value="products" {...(trigger.mode === 'products' ? { selected: true } : {})}>
+              Specific products
+            </s-choice>
+            <s-choice
+              value="collections"
+              {...(trigger.mode === 'collections' ? { selected: true } : {})}
+            >
+              Products in specific collections
+            </s-choice>
           </s-choice-list>
 
           {/* Only the mode that needs a list shows one. */}
@@ -1677,50 +1767,42 @@ function OfferTab({ trigger, offer, maxItems, maxTargets, onContinue }) {
           <s-stack direction="block" gap="small-300">
             <s-checkbox
               label="Exclude specific products"
-              {...(trigger.excludeProducts.length > 0 ? { checked: true } : {})}
+              {...(showExcludeProducts ? { checked: true } : {})}
               onChange={(event) => {
-                // Unchecking clears the list: leaving exclusions stored but hidden
-                // would filter pages with nothing on screen explaining why.
-                if (!event.currentTarget.checked) trigger.setExcludeProducts([]);
+                const on = Boolean(event.currentTarget.checked);
+                setShowExcludeProducts(on);
+                /*
+                 * Unchecking clears the list. Keeping exclusions stored but hidden
+                 * would carve pages out of the offer with nothing on screen saying
+                 * why — and the checkbox has to *mean* something, which it did not
+                 * when the picker showed regardless of it.
+                 */
+                if (!on) trigger.setExcludeProducts([]);
               }}
             />
-            {trigger.excludeProducts.length > 0 && (
+            {showExcludeProducts && (
               <ProductList
                 label="Excluded products"
-                labelHidden
                 products={trigger.excludeProducts}
                 max={maxTargets}
                 onChange={trigger.setExcludeProducts}
               />
             )}
-            {trigger.excludeProducts.length === 0 && (
-              <ExcludeAdder
-                label="Choose products to exclude"
-                onPicked={trigger.setExcludeProducts}
-                type="product"
-                max={maxTargets}
-              />
-            )}
 
             <s-checkbox
               label="Exclude collections"
-              {...(trigger.excludeCollections.length > 0 ? { checked: true } : {})}
+              {...(showExcludeCollections ? { checked: true } : {})}
               onChange={(event) => {
-                if (!event.currentTarget.checked) trigger.setExcludeCollections([]);
+                const on = Boolean(event.currentTarget.checked);
+                setShowExcludeCollections(on);
+                if (!on) trigger.setExcludeCollections([]);
               }}
             />
-            {trigger.excludeCollections.length > 0 ? (
+            {showExcludeCollections && (
               <CollectionList
                 label="Excluded collections"
                 collections={trigger.excludeCollections}
                 onChange={trigger.setExcludeCollections}
-              />
-            ) : (
-              <ExcludeAdder
-                label="Choose collections to exclude"
-                onPicked={trigger.setExcludeCollections}
-                type="collection"
-                max={maxTargets}
               />
             )}
           </s-stack>
@@ -1738,9 +1820,12 @@ function OfferTab({ trigger, offer, maxItems, maxTargets, onContinue }) {
               needs a condition language (cart value, customer tag, market) that
               this app has not defined anywhere.
             */}
-            <s-button variant="secondary" disabled>
-              Add a sub-trigger
-            </s-button>
+            <s-stack direction="inline" gap="small-300" alignItems="center">
+              <s-badge tone="success">New</s-badge>
+              <s-button variant="secondary" disabled>
+                Add a sub-trigger
+              </s-button>
+            </s-stack>
             <s-text color="subdued">
               Not built yet. Sub-triggers need conditions — cart value, customer tag, market — and
               this app has none of them defined.
@@ -1763,10 +1848,18 @@ function OfferTab({ trigger, offer, maxItems, maxTargets, onContinue }) {
             labelAccessibilityVisibility="exclusive"
             name="offerSource"
             values={[offer.source]}
-            onChange={(event) => offer.setSource(event.currentTarget.values?.[0] ?? offer.source)}
+            onChange={(event) => offer.setSource(chosenValue(event, offer.source))}
+            onInput={(event) => offer.setSource(chosenValue(event, offer.source))}
           >
-            <s-choice value="specific">Specific products</s-choice>
-            <s-choice value="automated">Automated recommendations</s-choice>
+            <s-choice value="specific" {...(offer.source === 'specific' ? { selected: true } : {})}>
+              Specific products
+            </s-choice>
+            <s-choice
+              value="automated"
+              {...(offer.source === 'automated' ? { selected: true } : {})}
+            >
+              Automated recommendations
+            </s-choice>
           </s-choice-list>
 
           {offer.source === 'specific' ? (
@@ -1797,12 +1890,21 @@ function OfferTab({ trigger, offer, maxItems, maxTargets, onContinue }) {
                 labelAccessibilityVisibility="exclusive"
                 name="offerIntent"
                 values={[offer.intent]}
-                onChange={(event) =>
-                  offer.setIntent(event.currentTarget.values?.[0] ?? offer.intent)
-                }
+                onChange={(event) => offer.setIntent(chosenValue(event, offer.intent))}
+                onInput={(event) => offer.setIntent(chosenValue(event, offer.intent))}
               >
-                <s-choice value="related">Related products</s-choice>
-                <s-choice value="complementary">Complementary products</s-choice>
+                <s-choice
+                  value="related"
+                  {...(offer.intent === 'related' ? { selected: true } : {})}
+                >
+                  Related products
+                </s-choice>
+                <s-choice
+                  value="complementary"
+                  {...(offer.intent === 'complementary' ? { selected: true } : {})}
+                >
+                  Complementary products
+                </s-choice>
               </s-choice-list>
               {offer.intent === 'complementary' && (
                 <s-text color="subdued">
@@ -1866,48 +1968,6 @@ function OfferTab({ trigger, offer, maxItems, maxTargets, onContinue }) {
         </s-stack>
       </Card>
     </>
-  );
-}
-
-/**
- * The "choose something to exclude" button.
- *
- * Its own component because an empty exclusion list has no rows to hang an Edit
- * button off — the list components render their picker button next to the rows they
- * already have.
- */
-function ExcludeAdder({ label, onPicked, type, max }) {
-  const shopify = useAppBridge();
-  const [error, setError] = useState(null);
-
-  const open = useCallback(async () => {
-    setError(null);
-    try {
-      const selection = await shopify.resourcePicker({ type, multiple: max });
-      if (!selection) return;
-
-      onPicked(
-        selection
-          .map((node) => ({
-            id: String(node.id).split('/').pop(),
-            handle: node.handle ?? null,
-            title: node.title ?? null,
-          }))
-          .filter((entry) => (type === 'collection' ? entry.handle : entry.id))
-          .slice(0, max),
-      );
-    } catch (failure) {
-      setError(failure?.message || String(failure));
-    }
-  }, [shopify, onPicked, type, max]);
-
-  return (
-    <s-stack direction="block" gap="small-500">
-      <s-button variant="tertiary" onClick={open}>
-        {label}
-      </s-button>
-      {error && <s-text tone="critical">{error}</s-text>}
-    </s-stack>
   );
 }
 
@@ -2093,6 +2153,9 @@ function CountdownPreview({ mode, minutes, endsAt, title }) {
 
 function OfferPreview({
   offerType,
+  offerSource,
+  offerIntent,
+  showQuantityPicker,
   title,
   badge,
   buttonText,
@@ -2192,15 +2255,42 @@ function OfferPreview({
                 )}
               </s-stack>
             </s-stack>
-            <s-button variant="primary" icon="plus">
-              {buttonText || 'Add'}
-            </s-button>
+            <s-stack direction="inline" gap="small-500" alignItems="center">
+              {/* The picker the storefront card gets, so the row is the width the
+                  shopper will actually see. */}
+              {showQuantityPicker && (
+                <s-number-field
+                  label="Quantity"
+                  labelAccessibilityVisibility="exclusive"
+                  value="1"
+                  min={1}
+                  step={1}
+                  inputMode="numeric"
+                />
+              )}
+              <s-button variant="primary" icon="plus">
+                {buttonText || 'Add'}
+              </s-button>
+            </s-stack>
           </s-stack>
         </Card>
       ))}
 
       {carousel && products.length > 1 && (
         <s-text color="subdued">{`Product ${index + 1} of ${products.length}`}</s-text>
+      )}
+
+      {/*
+        An automated offer has no list to preview: Shopify picks the products in the
+        shopper's browser. Showing the cards without saying so would read as a
+        promise about *which* products appear.
+      */}
+      {offerSource === 'automated' && (
+        <s-paragraph color="subdued">
+          {offerIntent === 'complementary'
+            ? 'Shopify picks complementary products on the storefront — products bought with this one. The cards above stand in for them.'
+            : 'Shopify picks related products on the storefront. The cards above stand in for them.'}
+        </s-paragraph>
       )}
 
       <s-paragraph color="subdued">

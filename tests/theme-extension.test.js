@@ -759,6 +759,22 @@ describe("two blocks, six sources", () => {
     expect(runtime).toContain("var COUNTDOWN_HIDE_MS = 24 * 60 * 60 * 1000");
   });
 
+  test("the embed injects offers, and nothing else", () => {
+    /*
+     * The same metafield holds lists curated on the recommendations page, which have no
+     * offer behind them. Injecting those made a widget appear on a product page the
+     * moment the app embed was switched on, with the admin showing no offers at all —
+     * not what enabling an embed asks for. Those lists still render wherever the
+     * merchant *places* a block; that they chose.
+     */
+    const embed = readLiquid(join(BLOCKS, "app-embed.liquid"));
+    const runtime = readFileSync(join(EXTENSION, "assets", "reco.js"), "utf8");
+
+    expect(embed).toContain("assign offer_id = reco.offerId");
+    expect(embed).toContain("if offer_id != blank");
+    expect(runtime).toContain("if (!offer.offerId) return Promise.resolve(false)");
+  });
+
   test("the embed matches shop-scope offers against the product in front of it", () => {
     /*
      * An "all products" or collections offer cannot be mirrored per product, so it
@@ -796,6 +812,7 @@ describe("two blocks, six sources", () => {
     const embed = readLiquid(join(BLOCKS, "app-embed.liquid"));
     expect(embed).not.toMatch(/\{%-?\s*if[^%]*\band\b[^%]*\bor\b/);
     expect(embed).toContain("assign include_candidate");
+    expect(embed).toContain("assign renderable_offer");
   });
 
   test("an automated offer ships an intent instead of a list", () => {
@@ -808,7 +825,10 @@ describe("two blocks, six sources", () => {
     const runtime = readFileSync(join(EXTENSION, "assets", "reco.js"), "utf8");
 
     expect(embed).toContain("if reco.source.mode == 'automated'");
-    expect(embed).toContain("if reco.items or automated");
+    // Folded into one boolean, because a mixed and/or chain in Liquid reads
+    // right-to-left — see the test below.
+    expect(embed).toContain("assign renderable_offer");
+    expect(embed).toContain("elsif automated");
     expect(embed).toContain("source: {%- if reco.source -%}");
 
     expect(runtime).toContain('offer.source.mode === "automated"');
@@ -840,6 +860,23 @@ describe("two blocks, six sources", () => {
     expect(runtime.indexOf("function applyVisibility")).toBeLessThan(
       runtime.indexOf("function wire(block)"),
     );
+  });
+
+  test("an offer never ships an out-of-stock product", () => {
+    /*
+     * The Offer tab states it as a fact: "only offer items that are in stock will be
+     * displayed on product pages". Both halves of the offer path honour it — Liquid
+     * for an inlined list, reco.js for a fetched one — and a theme block does not,
+     * because Sold out is the documented behaviour of its own settings.
+     */
+    const embed = readLiquid(join(BLOCKS, "app-embed.liquid"));
+    const runtime = readFileSync(join(EXTENSION, "assets", "reco.js"), "utf8");
+
+    expect(embed).toContain("candidate.available == false");
+    expect(runtime).toContain('data-reco-in-stock-only');
+    expect(runtime).toContain("inStockOnly && product.available === false");
+    // Set on every injected offer rather than read from a setting.
+    expect(runtime).toContain('block.setAttribute("data-reco-in-stock-only", "true")');
   });
 
   test("the embed passes the offer type through to the runtime", () => {
