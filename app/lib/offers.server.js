@@ -7,7 +7,8 @@ import {
   deleteOverrideMetafield,
   syncOverrideMetafield,
 } from "./metafields.server";
-import { markDraft, markPublished } from "../models/offer.server";
+import { isShopScope, markDraft, markPublished } from "../models/offer.server";
+import { syncShopOffers } from "./shop-offers.server";
 
 /**
  * Publishing an offer, and taking it back down.
@@ -36,6 +37,38 @@ import { markDraft, markPublished } from "../models/offer.server";
  * Omit it for a first publish; there is nothing to take away.
  */
 export async function publishOffer({ admin, shopId, offer, previousTargets = [] }) {
+  /*
+   * A shop-scope offer ("all products", or a collections trigger) publishes to one
+   * shop-owned metafield instead of a row per product — see
+   * app/lib/shop-offers.server.js for why. It is marked published *first*, because
+   * the metafield is rebuilt from whatever is published: writing it before the row
+   * changes would leave the offer out of its own publish.
+   */
+  if (isShopScope(offer)) {
+    const published = await markPublished(offer.id);
+
+    try {
+      await syncShopOffers({ admin, shopId });
+    } catch (error) {
+      /*
+       * Rolled back, unlike the per-product path. There is one write here, not one
+       * per product, so a failure means *nothing* is live — and an offer left
+       * marked published with an unwritten metafield would claim to be showing on
+       * every product page while showing on none.
+       */
+      await markDraft(offer.id);
+      return {
+        offer,
+        synced: 0,
+        total: 1,
+        removed: 0,
+        failures: [{ productId: "*", title: "Storefront offer list", message: error.message }],
+      };
+    }
+
+    return { offer: published, synced: 1, total: 1, removed: 0, failures: [] };
+  }
+
   const targets = offer.targets ?? [];
   const items = offer.items ?? [];
   const failures = [];
@@ -91,6 +124,14 @@ export async function publishOffer({ admin, shopId, offer, previousTargets = [] 
           countdownMinutes: offer.countdownMinutes,
           countdownEndsAt: offer.countdownEndsAt,
           countdownTitle: offer.countdownTitle,
+          /*
+           * Storefront filtering, carried the same way the wording is: this row is
+           * what the metafield is written from, so anything reco.js needs has to be
+           * on it or the Settings re-sync would drop it.
+           */
+          hideInCart: offer.hideInCart,
+          hideTriggerProduct: offer.hideTriggerProduct,
+          showQuantityPicker: offer.showQuantityPicker,
           // Where the app embed injects it, when no theme block is present.
           anchor: { selector: offer.anchorSelector, position: offer.anchorPosition },
         },
@@ -128,6 +169,34 @@ export async function publishOffer({ admin, shopId, offer, previousTargets = [] 
 export async function unpublishOffer({ admin, shopId, offer }) {
   const failures = [];
   let removed = 0;
+
+  /*
+   * Symmetric with the publish: the row goes to draft first, then the metafield is
+   * rebuilt from what is left — so this offer drops out of the list without needing
+   * to be found and removed from it.
+   */
+  if (isShopScope(offer)) {
+    const drafted = await markDraft(offer.id);
+
+    try {
+      await syncShopOffers({ admin, shopId });
+    } catch (error) {
+      /*
+       * Not rolled back, deliberately. The offer is *meant* to be off; a stale
+       * metafield keeps it rendering, which is the §3.1 failure mode — so this is
+       * reported for the Settings re-sync rather than quietly restored to
+       * published, which would tell the merchant it is live when they just took it
+       * down.
+       */
+      failures.push({
+        productId: "*",
+        title: "Storefront offer list",
+        message: error.message,
+      });
+    }
+
+    return { offer: drafted, removed: failures.length === 0 ? 1 : 0, failures };
+  }
 
   for (const target of offer.targets ?? []) {
     try {

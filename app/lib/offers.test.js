@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, test } from "vitest";
 import prisma from "../db.server";
 import { saveOffer } from "../models/offer.server";
 import { getOverride } from "../models/override.server";
+import { getOffer } from "../models/offer.server";
 import {
   newlyOccupiedTargets,
   publishOffer,
@@ -31,8 +32,19 @@ function stubAdmin({ failFor = [] } = {}) {
       const variables = options?.variables ?? {};
       calls.push({ query, variables });
 
+      /*
+       * The shop id lookup the shop-scope path makes before writing its metafield.
+       * Answered first: without it `shopGid()` reads undefined and every
+       * shop-scope publish fails for the wrong reason.
+       */
+      if (query.includes("RecoShopId")) {
+        return { json: async () => ({ data: { shop: { id: "gid://shopify/Shop/1" } } }) };
+      }
+
       const owner = JSON.stringify(variables);
-      if (failFor.some((id) => owner.includes(`/Product/${id}`))) {
+      // A bare id means a product; anything containing a slash ("Shop/1") is
+      // matched as written, so a test can fail the shop-level write too.
+      if (failFor.some((id) => owner.includes(id.includes("/") ? id : `/Product/${id}`))) {
         throw new Error(`metafield write failed for ${owner}`);
       }
 
@@ -262,6 +274,7 @@ describe("the offer's wording reaches the metafield", () => {
       countdownMode: "fixed",
       countdownMinutes: 60,
       countdownTitle: "Hurry up! Offer expires in {{timer}}",
+      visibility: { hideInCart: false, hideTrigger: true, quantityPicker: false },
     });
     expect(value.items.map((item) => item.id)).toEqual(["10"]);
   });
@@ -336,6 +349,90 @@ describe("the offer's wording reaches the metafield", () => {
     // what matters is that an empty title never becomes a blank heading.
     const value = JSON.parse(admin.calls[0].variables.metafields[0].value);
     expect(value.copy?.title ?? "").toBe("");
+  });
+});
+
+describe("shop-scope offers publish to the shop metafield", () => {
+  /*
+   * "All products" and a collections trigger cannot write a row per product, so
+   * they take the other path entirely: no Override rows, one shop metafield, and
+   * the trigger matched on the storefront (app/lib/shop-offers.server.js).
+   */
+  const shopScope = (overrides = {}) => ({
+    name: "Catalogue offer",
+    placement: "PRODUCT_PAGE",
+    offerType: "cross_sell",
+    title: "You may also like",
+    triggerMode: "all",
+    targets: [],
+    items: [product(10)],
+    ...overrides,
+  });
+
+  test("writes no override rows at all", async () => {
+    const offer = await saveOffer(shopId, shopScope());
+    const admin = stubAdmin();
+
+    const result = await publishOffer({ admin, shopId, offer });
+
+    expect(result.offer.status).toBe("published");
+    expect(result.synced).toBe(1);
+    expect(await prisma.override.count({ where: { shopId } })).toBe(0);
+
+    // One shop metafield, not one per product.
+    const sets = admin.calls.filter((call) => call.query.includes("metafieldsSet"));
+    expect(sets).toHaveLength(1);
+    expect(sets[0].variables.metafields[0].key).toBe("reco_offers");
+  });
+
+  test("a failed write leaves the offer a draft rather than a false claim", async () => {
+    /*
+     * Rolled back, unlike the per-product path: there is one write here, so a
+     * failure means *nothing* is live — and an offer left marked published would
+     * claim to be showing on every product page while showing on none.
+     */
+    const offer = await saveOffer(shopId, shopScope());
+    const result = await publishOffer({
+      admin: stubAdmin({ failFor: ["Shop/1"] }),
+      shopId,
+      offer,
+    });
+
+    expect(result.offer.status).toBe("draft");
+    expect(result.synced).toBe(0);
+    expect(result.failures).toHaveLength(1);
+    expect(await getOffer(shopId, offer.id)).toMatchObject({ status: "draft" });
+  });
+
+  test("unpublishing drops it from the list and touches no product", async () => {
+    const offer = await saveOffer(shopId, shopScope());
+    const published = await publishOffer({ admin: stubAdmin(), shopId, offer });
+
+    const admin = stubAdmin();
+    const result = await unpublishOffer({ admin, shopId, offer: published.offer });
+
+    expect(result.offer.status).toBe("draft");
+    expect(result.removed).toBe(1);
+    expect(result.failures).toEqual([]);
+    // No metafieldsDelete: nothing was written per product to delete.
+    expect(admin.calls.some((call) => call.query.includes("metafieldsDelete"))).toBe(false);
+  });
+
+  test("a failed unpublish reports rather than restoring published", async () => {
+    // The offer is *meant* to be off. Quietly marking it published again would tell
+    // the merchant it is live when they just took it down; a stale metafield is
+    // what the Settings re-sync is for.
+    const offer = await saveOffer(shopId, shopScope());
+    const published = await publishOffer({ admin: stubAdmin(), shopId, offer });
+
+    const result = await unpublishOffer({
+      admin: stubAdmin({ failFor: ["Shop/1"] }),
+      shopId,
+      offer: published.offer,
+    });
+
+    expect(result.offer.status).toBe("draft");
+    expect(result.failures).toHaveLength(1);
   });
 });
 

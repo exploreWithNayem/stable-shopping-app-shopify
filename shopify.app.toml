@@ -34,6 +34,22 @@ type = "json"
   admin = "merchant_read"
   storefront = "public_read"
 
+# Storefront-readable list of every published *shop-scope* offer — the ones whose
+# trigger is "all products" or "products in specific collections" (CLAUDE.md §7.8).
+# Those cannot be mirrored per product: a real catalogue would need thousands of
+# metafield writes, and each would count against the per-product plan allowance. The
+# app embed reads this one on any product page and matches the trigger there, which
+# is what makes "all products" include products added after the offer was published.
+# Shape: { "v": 1, "updatedAt": "<iso>", "offers": [{ trigger, exclude, source, items, visibility, copy }] }
+[shop.metafields.app.reco_offers]
+name = "Recommendation Offers"
+description = "Offers that apply to a whole catalogue or to collections"
+type = "json"
+
+  [shop.metafields.app.reco_offers.access]
+  admin = "merchant_read"
+  storefront = "public_read"
+
 # Storefront endpoint for the theme block and checkout extension.
 # https://<shop>/apps/easy-reco/<path>  ->  <application_url>/proxy/<path>
 [app_proxy]

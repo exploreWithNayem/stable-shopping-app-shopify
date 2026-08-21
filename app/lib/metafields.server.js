@@ -124,6 +124,17 @@ export function buildMetafieldValue(items, { now = new Date(), presentation = nu
          * Liquid would produce.
          */
         ...(presentation.countdown ? countdownCopy(presentation) : {}),
+        /*
+         * Storefront filtering, in the metafield because reco.js is what applies
+         * it — on both paths. `hideTrigger` defaults to true: a product has never
+         * been offered as its own recommendation, and a v1 metafield with no
+         * visibility must keep behaving that way.
+         */
+        visibility: {
+          hideInCart: Boolean(presentation.hideInCart),
+          hideTrigger: presentation.hideTriggerProduct !== false,
+          quantityPicker: Boolean(presentation.showQuantityPicker),
+        },
       }
     : null;
 

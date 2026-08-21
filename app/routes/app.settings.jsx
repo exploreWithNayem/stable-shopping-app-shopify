@@ -3,6 +3,7 @@ import { authenticate } from "../shopify.server";
 import { ensureShop } from "../models/shop.server";
 import { countOverrides, listUnsyncedOverrides } from "../models/override.server";
 import { syncAllOverrides } from "../lib/metafields.server";
+import { syncShopOffers } from "../lib/shop-offers.server";
 import { formatNumber } from "../lib/format";
 import QuotaBanner from "../components/QuotaBanner";
 
@@ -39,7 +40,28 @@ export const action = async ({ request }) => {
     onlyUnsynced: false,
   });
 
-  return { ok: result.errors.length === 0, ...result };
+  /*
+   * The shop-scope offer list too — "all products" and collection triggers write
+   * one shop metafield instead of a row per product (§7.8), so nothing in the
+   * Override table represents them and the loop above cannot see them. Without
+   * this, the only repair path for a failed shop-offer write would be to unpublish
+   * and publish every offer by hand.
+   *
+   * Reported rather than thrown: a failure here must not lose the result of the
+   * per-product repair that already succeeded.
+   */
+  let offerError = null;
+  try {
+    await syncShopOffers({ admin, shopId: shop.id });
+  } catch (error) {
+    offerError = error.message;
+  }
+
+  return {
+    ok: result.errors.length === 0 && !offerError,
+    ...result,
+    errors: offerError ? [...result.errors, offerError] : result.errors,
+  };
 };
 
 /**

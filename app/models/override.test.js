@@ -133,6 +133,11 @@ describe("presentation", () => {
       badge: "",
       buttonText: "",
       countdown: false,
+      // Storefront filtering rides along; hiding the trigger product is the
+      // historical behaviour, so it is the default rather than a stored false.
+      hideInCart: false,
+      hideTriggerProduct: true,
+      showQuantityPicker: false,
     });
   });
 

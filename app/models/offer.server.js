@@ -29,6 +29,36 @@ export const PLACEMENTS = ["PRODUCT_PAGE"];
  */
 export const OFFER_TYPES = OFFER_TYPE_KEYS;
 
+/**
+ * Which product pages an offer appears on.
+ *
+ * `products` names them and is the only mode that writes a per-product Override
+ * row. `all` and `collections` are **shop-scope**: they publish to one shop-owned
+ * metafield the app embed reads on every product page, because a row per product
+ * would mean thousands of metafield writes on a real catalogue — and the
+ * per-product plan allowance (§5) would be gone on the first publish.
+ */
+export const TRIGGER_MODES = ["all", "products", "collections"];
+
+/** Whether the recommended list is curated or left to Shopify. */
+export const OFFER_SOURCES = ["specific", "automated"];
+
+/** What Shopify is asked for when the source is automated. */
+export const OFFER_INTENTS = ["related", "complementary"];
+
+/** Only "none" is implemented; a real discount needs a Shopify Functions extension. */
+export const DISCOUNT_TYPES = ["none"];
+
+/**
+ * Modes that never touch a product's own metafield.
+ *
+ * Everything downstream keys off this: the publish path, the allowance check, and
+ * which metafield gets rewritten.
+ */
+export function isShopScope(offer) {
+  return offer?.triggerMode === "all" || offer?.triggerMode === "collections";
+}
+
 export const STATUSES = ["draft", "published"];
 
 export const ANCHOR_POSITIONS = ["before", "after"];
@@ -72,6 +102,37 @@ export function normalizeProducts(list = [], max = MAX_ITEMS) {
 }
 
 /**
+ * Collections, in the shape the picker returns and the storefront can match.
+ *
+ * The **handle** is what matters: Liquid compares `product.collections` by handle,
+ * and an id would need a lookup per page. The id is kept for the picker's
+ * `selectionIds`, and the title for the admin list.
+ */
+/** The stored trigger mode for an input that may not name one. */
+export function triggerModeOf(input = {}) {
+  return TRIGGER_MODES.includes(input.triggerMode) ? input.triggerMode : "products";
+}
+
+export function normalizeCollections(list = [], max = MAX_TARGETS) {
+  const seen = new Set();
+
+  return (Array.isArray(list) ? list : [])
+    .map((entry) => ({
+      id: String(entry?.id ?? "").trim(),
+      handle: String(entry?.handle ?? "").trim(),
+      title: entry?.title ?? null,
+    }))
+    // A collection with no handle cannot be matched on the storefront, so it would
+    // silently never fire.
+    .filter((entry) => {
+      if (!entry.handle || seen.has(entry.handle)) return false;
+      seen.add(entry.handle);
+      return true;
+    })
+    .slice(0, max);
+}
+
+/**
  * Everything an offer needs before it can be saved at all.
  *
  * Returns a list of messages rather than throwing: the form shows them together,
@@ -103,10 +164,26 @@ export function validateOffer(input = {}) {
 export function validateForPublish(input = {}) {
   const errors = validateOffer(input);
 
-  if (normalizeProducts(input.targets, MAX_TARGETS).length === 0) {
+  /*
+   * Only a "products" trigger needs a target list. "All products" and a
+   * collections trigger are answered by the trigger itself, and demanding products
+   * there would make the two new modes impossible to publish.
+   *
+   * Read through the same coercion `shape()` uses: a form that omits the field
+   * means the stored default, and validating against the raw value would let an
+   * omitted mode skip the check that the saved row will then need.
+   */
+  if (
+    triggerModeOf(input) === "products" &&
+    normalizeProducts(input.targets, MAX_TARGETS).length === 0
+  ) {
     errors.push("Choose at least one product for this offer to appear on.");
   }
-  if (normalizeProducts(input.items).length === 0) {
+  /*
+   * Automated recommendations have no list to check — Shopify supplies it on the
+   * storefront, which is the whole point of the mode.
+   */
+  if (input.offerSource !== "automated" && normalizeProducts(input.items).length === 0) {
     errors.push("Choose at least one product for the offer to recommend.");
   }
   if (!String(input.title ?? "").trim()) {
@@ -119,6 +196,17 @@ export function validateForPublish(input = {}) {
    */
   if (input.countdown && input.countdownMode === "date" && !toDate(input.countdownEndsAt)) {
     errors.push("Pick the date and time the countdown ends, or switch it to a fixed length.");
+  }
+
+  /*
+   * A collections trigger with no collections would match nothing and show
+   * nowhere — the offer would read as published and be invisible.
+   */
+  if (
+    triggerModeOf(input) === "collections" &&
+    normalizeCollections(input.triggerCollections).length === 0
+  ) {
+    errors.push("Choose at least one collection, or switch the trigger to all products.");
   }
 
   return errors;
@@ -153,6 +241,26 @@ const shape = (input) => ({
     : "after",
   targets: normalizeProducts(input.targets, MAX_TARGETS),
   items: normalizeProducts(input.items),
+
+  triggerMode: triggerModeOf(input),
+  triggerCollections: normalizeCollections(input.triggerCollections),
+  excludeProducts: normalizeProducts(input.excludeProducts, MAX_TARGETS),
+  excludeCollections: normalizeCollections(input.excludeCollections),
+
+  offerSource: OFFER_SOURCES.includes(input.offerSource) ? input.offerSource : "specific",
+  offerIntent: OFFER_INTENTS.includes(input.offerIntent) ? input.offerIntent : "related",
+
+  hideInCart: Boolean(input.hideInCart),
+  /*
+   * `!== false`, not `Boolean(...)`: this flag defaults to **true** (a product has
+   * never been offered as its own recommendation), and `Boolean(undefined)` is
+   * false — so an input that simply does not mention the field would have flipped
+   * the default and started recommending the product being viewed.
+   */
+  hideTriggerProduct: input.hideTriggerProduct !== false,
+  showQuantityPicker: Boolean(input.showQuantityPicker),
+
+  discountType: DISCOUNT_TYPES.includes(input.discountType) ? input.discountType : "none",
 });
 
 export function getOffer(shopId, id) {
@@ -256,6 +364,16 @@ export async function duplicateOffer(shopId, id) {
       anchorPosition: existing.anchorPosition,
       targets: existing.targets ?? [],
       items: existing.items ?? [],
+      triggerMode: existing.triggerMode,
+      triggerCollections: existing.triggerCollections ?? [],
+      excludeProducts: existing.excludeProducts ?? [],
+      excludeCollections: existing.excludeCollections ?? [],
+      offerSource: existing.offerSource,
+      offerIntent: existing.offerIntent,
+      hideInCart: existing.hideInCart,
+      hideTriggerProduct: existing.hideTriggerProduct,
+      showQuantityPicker: existing.showQuantityPicker,
+      discountType: existing.discountType,
       status: "draft",
     },
   });
@@ -281,6 +399,9 @@ export async function publishedTargetIds(shopId, { excludeOfferId = null } = {})
     where: {
       shopId,
       status: "published",
+      // Shop-scope offers occupy no product: they write one shop metafield, not a
+      // row per product, so they cost nothing against the per-product allowance.
+      triggerMode: "products",
       ...(excludeOfferId ? { id: { not: excludeOfferId } } : {}),
     },
     select: { targets: true },

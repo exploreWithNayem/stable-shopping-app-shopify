@@ -1125,6 +1125,129 @@ describe("app embed injection", () => {
     });
   });
 
+  /*
+   * What the Offer tab's settings do on the storefront: an automated offer fetches
+   * its list, and the visibility rules filter whatever is in the track.
+   */
+  describe("offer source and visibility", () => {
+    test("an automated offer fetches instead of rendering an inlined list", async () => {
+      // The same request the theme block's Related source makes — the embed ships
+      // an intent rather than a stale copy of Shopify's list.
+      fetchRoutes.set('/recommendations/products.json', {
+        products: [ajaxProduct(4001), ajaxProduct(4002)],
+      });
+
+      bootEmbed(
+        productPage(),
+        offer({ items: [], source: { mode: 'automated', intent: 'complementary' } }),
+      );
+      await tick(1000);
+
+      const block = document.querySelector('[data-reco-embedded]');
+      expect(block).toBeTruthy();
+      expect(block.getAttribute('data-reco-intent')).toBe('complementary');
+      expect(block.getAttribute('data-reco-source')).toBe('shopify');
+      expect(document.querySelectorAll('[data-reco-card]')).toHaveLength(2);
+
+      // The serve still bills: an automated offer answers "what goes with this",
+      // which is the line §7.1 draws.
+      expect(await typesOf('served')).toHaveLength(1);
+    });
+
+    test("a specific offer with no items still renders nothing", async () => {
+      // Only the automated mode is allowed to arrive empty.
+      bootEmbed(productPage(), offer({ items: [] }));
+      await tick(1000);
+
+      expect(document.querySelector('[data-reco-embedded]')).toBeNull();
+    });
+
+    test("hides products already in the cart", async () => {
+      window.EasyReco = undefined;
+      document.body.innerHTML = productPage();
+      window.EasyReco = {
+        config: { enabled: true },
+        offer: offer({ visibility: { hideInCart: true, hideTrigger: true } }),
+        // The embed emits this from Liquid, where `cart` is readable.
+        cart: [2001],
+      };
+      // eslint-disable-next-line no-new-func
+      new Function(SRC)();
+      await tick(1000);
+
+      const shown = [...document.querySelectorAll('[data-reco-card]')].map((card) =>
+        card.getAttribute('data-reco-product-id'),
+      );
+      expect(shown).toEqual(['2002']);
+
+      // The hidden card reports nothing: it was not shown, so counting an
+      // impression for it would overstate the offer's reach.
+      expect((await typesOf('impression')).length).toBeLessThanOrEqual(1);
+    });
+
+    test("everything filtered out hides the block and bills nothing", async () => {
+      document.body.innerHTML = productPage();
+      window.EasyReco = {
+        config: { enabled: true },
+        offer: offer({ visibility: { hideInCart: true } }),
+        cart: [2001, 2002],
+      };
+      // eslint-disable-next-line no-new-func
+      new Function(SRC)();
+      await tick(1000);
+
+      expect(document.querySelector('[data-reco-embedded]').hidden).toBe(true);
+      expect(await typesOf('served')).toHaveLength(0);
+    });
+
+    test("no cart list means no filtering, not everything hidden", async () => {
+      // The embed only emits the cart when an offer asked for the filter; an absent
+      // list has to mean "filter nothing", which is how every offer behaved before
+      // the setting existed.
+      bootEmbed(productPage(), offer({ visibility: { hideInCart: true } }));
+      await tick(1000);
+
+      expect(document.querySelectorAll('[data-reco-card]')).toHaveLength(2);
+    });
+
+    test("the quantity picker adds the quantity the shopper chose", async () => {
+      bootEmbed(productPage(), offer({ visibility: { quantityPicker: true } }));
+      await tick(1000);
+
+      const input = document.querySelector('[data-reco-quantity-input]');
+      expect(input).toBeTruthy();
+      // Beside the add button rather than in the card body: it modifies the action.
+      expect(input.nextElementSibling.hasAttribute('data-reco-add')).toBe(true);
+
+      input.value = '3';
+      document.querySelector('[data-reco-add]').click();
+      await tick(200);
+
+      expect(cartAdds[0].items[0].quantity).toBe(3);
+    });
+
+    test("a cleared or nonsense quantity adds one, not zero", async () => {
+      bootEmbed(productPage(), offer({ visibility: { quantityPicker: true } }));
+      await tick(1000);
+
+      document.querySelector('[data-reco-quantity-input]').value = '';
+      document.querySelector('[data-reco-add]').click();
+      await tick(200);
+
+      expect(cartAdds[0].items[0].quantity).toBe(1);
+    });
+
+    test("no picker unless the offer asked for one", async () => {
+      bootEmbed(productPage(), offer());
+      await tick(1000);
+
+      expect(document.querySelector('[data-reco-quantity-input]')).toBeNull();
+      document.querySelector('[data-reco-add]').click();
+      await tick(200);
+      expect(cartAdds[0].items[0].quantity).toBe(1);
+    });
+  });
+
   test("a hidden anchor is skipped", async () => {
     // Themes ship duplicate buy forms for drawers and quick-add; injecting into
     // one puts the offer somewhere the shopper never sees.

@@ -110,6 +110,13 @@
       so every client-rendered price in a non-USD store would be wrong.
     {%- endcomment -%}
     data-reco-money-format="{{ shop.money_format | strip_html | escape }}"
+    {%- comment -%}
+      The offer's storefront filtering, when a published offer supplied any. reco.js
+      applies these to whatever is in the track, so they work the same on the cards
+      Liquid drew here as on the ones the app embed injects.
+    {%- endcomment -%}
+    {%- if copy.visibility.hideInCart %}data-reco-hide-in-cart="true"{% endif %}
+    {%- if copy.visibility.quantityPicker %}data-reco-quantity="true"{% endif %}
     data-reco-limit="{{ limit }}"
     data-reco-atc="{{ block.settings.atc_behavior }}"
     data-reco-autoplay="{{ block.settings.autoplay }}"

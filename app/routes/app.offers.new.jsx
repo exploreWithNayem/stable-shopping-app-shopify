@@ -251,6 +251,21 @@ function readOffer(formData) {
     anchorPosition: formData.get('anchorPosition') ?? 'after',
     targets: json('targets'),
     items: json('items'),
+
+    triggerMode: formData.get('triggerMode') ?? 'products',
+    triggerCollections: json('triggerCollections'),
+    excludeProducts: json('excludeProducts'),
+    excludeCollections: json('excludeCollections'),
+
+    offerSource: formData.get('offerSource') ?? 'specific',
+    offerIntent: formData.get('offerIntent') ?? 'related',
+
+    hideInCart: formData.get('hideInCart') === 'true',
+    // Absent means true, matching the column default — see shape() in the model.
+    hideTriggerProduct: formData.get('hideTriggerProduct') !== 'false',
+    showQuantityPicker: formData.get('showQuantityPicker') === 'true',
+
+    discountType: formData.get('discountType') ?? 'none',
   };
 }
 
@@ -343,7 +358,13 @@ export const action = async ({ request }) => {
 
   const input = readOffer(formData);
 
-  if (input.targets === null || input.items === null) {
+  if (
+    input.targets === null ||
+    input.items === null ||
+    input.triggerCollections === null ||
+    input.excludeProducts === null ||
+    input.excludeCollections === null
+  ) {
     return { ok: false, error: 'Could not read the selected products.' };
   }
 
@@ -363,8 +384,7 @@ export const action = async ({ request }) => {
    * so only publishing demands a complete offer — and so does saving an offer that
    * is already live, because that save goes straight to the storefront.
    */
-  const errors =
-    intent === 'publish' || live ? validateForPublish(input) : validateOffer(input);
+  const errors = intent === 'publish' || live ? validateForPublish(input) : validateOffer(input);
   if (errors.length > 0) return { ok: false, errors, live };
 
   const saved = await saveOffer(shop.id, input);
@@ -625,6 +645,27 @@ function formValues(offer) {
     anchorPosition: offer?.anchorPosition ?? 'after',
     targets: offer?.targets ?? [],
     items: offer?.items ?? [],
+
+    /*
+     * A new offer defaults to **all products**, which is what the design shows
+     * selected — the broadest trigger is also the one that needs no further
+     * picking, so a merchant can publish without visiting this tab. Existing rows
+     * carry "products", the mode they were saved in.
+     */
+    triggerMode: offer?.triggerMode ?? 'all',
+    triggerCollections: offer?.triggerCollections ?? [],
+    excludeProducts: offer?.excludeProducts ?? [],
+    excludeCollections: offer?.excludeCollections ?? [],
+
+    offerSource: offer?.offerSource ?? 'specific',
+    offerIntent: offer?.offerIntent ?? 'related',
+
+    hideInCart: Boolean(offer?.hideInCart),
+    // Default true, like the column: a product is never its own recommendation.
+    hideTriggerProduct: offer?.hideTriggerProduct ?? true,
+    showQuantityPicker: Boolean(offer?.showQuantityPicker),
+
+    discountType: offer?.discountType ?? 'none',
   };
 }
 
@@ -659,6 +700,13 @@ const storedProduct = (product) => ({
   title: product.title ?? null,
 });
 
+/** Collections store the handle, which is what the storefront matches on. */
+const storedCollection = (collection) => ({
+  id: collection.id,
+  handle: collection.handle ?? null,
+  title: collection.title ?? null,
+});
+
 /**
  * Whether two form states differ.
  *
@@ -669,6 +717,7 @@ const storedProduct = (product) => ({
  */
 function sameForm(a, b) {
   const ids = (list) => list.map((entry) => String(entry.id)).join(',');
+  const handles = (list) => (list ?? []).map((entry) => String(entry.handle)).join(',');
 
   return (
     a.offerType === b.offerType &&
@@ -684,7 +733,19 @@ function sameForm(a, b) {
     a.anchorSelector === b.anchorSelector &&
     a.anchorPosition === b.anchorPosition &&
     ids(a.targets) === ids(b.targets) &&
-    ids(a.items) === ids(b.items)
+    ids(a.items) === ids(b.items) &&
+    a.triggerMode === b.triggerMode &&
+    // Collections compare by handle for the same reason products compare by id:
+    // the picker does not always return the title.
+    handles(a.triggerCollections) === handles(b.triggerCollections) &&
+    ids(a.excludeProducts) === ids(b.excludeProducts) &&
+    handles(a.excludeCollections) === handles(b.excludeCollections) &&
+    a.offerSource === b.offerSource &&
+    a.offerIntent === b.offerIntent &&
+    a.hideInCart === b.hideInCart &&
+    a.hideTriggerProduct === b.hideTriggerProduct &&
+    a.showQuantityPicker === b.showQuantityPicker &&
+    a.discountType === b.discountType
   );
 }
 
@@ -711,6 +772,17 @@ function OfferEditor({ type, offer, maxItems, maxTargets }) {
   const [anchorPosition, setAnchorPosition] = useState(initial.anchorPosition);
   const [targets, setTargets] = useState(initial.targets);
   const [items, setItems] = useState(initial.items);
+  const [triggerMode, setTriggerMode] = useState(initial.triggerMode);
+  const [triggerCollections, setTriggerCollections] = useState(initial.triggerCollections);
+  const [excludeProducts, setExcludeProducts] = useState(initial.excludeProducts);
+  const [excludeCollections, setExcludeCollections] = useState(initial.excludeCollections);
+  const [offerSource, setOfferSource] = useState(initial.offerSource);
+  const [offerIntent, setOfferIntent] = useState(initial.offerIntent);
+  const [hideInCart, setHideInCart] = useState(initial.hideInCart);
+  const [hideTriggerProduct, setHideTriggerProduct] = useState(initial.hideTriggerProduct);
+  const [showQuantityPicker, setShowQuantityPicker] = useState(initial.showQuantityPicker);
+  // Read-only for now: "none" is the only type this app can honour (§7.8).
+  const [discountType] = useState(initial.discountType);
   const [status, setStatus] = useState(offer?.status ?? 'draft');
 
   /*
@@ -736,6 +808,16 @@ function OfferEditor({ type, offer, maxItems, maxTargets }) {
     anchorPosition,
     targets,
     items,
+    triggerMode,
+    triggerCollections,
+    excludeProducts,
+    excludeCollections,
+    offerSource,
+    offerIntent,
+    hideInCart,
+    hideTriggerProduct,
+    showQuantityPicker,
+    discountType,
   };
   const dirty = !sameForm(current, baseline);
 
@@ -754,6 +836,15 @@ function OfferEditor({ type, offer, maxItems, maxTargets }) {
     setAnchorPosition(values.anchorPosition);
     setTargets(values.targets);
     setItems(values.items);
+    setTriggerMode(values.triggerMode);
+    setTriggerCollections(values.triggerCollections);
+    setExcludeProducts(values.excludeProducts);
+    setExcludeCollections(values.excludeCollections);
+    setOfferSource(values.offerSource);
+    setOfferIntent(values.offerIntent);
+    setHideInCart(values.hideInCart);
+    setHideTriggerProduct(values.hideTriggerProduct);
+    setShowQuantityPicker(values.showQuantityPicker);
   };
 
   const result = fetcher.data;
@@ -819,6 +910,16 @@ function OfferEditor({ type, offer, maxItems, maxTargets }) {
          */
         targets: JSON.stringify(targets.map(storedProduct)),
         items: JSON.stringify(items.map(storedProduct)),
+        triggerMode,
+        triggerCollections: JSON.stringify(triggerCollections.map(storedCollection)),
+        excludeProducts: JSON.stringify(excludeProducts.map(storedProduct)),
+        excludeCollections: JSON.stringify(excludeCollections.map(storedCollection)),
+        offerSource,
+        offerIntent,
+        hideInCart: String(hideInCart),
+        hideTriggerProduct: String(hideTriggerProduct),
+        showQuantityPicker: String(showQuantityPicker),
+        discountType,
       },
       { method: 'POST' },
     );
@@ -1087,69 +1188,77 @@ function OfferEditor({ type, offer, maxItems, maxTargets }) {
           gridTemplateColumns="@container (inline-size > 720px) 2fr 3fr, 1fr"
         >
           {/* ------------------------------------------------------- form */}
-          <Card>
-            {tab === 'content' && (
-              <s-stack direction="block" gap="base">
-                <s-choice-list
-                  label="Offer type"
-                  name="offerType"
-                  values={[offerType]}
-                  onChange={(event) => setOfferType(event.currentTarget.values?.[0] ?? offerType)}
-                >
-                  {OFFER_TYPES.map((entry) => (
-                    <s-choice key={entry.value} value={entry.value}>
-                      {entry.label}
-                    </s-choice>
-                  ))}
-                </s-choice-list>
-
-                <s-text-field
-                  label="Offer name"
-                  labelAccessibilityVisibility="exclusive"
-                  name="name"
-                  value={name}
-                  details="Only visible to you. For your own internal reference."
-                  onInput={(event) => setName(event.currentTarget.value)}
-                />
-
-                <s-divider />
-                <s-heading>Content</s-heading>
-
-                <s-text-field
-                  label="Title"
-                  name="title"
-                  value={title}
-                  onInput={(event) => setTitle(event.currentTarget.value)}
-                />
-                <s-text-field
-                  label="Badge"
-                  name="badge"
-                  value={badge}
-                  placeholder="e.g. Limited offer"
-                  onInput={(event) => setBadge(event.currentTarget.value)}
-                />
-                <s-text-field
-                  label="Button text"
-                  name="buttonText"
-                  value={buttonText}
-                  onInput={(event) => setButtonText(event.currentTarget.value)}
-                />
-
-                <s-divider />
-                <s-checkbox
-                  name="countdown"
-                  label="Countdown timer"
-                  {...(countdown ? { checked: true } : {})}
-                  onChange={(event) => setCountdown(Boolean(event.currentTarget.checked))}
-                />
-
-                {countdown && (
+          {/*
+            A stack rather than one card, because the Offer tab is two cards in the
+            design — Trigger and Offer — and the rest are one.
+          */}
+          <s-stack direction="block" gap="base">
+            {tab !== 'offer' && (
+              <Card>
+                {tab === 'content' && (
                   <s-stack direction="block" gap="base">
-                    <CountdownModeToggle value={countdownMode} onChange={setCountdownMode} />
+                    <s-choice-list
+                      label="Offer type"
+                      name="offerType"
+                      values={[offerType]}
+                      onChange={(event) =>
+                        setOfferType(event.currentTarget.values?.[0] ?? offerType)
+                      }
+                    >
+                      {OFFER_TYPES.map((entry) => (
+                        <s-choice key={entry.value} value={entry.value}>
+                          {entry.label}
+                        </s-choice>
+                      ))}
+                    </s-choice-list>
 
-                    {countdownMode === 'fixed' ? (
-                      <s-stack direction="block" gap="small-300">
-                        {/*
+                    <s-text-field
+                      label="Offer name"
+                      labelAccessibilityVisibility="exclusive"
+                      name="name"
+                      value={name}
+                      details="Only visible to you. For your own internal reference."
+                      onInput={(event) => setName(event.currentTarget.value)}
+                    />
+
+                    <s-divider />
+                    <s-heading>Content</s-heading>
+
+                    <s-text-field
+                      label="Title"
+                      name="title"
+                      value={title}
+                      onInput={(event) => setTitle(event.currentTarget.value)}
+                    />
+                    <s-text-field
+                      label="Badge"
+                      name="badge"
+                      value={badge}
+                      placeholder="e.g. Limited offer"
+                      onInput={(event) => setBadge(event.currentTarget.value)}
+                    />
+                    <s-text-field
+                      label="Button text"
+                      name="buttonText"
+                      value={buttonText}
+                      onInput={(event) => setButtonText(event.currentTarget.value)}
+                    />
+
+                    <s-divider />
+                    <s-checkbox
+                      name="countdown"
+                      label="Countdown timer"
+                      {...(countdown ? { checked: true } : {})}
+                      onChange={(event) => setCountdown(Boolean(event.currentTarget.checked))}
+                    />
+
+                    {countdown && (
+                      <s-stack direction="block" gap="base">
+                        <CountdownModeToggle value={countdownMode} onChange={setCountdownMode} />
+
+                        {countdownMode === 'fixed' ? (
+                          <s-stack direction="block" gap="small-300">
+                            {/*
                           Label hidden rather than dropped, so a screen reader still
                           knows what the number means.
 
@@ -1160,25 +1269,25 @@ function OfferEditor({ type, offer, maxItems, maxTargets }) {
                           `s-select` does take one, which is why the time half has
                           its clock and this does not.
                         */}
-                        <s-number-field
-                          label="Countdown length"
-                          labelAccessibilityVisibility="exclusive"
-                          name="countdownMinutes"
-                          suffix="min"
-                          min={MIN_COUNTDOWN_MINUTES}
-                          max={MAX_COUNTDOWN_MINUTES}
-                          step={1}
-                          inputMode="numeric"
-                          value={String(countdownMinutes)}
-                          onInput={(event) => setCountdownMinutes(event.currentTarget.value)}
-                        />
-                        <s-text color="subdued">
-                          The offer will disappear for 24 hours after the countdown ends
-                        </s-text>
-                      </s-stack>
-                    ) : (
-                      <s-stack direction="block" gap="small-300">
-                        {/*
+                            <s-number-field
+                              label="Countdown length"
+                              labelAccessibilityVisibility="exclusive"
+                              name="countdownMinutes"
+                              suffix="min"
+                              min={MIN_COUNTDOWN_MINUTES}
+                              max={MAX_COUNTDOWN_MINUTES}
+                              step={1}
+                              inputMode="numeric"
+                              value={String(countdownMinutes)}
+                              onInput={(event) => setCountdownMinutes(event.currentTarget.value)}
+                            />
+                            <s-text color="subdued">
+                              The offer will disappear for 24 hours after the countdown ends
+                            </s-text>
+                          </s-stack>
+                        ) : (
+                          <s-stack direction="block" gap="small-300">
+                            {/*
                           Date and time side by side, as one deadline reads.
 
                           Two controls because Polaris has a date field and no time
@@ -1188,14 +1297,18 @@ function OfferEditor({ type, offer, maxItems, maxTargets }) {
                           shows none, and a screen reader still needs to know which
                           half is which.
                         */}
-                        {/*
+                            {/*
                           A grid, not an inline stack: Polaris fields fill their
                           container, so in a stack the select took the whole row and
                           pushed the date onto its own line. Two `1fr` columns give
                           the two halves the design shows.
                         */}
-                        <s-grid gridTemplateColumns="1fr 1fr" gap="small-300" alignItems="center">
-                          {/*
+                            <s-grid
+                              gridTemplateColumns="1fr 1fr"
+                              gap="small-300"
+                              alignItems="center"
+                            >
+                              {/*
                             The date is a button that opens `s-date-picker` in a
                             popover, not an `s-date-field`.
 
@@ -1206,171 +1319,181 @@ function OfferEditor({ type, offer, maxItems, maxTargets }) {
                             the pill the design shows, with the chosen date as its
                             label.
                           */}
-                          <s-button
-                            icon="calendar"
-                            inlineSize="fill"
-                            commandFor="countdown-end-date"
-                            command="--show"
-                            accessibilityLabel="Choose the countdown end date"
-                          >
-                            {formatDayLabel(endDate)}
-                          </s-button>
+                              <s-button
+                                icon="calendar"
+                                inlineSize="fill"
+                                commandFor="countdown-end-date"
+                                command="--show"
+                                accessibilityLabel="Choose the countdown end date"
+                              >
+                                {formatDayLabel(endDate)}
+                              </s-button>
 
-                          {/*
+                              {/*
                             The time matches the date: a pill that opens a picker in
                             a popover, not a dropdown. An `s-select` was a native
                             menu of half-hour slots beside a calendar — two
                             different interactions for the two halves of one
                             deadline, and no way to say 6:04.
                           */}
-                          <s-button
-                            icon="clock"
-                            inlineSize="fill"
-                            commandFor="countdown-end-time"
-                            command="--show"
-                            accessibilityLabel="Choose the countdown end time"
-                          >
-                            {formatClockTime(endTime)}
-                          </s-button>
-                        </s-grid>
+                              <s-button
+                                icon="clock"
+                                inlineSize="fill"
+                                commandFor="countdown-end-time"
+                                command="--show"
+                                accessibilityLabel="Choose the countdown end time"
+                              >
+                                {formatClockTime(endTime)}
+                              </s-button>
+                            </s-grid>
 
-                        {/*
+                            {/*
                           Outside the grid: a popover is an overlay, but it is still
                           a DOM child — inside the grid it would claim a third cell
                           and knock the two halves out of alignment.
                         */}
-                        <s-popover id="countdown-end-date">
-                          <s-date-picker
-                            type="single"
-                            value={endDate}
-                            onChange={(event) =>
-                              setCountdownEndsAt(`${event.currentTarget.value}T${endTime}`)
-                            }
-                          />
-                        </s-popover>
+                            <s-popover id="countdown-end-date">
+                              <s-date-picker
+                                type="single"
+                                value={endDate}
+                                onChange={(event) =>
+                                  setCountdownEndsAt(`${event.currentTarget.value}T${endTime}`)
+                                }
+                              />
+                            </s-popover>
 
-                        <s-popover id="countdown-end-time">
-                          <TimePicker
-                            value={endTime}
-                            onChange={(next) =>
-                              setCountdownEndsAt(`${endDate || todayLocal()}T${next}`)
-                            }
-                          />
-                        </s-popover>
-                        <s-text color="subdued">Timer that ends at the specific date</s-text>
+                            <s-popover id="countdown-end-time">
+                              <TimePicker
+                                value={endTime}
+                                onChange={(next) =>
+                                  setCountdownEndsAt(`${endDate || todayLocal()}T${next}`)
+                                }
+                              />
+                            </s-popover>
+                            <s-text color="subdued">Timer that ends at the specific date</s-text>
+                          </s-stack>
+                        )}
+
+                        <s-text-field
+                          label="Title"
+                          name="countdownTitle"
+                          value={countdownTitle}
+                          details={`Use ${COUNTDOWN_TOKEN} where you want the countdown to appear.`}
+                          onInput={(event) => setCountdownTitle(event.currentTarget.value)}
+                        />
                       </s-stack>
                     )}
 
-                    <s-text-field
-                      label="Title"
-                      name="countdownTitle"
-                      value={countdownTitle}
-                      details={`Use ${COUNTDOWN_TOKEN} where you want the countdown to appear.`}
-                      onInput={(event) => setCountdownTitle(event.currentTarget.value)}
-                    />
+                    <s-divider />
+                    <s-button variant="secondary" onClick={() => setTab('offer')}>
+                      Continue to offer
+                    </s-button>
                   </s-stack>
                 )}
 
-                <s-divider />
-                <s-button variant="secondary" onClick={() => setTab('offer')}>
-                  Continue to offer
-                </s-button>
-              </s-stack>
+                {tab === 'design' && (
+                  <s-stack direction="block" gap="base">
+                    <s-heading>Design</s-heading>
+                    <s-paragraph>
+                      Your Title, Badge and Button text above are published with the offer and
+                      override the block&rsquo;s own wording on the product page.
+                    </s-paragraph>
+                    <s-paragraph color="subdued">
+                      Layout, columns, image shape, colours and button style are still theme block
+                      settings — they live in your theme editor so they can follow your
+                      theme&rsquo;s styling. Open the block on a product template to change them.
+                    </s-paragraph>
+                    <s-button variant="secondary" onClick={() => setTab('placement')}>
+                      Continue to placement
+                    </s-button>
+                  </s-stack>
+                )}
+
+                {tab === 'placement' && (
+                  <s-stack direction="block" gap="base">
+                    <s-heading>Placement</s-heading>
+                    <s-stack direction="inline" gap="small-300" alignItems="center">
+                      <s-text type="strong">{placement?.title}</s-text>
+                      <s-badge tone="info">{type}</s-badge>
+                    </s-stack>
+                    <s-paragraph color="subdued">
+                      With the app embed enabled, published offers appear on their product pages on
+                      their own — no theme block needed. If you have placed the Smart
+                      Recommendations block on a product template, that block wins and these
+                      settings are ignored.
+                    </s-paragraph>
+
+                    <s-divider />
+
+                    <s-heading>Where it appears</s-heading>
+                    <s-paragraph color="subdued">
+                      Leave this empty and the offer goes just below the Add to cart button. It fits
+                      most themes; set your own CSS selector if yours is unusual.
+                    </s-paragraph>
+
+                    <s-text-field
+                      label="CSS selector"
+                      name="anchorSelector"
+                      value={anchorSelector}
+                      placeholder=".product-form__buttons"
+                      details="If this matches nothing, the built-in positions are tried instead — the offer still shows."
+                      onInput={(event) => setAnchorSelector(event.currentTarget.value)}
+                    />
+
+                    <s-select
+                      label="Position"
+                      name="anchorPosition"
+                      value={anchorPosition}
+                      onChange={(event) => setAnchorPosition(event.currentTarget.value)}
+                    >
+                      <s-option value="after">Below it</s-option>
+                      <s-option value="before">Above it</s-option>
+                    </s-select>
+
+                    <s-divider />
+                    <s-button variant="secondary" onClick={() => setTab('content')}>
+                      Back to content
+                    </s-button>
+                  </s-stack>
+                )}
+              </Card>
             )}
 
             {tab === 'offer' && (
-              <s-stack direction="block" gap="base">
-                <ProductList
-                  label="Show this offer on"
-                  help={`The product pages the block appears on. Up to ${maxTargets}.`}
-                  products={targets}
-                  max={maxTargets}
-                  onChange={setTargets}
-                />
-
-                <s-divider />
-
-                <ProductList
-                  label="Recommend these products"
-                  help={`What shoppers are offered. Up to ${maxItems}, the limit Liquid can resolve on one page.`}
-                  products={items}
-                  max={maxItems}
-                  onChange={setItems}
-                  exclude={targets.map((target) => target.id)}
-                />
-
-                <s-divider />
-                <s-button variant="secondary" onClick={() => setTab('design')}>
-                  Continue to design
-                </s-button>
-              </s-stack>
+              <OfferTab
+                trigger={{
+                  mode: triggerMode,
+                  setMode: setTriggerMode,
+                  targets,
+                  setTargets,
+                  collections: triggerCollections,
+                  setCollections: setTriggerCollections,
+                  excludeProducts,
+                  setExcludeProducts,
+                  excludeCollections,
+                  setExcludeCollections,
+                }}
+                offer={{
+                  source: offerSource,
+                  setSource: setOfferSource,
+                  intent: offerIntent,
+                  setIntent: setOfferIntent,
+                  items,
+                  setItems,
+                  hideInCart,
+                  setHideInCart,
+                  hideTriggerProduct,
+                  setHideTriggerProduct,
+                  showQuantityPicker,
+                  setShowQuantityPicker,
+                  discountType,
+                }}
+                maxItems={maxItems}
+                maxTargets={maxTargets}
+                onContinue={() => setTab('design')}
+              />
             )}
-
-            {tab === 'design' && (
-              <s-stack direction="block" gap="base">
-                <s-heading>Design</s-heading>
-                <s-paragraph>
-                  Your Title, Badge and Button text above are published with the offer and override
-                  the block&rsquo;s own wording on the product page.
-                </s-paragraph>
-                <s-paragraph color="subdued">
-                  Layout, columns, image shape, colours and button style are still theme block
-                  settings — they live in your theme editor so they can follow your theme&rsquo;s
-                  styling. Open the block on a product template to change them.
-                </s-paragraph>
-                <s-button variant="secondary" onClick={() => setTab('placement')}>
-                  Continue to placement
-                </s-button>
-              </s-stack>
-            )}
-
-            {tab === 'placement' && (
-              <s-stack direction="block" gap="base">
-                <s-heading>Placement</s-heading>
-                <s-stack direction="inline" gap="small-300" alignItems="center">
-                  <s-text type="strong">{placement?.title}</s-text>
-                  <s-badge tone="info">{type}</s-badge>
-                </s-stack>
-                <s-paragraph color="subdued">
-                  With the app embed enabled, published offers appear on their product pages on
-                  their own — no theme block needed. If you have placed the Smart Recommendations
-                  block on a product template, that block wins and these settings are ignored.
-                </s-paragraph>
-
-                <s-divider />
-
-                <s-heading>Where it appears</s-heading>
-                <s-paragraph color="subdued">
-                  Leave this empty and the offer goes just below the Add to cart button. It fits
-                  most themes; set your own CSS selector if yours is unusual.
-                </s-paragraph>
-
-                <s-text-field
-                  label="CSS selector"
-                  name="anchorSelector"
-                  value={anchorSelector}
-                  placeholder=".product-form__buttons"
-                  details="If this matches nothing, the built-in positions are tried instead — the offer still shows."
-                  onInput={(event) => setAnchorSelector(event.currentTarget.value)}
-                />
-
-                <s-select
-                  label="Position"
-                  name="anchorPosition"
-                  value={anchorPosition}
-                  onChange={(event) => setAnchorPosition(event.currentTarget.value)}
-                >
-                  <s-option value="after">Below it</s-option>
-                  <s-option value="before">Above it</s-option>
-                </s-select>
-
-                <s-divider />
-                <s-button variant="secondary" onClick={() => setTab('content')}>
-                  Back to content
-                </s-button>
-              </s-stack>
-            )}
-          </Card>
+          </s-stack>
 
           {/* ---------------------------------------------------- preview */}
           <OfferPreview
@@ -1406,6 +1529,387 @@ const CAROUSEL_TYPES = new Set(['cross_sell', 'product_add_on']);
 
 /** What a card falls back to before any product has been picked. */
 const PLACEHOLDER = { id: 'placeholder', title: 'Recommended product' };
+
+/**
+ * A collection list, edited with the App Bridge picker.
+ *
+ * Separate from ProductList rather than parameterised: the picker takes a different
+ * `type`, the stored shape is keyed on **handle** (what Liquid matches
+ * `product.collections` against without a lookup per page), and the empty states
+ * say different things. Sharing one component would mean a prop for every one of
+ * those differences.
+ */
+function CollectionList({ label, help, collections, onChange, max = 50 }) {
+  const shopify = useAppBridge();
+  const [error, setError] = useState(null);
+
+  const open = useCallback(async () => {
+    setError(null);
+    try {
+      const selection = await shopify.resourcePicker({
+        type: 'collection',
+        multiple: max,
+        ...(collections.length > 0
+          ? {
+              selectionIds: collections
+                .filter((entry) => entry.id)
+                .map((entry) => ({ id: `gid://shopify/Collection/${entry.id}` })),
+            }
+          : {}),
+      });
+
+      if (!selection) return;
+
+      onChange(
+        selection
+          .map((node) => ({
+            id: String(node.id).split('/').pop(),
+            handle: node.handle ?? null,
+            title: node.title ?? null,
+          }))
+          // A collection with no handle cannot be matched on the storefront, so it
+          // would silently never fire — dropped here rather than saved and ignored.
+          .filter((entry) => entry.handle)
+          .slice(0, max),
+      );
+    } catch (failure) {
+      setError(failure?.message || String(failure));
+    }
+  }, [shopify, collections, max, onChange]);
+
+  return (
+    <s-stack direction="block" gap="small-300">
+      <s-text type="strong">{label}</s-text>
+      {help && <s-text color="subdued">{help}</s-text>}
+
+      {collections.length === 0 ? (
+        <s-text color="subdued">Nothing chosen yet.</s-text>
+      ) : (
+        <s-stack direction="block" gap="small-500">
+          {collections.map((collection) => (
+            <s-stack
+              key={collection.handle}
+              direction="inline"
+              gap="small-300"
+              alignItems="center"
+              justifyContent="space-between"
+            >
+              <s-text>{collection.title || collection.handle}</s-text>
+              <s-button
+                variant="tertiary"
+                icon="x"
+                accessibilityLabel={`Remove ${collection.title || collection.handle}`}
+                onClick={() =>
+                  onChange(collections.filter((entry) => entry.handle !== collection.handle))
+                }
+              />
+            </s-stack>
+          ))}
+        </s-stack>
+      )}
+
+      {error && <s-text tone="critical">{error}</s-text>}
+
+      <s-button variant="secondary" onClick={open}>
+        {collections.length > 0 ? 'Edit collections' : 'Choose collections'}
+      </s-button>
+    </s-stack>
+  );
+}
+
+/**
+ * The Offer tab: which pages the offer fires on, and what it offers there.
+ *
+ * Two cards, as the design has them. The split is not cosmetic — the first answers
+ * "where does this appear" and decides how the offer is *published* (a named-product
+ * trigger writes a metafield per product; the other two write one shop-level list,
+ * §7.8), and the second answers "what does it show" and only ever affects rendering.
+ */
+function OfferTab({ trigger, offer, maxItems, maxTargets, onContinue }) {
+  return (
+    <>
+      <Card>
+        <s-stack direction="block" gap="base">
+          <s-stack direction="block" gap="small-500">
+            <s-text type="strong">Trigger</s-text>
+            <s-text color="subdued">The offer will be displayed on trigger product pages.</s-text>
+          </s-stack>
+
+          <s-choice-list
+            label="Trigger"
+            labelAccessibilityVisibility="exclusive"
+            name="triggerMode"
+            values={[trigger.mode]}
+            onChange={(event) => trigger.setMode(event.currentTarget.values?.[0] ?? trigger.mode)}
+          >
+            <s-choice value="all">All products</s-choice>
+            <s-choice value="products">Specific products</s-choice>
+            <s-choice value="collections">Products in specific collections</s-choice>
+          </s-choice-list>
+
+          {/* Only the mode that needs a list shows one. */}
+          {trigger.mode === 'products' && (
+            <ProductList
+              label="Product pages"
+              help={`The pages this offer appears on. Up to ${maxTargets}.`}
+              products={trigger.targets}
+              max={maxTargets}
+              onChange={trigger.setTargets}
+            />
+          )}
+
+          {trigger.mode === 'collections' && (
+            <CollectionList
+              label="Collections"
+              help="Every product in these collections shows the offer, including ones added later."
+              collections={trigger.collections}
+              onChange={trigger.setCollections}
+            />
+          )}
+
+          <s-divider />
+
+          {/*
+            Exclusions are checkboxes that reveal a picker, which is how the design
+            has them: an empty list is the normal state, so the picker stays out of
+            the way until a merchant says they want one.
+          */}
+          <s-stack direction="block" gap="small-300">
+            <s-checkbox
+              label="Exclude specific products"
+              {...(trigger.excludeProducts.length > 0 ? { checked: true } : {})}
+              onChange={(event) => {
+                // Unchecking clears the list: leaving exclusions stored but hidden
+                // would filter pages with nothing on screen explaining why.
+                if (!event.currentTarget.checked) trigger.setExcludeProducts([]);
+              }}
+            />
+            {trigger.excludeProducts.length > 0 && (
+              <ProductList
+                label="Excluded products"
+                labelHidden
+                products={trigger.excludeProducts}
+                max={maxTargets}
+                onChange={trigger.setExcludeProducts}
+              />
+            )}
+            {trigger.excludeProducts.length === 0 && (
+              <ExcludeAdder
+                label="Choose products to exclude"
+                onPicked={trigger.setExcludeProducts}
+                type="product"
+                max={maxTargets}
+              />
+            )}
+
+            <s-checkbox
+              label="Exclude collections"
+              {...(trigger.excludeCollections.length > 0 ? { checked: true } : {})}
+              onChange={(event) => {
+                if (!event.currentTarget.checked) trigger.setExcludeCollections([]);
+              }}
+            />
+            {trigger.excludeCollections.length > 0 ? (
+              <CollectionList
+                label="Excluded collections"
+                collections={trigger.excludeCollections}
+                onChange={trigger.setExcludeCollections}
+              />
+            ) : (
+              <ExcludeAdder
+                label="Choose collections to exclude"
+                onPicked={trigger.setExcludeCollections}
+                type="collection"
+                max={maxTargets}
+              />
+            )}
+          </s-stack>
+
+          <s-divider />
+
+          <s-stack direction="block" gap="small-500">
+            <s-text type="strong">Sub-trigger</s-text>
+            <s-text color="subdued">
+              Set additional conditions in order for the offer to be displayed
+            </s-text>
+            {/*
+              Present, explained, and it does not navigate — the same treatment the
+              unbuilt placement cards get. There is nothing to open: a sub-trigger
+              needs a condition language (cart value, customer tag, market) that
+              this app has not defined anywhere.
+            */}
+            <s-button variant="secondary" disabled>
+              Add a sub-trigger
+            </s-button>
+            <s-text color="subdued">
+              Not built yet. Sub-triggers need conditions — cart value, customer tag, market — and
+              this app has none of them defined.
+            </s-text>
+          </s-stack>
+        </s-stack>
+      </Card>
+
+      <Card>
+        <s-stack direction="block" gap="base">
+          <s-stack direction="block" gap="small-500">
+            <s-text type="strong">Offer</s-text>
+            <s-text color="subdued">
+              Only offer items that are in stock will be displayed on product pages.
+            </s-text>
+          </s-stack>
+
+          <s-choice-list
+            label="Offer source"
+            labelAccessibilityVisibility="exclusive"
+            name="offerSource"
+            values={[offer.source]}
+            onChange={(event) => offer.setSource(event.currentTarget.values?.[0] ?? offer.source)}
+          >
+            <s-choice value="specific">Specific products</s-choice>
+            <s-choice value="automated">Automated recommendations</s-choice>
+          </s-choice-list>
+
+          {offer.source === 'specific' ? (
+            <ProductList
+              label="Recommended products"
+              help={`What shoppers are offered. Up to ${maxItems}, the limit Liquid can resolve on one page.`}
+              products={offer.items}
+              max={maxItems}
+              onChange={offer.setItems}
+              /*
+                A product is never a recommendation for itself. The storefront
+                enforces it as well (`hideTriggerProduct`), but the picker is where a
+                merchant finds out — and only a named-products trigger has a list to
+                compare against.
+              */
+              exclude={trigger.targets.map((target) => target.id)}
+            />
+          ) : (
+            /*
+              Nested under Automated in the design, and it maps onto what the app
+              already does: the storefront asks Shopify for `related` or
+              `complementary` products — the same request the theme block's own
+              Related and Complementary sources make (§7.2).
+            */
+            <s-stack direction="block" gap="small-300" paddingInlineStart="base">
+              <s-choice-list
+                label="Recommendation type"
+                labelAccessibilityVisibility="exclusive"
+                name="offerIntent"
+                values={[offer.intent]}
+                onChange={(event) =>
+                  offer.setIntent(event.currentTarget.values?.[0] ?? offer.intent)
+                }
+              >
+                <s-choice value="related">Related products</s-choice>
+                <s-choice value="complementary">Complementary products</s-choice>
+              </s-choice-list>
+              {offer.intent === 'complementary' && (
+                <s-text color="subdued">
+                  Shopify only answers this for products you have linked in the Search &amp;
+                  Discovery app, so it shows nothing until you have.
+                </s-text>
+              )}
+            </s-stack>
+          )}
+
+          <s-divider />
+
+          <s-stack direction="block" gap="small-300">
+            <s-text type="strong">Offer visibility</s-text>
+            <s-checkbox
+              label="Hide products that are already in cart"
+              {...(offer.hideInCart ? { checked: true } : {})}
+              onChange={(event) => offer.setHideInCart(Boolean(event.currentTarget.checked))}
+            />
+            <s-checkbox
+              label="Hide products that match trigger product"
+              {...(offer.hideTriggerProduct ? { checked: true } : {})}
+              onChange={(event) =>
+                offer.setHideTriggerProduct(Boolean(event.currentTarget.checked))
+              }
+            />
+            <s-checkbox
+              label="Show quantity picker"
+              {...(offer.showQuantityPicker ? { checked: true } : {})}
+              onChange={(event) =>
+                offer.setShowQuantityPicker(Boolean(event.currentTarget.checked))
+              }
+            />
+          </s-stack>
+
+          <s-divider />
+
+          <s-stack direction="block" gap="small-300">
+            <s-text type="strong">Discounts</s-text>
+            {/*
+              One option, and disabled. A discount on a recommended product needs a
+              Shopify Functions discount extension — a separate extension with its
+              own deploy — and this app has none. A select that offered percentages
+              it could not apply would be worse than one that says so.
+            */}
+            <s-select
+              label="Discount type"
+              name="discountType"
+              value={offer.discountType}
+              disabled
+              details="Discounts need a Shopify Functions discount extension, which this app does not have yet."
+            >
+              <s-option value="none">No discount</s-option>
+            </s-select>
+          </s-stack>
+
+          <s-divider />
+          <s-button variant="secondary" onClick={onContinue}>
+            Continue to design
+          </s-button>
+        </s-stack>
+      </Card>
+    </>
+  );
+}
+
+/**
+ * The "choose something to exclude" button.
+ *
+ * Its own component because an empty exclusion list has no rows to hang an Edit
+ * button off — the list components render their picker button next to the rows they
+ * already have.
+ */
+function ExcludeAdder({ label, onPicked, type, max }) {
+  const shopify = useAppBridge();
+  const [error, setError] = useState(null);
+
+  const open = useCallback(async () => {
+    setError(null);
+    try {
+      const selection = await shopify.resourcePicker({ type, multiple: max });
+      if (!selection) return;
+
+      onPicked(
+        selection
+          .map((node) => ({
+            id: String(node.id).split('/').pop(),
+            handle: node.handle ?? null,
+            title: node.title ?? null,
+          }))
+          .filter((entry) => (type === 'collection' ? entry.handle : entry.id))
+          .slice(0, max),
+      );
+    } catch (failure) {
+      setError(failure?.message || String(failure));
+    }
+  }, [shopify, onPicked, type, max]);
+
+  return (
+    <s-stack direction="block" gap="small-500">
+      <s-button variant="tertiary" onClick={open}>
+        {label}
+      </s-button>
+      {error && <s-text tone="critical">{error}</s-text>}
+    </s-stack>
+  );
+}
 
 /**
  * Hour, minute and AM/PM as three scrolling columns.
@@ -1667,12 +2171,7 @@ function OfferPreview({
 
       {shown.map((product) => (
         <Card key={product.id}>
-          <s-stack
-            direction="inline"
-            gap="base"
-            alignItems="center"
-            justifyContent="space-between"
-          >
+          <s-stack direction="inline" gap="base" alignItems="center" justifyContent="space-between">
             <s-stack direction="inline" gap="base" alignItems="center">
               <s-thumbnail
                 size="large"
@@ -1703,8 +2202,6 @@ function OfferPreview({
       {carousel && products.length > 1 && (
         <s-text color="subdued">{`Product ${index + 1} of ${products.length}`}</s-text>
       )}
-
-
 
       <s-paragraph color="subdued">
         Preview of the {(placementTitle ?? 'product page').toLowerCase()} block. It follows the

@@ -25,7 +25,7 @@
 | --- | --- |
 | `/app` | Home — headline metrics, **offer list**, storefront status, quota meter, and the **Create offer** action |
 | `/app/offers/new` | **Choose Offer Placement** — the step after **Create offer**. Five placement cards; only Product page is built |
-| `/app/offers/new?type=PRODUCT_PAGE` | **New offer** builder on the same route: offer type, copy fields, product pickers, and a live preview that is a working carousel for the card-style offer types. Saves drafts, duplicates, deletes, and publishes to the storefront (§4 `Offer`) |
+| `/app/offers/new?type=PRODUCT_PAGE` | **New offer** builder on the same route: offer type, copy fields with a countdown (§7.7), trigger and offer rules (§7.8), and a live preview that is a working carousel for the card-style offer types. Saves drafts, duplicates, deletes, and publishes to the storefront (§4 `Offer`) |
 | `/app/offers/new?type=PRODUCT_PAGE&id=…` | The same builder, editing an existing offer |
 | `/app/recommendations` | List of all products + their recommendation source, filters + search, override editor. Each row shows its complementary products as thumbnails and picks them inline (§5, Phase 5 deviations) |
 | `/app/recommendations/$productId` | Override editor for a single product |
@@ -148,6 +148,12 @@ the type reached the row's caller and went no further while every test stayed gr
 IDs *and* handles are stored: Liquid resolves products with `all_products[handle]`
 (hard limit **20 lookups per page** — cap override lists at 12). IDs are strings, matching how
 Prisma stores them, so nothing has to agree on number formatting.
+
+**A second mirror exists for shop-scope offers.** An offer whose trigger is "all
+products" or a collection cannot be written per product (§7.8), so it goes into
+`$app:reco_offers` **on the shop** and the app embed matches the trigger against the
+product in front of it. The theme block reads only the per-product metafield, so
+those offers render through the embed alone.
 
 **Only PDP-visible overrides are published.** The metafield is read by the theme block alone, so
 `shouldPublishToStorefront()` writes it for enabled `pdp`/`both` overrides and *deletes* it for
@@ -319,6 +325,20 @@ model AnalyticsDaily {
 
 Migration command: `npm run prisma -- migrate dev --name <name>` (never hand-edit migrations, and
 see the wrapper note below for why this is not `npx prisma`).
+
+> ⚠️ **Never put `@default` on a `Json` column with this SQLite provider** (learned 2026-08-21).
+> `Json @default("[]")` reads as obviously correct and generates `DEFAULT []` — *unquoted*, and in
+> SQLite `[...]` is identifier-quoting syntax, not an array. Every row that predated the migration
+> got an **empty string**, and the next `prisma.offer.findMany()` failed for the whole table with
+> *"Inconsistent column data: Conversion failed: EOF while parsing a value at line 1 column 0"* —
+> `/app` would not load at all. Nothing warned: `migrate dev` succeeded, the app wrote valid `'[]'`
+> for every row it created afterwards, and only rows older than the migration were poisoned.
+>
+> The new Json columns are `Json?` with no default, like `Override.presentation`: null is a value
+> Prisma can read, every write sends a real array, and every read coalesces with `?? []`. Repairing
+> an already-poisoned database is `UPDATE "Offer" SET "col" = '[]' WHERE json_valid("col") = 0`.
+> `app/models/offer.test.js` and `app/lib/shop-offers.test.js` both drive a row with NULLs through the
+> paths that read them.
 
 **The datasource URL is `env("DATABASE_URL")`, not a literal** (changed 2026-08-20). It used to be
 `url = "file:dev.sqlite"`, which meant the Docker image shipped a SQLite file *inside the container*
@@ -1072,6 +1092,101 @@ metafield (§3.1).
 
 ---
 
+### 7.8 The Offer tab: triggers, sources and visibility
+
+Added 2026-08-21. Until now an offer was a list of product pages and a list of
+recommendations. The Offer tab turns both halves into rules.
+
+**Trigger — which pages the offer fires on**
+
+| Mode | Published as | Storefront |
+| --- | --- | --- |
+| `products` | one `$app:reco_overrides` metafield **per target product** (the original path) | theme block *and* app embed |
+| `all` | one `$app:reco_offers` metafield **on the shop** | app embed only |
+| `collections` | the same shop metafield, with the collection handles | app embed only |
+
+> ⚠️ **`all` and `collections` could not use the per-product mirror, and this is the
+> reason the shop metafield exists.** Expanding "all products" into rows would mean
+> one metafield write per product — thousands on a real catalogue — and every one of
+> them would count against the **per-product plan allowance** (§5), so a Free
+> merchant's first publish would burn all ten slots and still not cover the shop.
+> `publishedTargetIds()` therefore filters to `triggerMode: "products"`: a shop-scope
+> offer occupies no product and costs no slot. The `served` quota (§3.3) is still the
+> meter, which is what keeps the plans meaningful.
+
+- **The trigger is matched on the storefront, not expanded in the admin.** `app-embed.liquid`
+  walks the shop list and takes the first offer that matches the product in front of
+  it. That is what makes "all products" include products added *after* the offer was
+  published — an expansion would have frozen the catalogue at publish time.
+- **A product's own list wins.** The embed reads `reco_overrides` first and only
+  falls through to the shop list when there is none: a merchant who named this
+  product meant this product, and a catalogue-wide offer must not overrule it.
+- **Exclusions are checked after the trigger and beat it** — they exist to carve
+  pages out of a match, so an excluded product is never a match even when the
+  trigger says every product.
+- **Collections are stored and matched by handle.** Liquid compares
+  `product.collections` by handle without a lookup per page; a collection picked
+  without one is dropped rather than saved and silently never fired.
+- **Oldest published first.** The embed renders the first match, so an offer set up
+  earlier keeps its pages when a later, broader one is added. Newest-first would let
+  one new "All products" offer swallow every page a collection offer was covering.
+- **The whole shop list is rebuilt on every write**, never patched: it is small, the
+  alternative is read-modify-write on a metafield two publishes can race on, and a
+  rebuild makes unpublish and delete fall out for free — an offer that is no longer
+  published simply is not in the list.
+- **A failed shop-metafield write rolls the publish back to draft**, unlike the
+  per-product path. There is one write, so a failure means *nothing* is live, and an
+  offer left marked published would claim to be showing on every product page while
+  showing on none. A failed *unpublish* is **not** rolled back for the mirror-image
+  reason: the offer is meant to be off, and re-marking it published would say it is
+  live when the merchant just took it down.
+- **The Settings re-sync repairs it too.** `syncAllOverrides()` iterates Override
+  rows, and a shop-scope offer has none — so `app.settings.jsx` calls
+  `syncShopOffers()` as well, or a failed shop write would have no repair path but
+  unpublishing and republishing every offer by hand.
+
+**Offer — what it shows**
+
+- **Specific products** is the curated `items` list, unchanged.
+- **Automated recommendations** ships **no items at all** and an `intent` instead:
+  the storefront asks Shopify for `related` or `complementary` products, which is the
+  same request the theme block's own sources make (§7.2). Shipping a stale copy of
+  Shopify's list would be worse than shipping none, and `validateForPublish` skips
+  the items check for this mode — demanding a list would make it impossible to
+  publish.
+
+**Offer visibility** — three settings, applied by `applyVisibility()` in `reco.js`
+to whatever is in the track, so they behave the same on cards Liquid drew and cards
+the embed injected:
+
+- **Hide products already in cart.** The cart is readable in Liquid and nowhere
+  else, so the embed emits `window.EasyReco.cart` — but **only when an offer asked
+  for the filter**, since the shopper's cart on every page is not free. An absent
+  list means no filtering, which is how every offer behaved before the setting.
+- **Hide products that match trigger product**, default **on**: a product has never
+  been offered as its own recommendation. `shape()` reads it as `!== false`, not
+  `Boolean(...)` — `Boolean(undefined)` is false, so an input that did not mention
+  the field used to flip the default and start recommending the product being viewed.
+- **Show quantity picker** injects a number input beside the add button (never on a
+  multi-variant card, which renders a link rather than a button) and passes the value
+  to `/cart/add.js`, clamped to at least 1.
+
+`applyVisibility()` runs **before** `wire()`, so a filtered-out card never reports an
+impression and a block left with nothing reports no `served` — a hidden
+recommendation was not shown, and counting it would overstate the offer's reach and
+bill for it.
+
+**Not built, and shown as such** (the same treatment the unbuilt placement cards
+get, §9 Phase 10 item 9):
+
+- **Sub-trigger** — the button is present and disabled, with a line saying what it
+  waits on. A sub-trigger needs a condition language (cart value, customer tag,
+  market) that this app has not defined anywhere.
+- **Discounts** — the select offers `No discount` and nothing else, disabled. A
+  discount on a recommended product needs a **Shopify Functions discount
+  extension**: a separate extension with its own deploy and its own cart logic.
+  `discountType` is stored so the column is ready; only `"none"` is accepted.
+
 ### 7.5 The app embed is optional — so nothing may depend on it
 
 Added 2026-08-20, after two bugs with the same root cause.
@@ -1753,7 +1868,7 @@ so the first can declare `enabled_on` and the second can own a real collection p
 They share their markup through `reco-panel` and `reco-collection-cards`; only the schema JSON
 duplicates, and a test pins the two copies together. A third block, **Upsell**, is a
 **Bought Together** bundle over the same Custom list (§7.4) — product templates only, its own
-`upsell` placement, billable. 541 Vitest tests pass; lint and typecheck are clean — though see the
+`upsell` placement, billable. 580 Vitest tests pass; lint and typecheck are clean — though see the
 warning in §4: typecheck does not read a single `.js`/`.jsx` file, which is all of them.
 
 Custom recommendations are no longer a paid-only feature: **Free covers 10 products** and the

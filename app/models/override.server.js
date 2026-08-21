@@ -183,6 +183,16 @@ export function normalizePresentation(presentation) {
       }
     : null;
 
+  /*
+   * Storefront filtering. Rebuilt by name like everything else here — the lesson
+   * from `type`, which was added to the caller and silently dropped at this line.
+   */
+  const visibility = {
+    hideInCart: Boolean(presentation.hideInCart),
+    hideTriggerProduct: presentation.hideTriggerProduct !== false,
+    showQuantityPicker: Boolean(presentation.showQuantityPicker),
+  };
+
   const selector = String(presentation.anchor?.selector ?? "").trim();
   const position = presentation.anchor?.position === "before" ? "before" : "after";
   // Only stored when it says something: a bare default is reco.js's job.
@@ -198,6 +208,7 @@ export function normalizePresentation(presentation) {
     buttonText,
     countdown,
     ...(timer ?? {}),
+    ...visibility,
     ...(anchor ? { anchor } : {}),
   };
 }

@@ -116,6 +116,9 @@ describe("buildMetafieldValue", () => {
       // A countdown that is on always names its mode; the duration and wording
       // fall back to reco.js's own defaults when the offer said nothing.
       countdownMode: "fixed",
+      // Storefront filtering always ships, so reco.js never has to guess. Hiding
+      // the trigger product is the historical behaviour and so the default.
+      visibility: { hideInCart: false, hideTrigger: true, quantityPicker: false },
     });
   });
 
@@ -176,6 +179,7 @@ describe("buildMetafieldValue", () => {
       buttonText: "",
       countdown: true,
       countdownMode: "fixed",
+      visibility: { hideInCart: false, hideTrigger: true, quantityPicker: false },
     });
   });
 

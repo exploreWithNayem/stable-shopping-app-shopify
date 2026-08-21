@@ -11,7 +11,8 @@
     "needs_product": "This block needs a product — add it to a product page. To show a collection, best sellers or recently viewed products anywhere, use the Product Showcase block.",
     "count": "Product [current] of [total]",
     "countdown": "Hurry up! Offer expires in {{timer}}",
-    "countdown_days": "d"
+    "countdown_days": "d",
+    "quantity": "Quantity"
   },
   "popular": {
     "empty": "No products to show yet. Pick a collection with products in it, or clear the sold out filter."

@@ -91,6 +91,37 @@ model Offer {
   countdownMinutes Int      @default(60)
   countdownEndsAt  DateTime? // "date" mode only
   countdownTitle   String   @default("Hurry up! Offer expires in {{timer}}")
+  /// Which product pages the offer appears on.
+  ///
+  /// "products" is the original behaviour and the only one that writes a per-product
+  /// Override row: the merchant names the pages. "all" and "collections" are
+  /// shop-scope — they are published to one shop-owned metafield the app embed reads
+  /// on every product page, because writing a row per product would mean thousands
+  /// of metafield writes and would consume the per-product plan allowance instantly.
+  triggerMode        String @default("products") // all | products | collections
+  /// Nullable and with **no** `@default`, unlike every other new column here.
+  ///
+  /// `Json @default("[]")` looks right and generates `DEFAULT []` on SQLite —
+  /// unquoted, where `[...]` is identifier-quoting syntax, so every pre-existing row
+  /// got an **empty string** and `prisma.offer.findMany()` then died with
+  /// "Inconsistent column data: EOF while parsing a value". Null is a value Prisma
+  /// can actually read, every write sends a real array, and every read already
+  /// coalesces with `?? []`.
+  triggerCollections Json? // [{ id, handle, title }] for "collections"
+  excludeProducts    Json? // product pages the offer must not appear on
+  excludeCollections Json?
+  /// Where the recommended products come from. "specific" is the curated `items`
+  /// list; "automated" leaves it to Shopify's own recommendations, fetched on the
+  /// storefront with the intent below.
+  offerSource String @default("specific") // specific | automated
+  offerIntent String @default("related") // related | complementary
+  /// Storefront filtering, applied by reco.js.
+  hideInCart         Boolean @default(false)
+  hideTriggerProduct Boolean @default(true)
+  showQuantityPicker Boolean @default(false)
+  /// Reserved. Only "none" is implemented — a real discount needs a Shopify
+  /// Functions discount extension, which this app does not have.
+  discountType String @default("none")
   /// Where on the page the app embed injects the offer. Null means "use the
   /// built-in fallback chain in reco.js", which covers Dawn-family themes; a
   /// merchant on an unusual theme sets their own CSS selector.

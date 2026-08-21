@@ -511,6 +511,27 @@
   pointer-events: none;
 }
 
+/*
+ * The quantity picker, when an offer asked for one.
+ *
+ * Sized to two digits and no wider: it sits beside the add button, and a
+ * full-width number input next to a button reads as the primary control on the
+ * card rather than a modifier of it.
+ */
+.reco-card__quantity {
+  inline-size: 3.5rem;
+  padding: 0.375rem 0.5rem;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  border-radius: 4px;
+  font: inherit;
+  font-size: 0.875rem;
+  text-align: center;
+}
+
+.reco--offer .reco-card__quantity {
+  margin-inline-end: 0.5rem;
+}
+
 /* --- Loading / empty ----------------------------------------------------- */
 
 /*

@@ -9,6 +9,8 @@ import {
 import {
   MAX_ITEMS,
   MAX_TARGETS,
+  isShopScope,
+  normalizeCollections,
   countOffers,
   deleteOffer,
   duplicateOffer,
@@ -113,6 +115,164 @@ describe("validation", () => {
     expect(
       validateForPublish(draft({ name: "", title: "", targets: [], items: [] })),
     ).toHaveLength(4);
+  });
+});
+
+describe("trigger and offer source", () => {
+  test("only a named-products trigger needs targets", async () => {
+    /*
+     * "All products" and a collections trigger are answered by the trigger itself.
+     * Demanding a target list there would make both modes impossible to publish.
+     */
+    const named = draft({ triggerMode: "products", targets: [] });
+    expect(validateForPublish(named)).toHaveLength(1);
+
+    expect(validateForPublish(draft({ triggerMode: "all", targets: [] }))).toEqual([]);
+    expect(
+      validateForPublish(
+        draft({ triggerMode: "collections", targets: [], triggerCollections: [{ handle: "sale" }] }),
+      ),
+    ).toEqual([]);
+  });
+
+  test("a collections trigger needs a collection, or it shows nowhere", () => {
+    const errors = validateForPublish(draft({ triggerMode: "collections", targets: [] }));
+    expect(errors.join(" ")).toContain("collection");
+  });
+
+  test("automated recommendations need no item list", async () => {
+    // Shopify supplies it on the storefront, which is the whole point of the mode.
+    expect(validateForPublish(draft({ offerSource: "automated", items: [] }))).toEqual([]);
+    expect(validateForPublish(draft({ offerSource: "specific", items: [] }))).toHaveLength(1);
+  });
+
+  test("an omitted trigger mode is validated as the stored default", () => {
+    // A form that does not name the field means "products", the column default —
+    // validating the raw value would skip a check the saved row then needs.
+    expect(validateForPublish(draft({ targets: [] }))).toHaveLength(1);
+  });
+
+  test("isShopScope is what routes the publish", async () => {
+    expect(isShopScope({ triggerMode: "all" })).toBe(true);
+    expect(isShopScope({ triggerMode: "collections" })).toBe(true);
+    expect(isShopScope({ triggerMode: "products" })).toBe(false);
+    expect(isShopScope(null)).toBe(false);
+  });
+
+  test("collections are stored by handle, deduped, and blanks dropped", () => {
+    // The handle is what Liquid compares `product.collections` to; a collection
+    // without one could never match, so it is dropped rather than saved and ignored.
+    const list = normalizeCollections([
+      { id: "1", handle: "summer", title: "Summer" },
+      { id: "2", handle: "summer", title: "Summer again" },
+      { id: "3", handle: "", title: "No handle" },
+      { id: "4", handle: " sale ", title: "Sale" },
+    ]);
+
+    expect(list.map((entry) => entry.handle)).toEqual(["summer", "sale"]);
+  });
+
+  test("saving keeps the trigger, source and visibility", async () => {
+    const saved = await saveOffer(
+      shopId,
+      draft({
+        triggerMode: "collections",
+        triggerCollections: [{ id: "1", handle: "summer", title: "Summer" }],
+        excludeProducts: [product(9)],
+        excludeCollections: [{ id: "2", handle: "clearance" }],
+        offerSource: "automated",
+        offerIntent: "complementary",
+        hideInCart: true,
+        showQuantityPicker: true,
+      }),
+    );
+
+    expect(saved).toMatchObject({
+      triggerMode: "collections",
+      offerSource: "automated",
+      offerIntent: "complementary",
+      hideInCart: true,
+      showQuantityPicker: true,
+      // Untouched by the form, so it keeps the column default.
+      hideTriggerProduct: true,
+      discountType: "none",
+    });
+    expect(saved.triggerCollections).toEqual([{ id: "1", handle: "summer", title: "Summer" }]);
+    expect(saved.excludeCollections[0].handle).toBe("clearance");
+  });
+
+  test("an unknown trigger, source or intent falls back rather than saving", async () => {
+    const saved = await saveOffer(
+      shopId,
+      draft({ triggerMode: "everywhere", offerSource: "magic", offerIntent: "vibes" }),
+    );
+
+    expect(saved).toMatchObject({
+      triggerMode: "products",
+      offerSource: "specific",
+      offerIntent: "related",
+    });
+  });
+
+  test("hideTriggerProduct defaults to true, not to Boolean(undefined)", async () => {
+    /*
+     * `Boolean(undefined)` is false, and this flag defaults to **true** — a product
+     * has never been offered as its own recommendation. An input that simply does
+     * not mention the field used to flip it.
+     */
+    expect((await saveOffer(shopId, draft())).hideTriggerProduct).toBe(true);
+    expect(
+      (await saveOffer(shopId, draft({ hideTriggerProduct: false }))).hideTriggerProduct,
+    ).toBe(false);
+  });
+});
+
+describe("rows written before the trigger columns existed", () => {
+  /*
+   * The Json columns are nullable and carry **no** `@default`, and this is why:
+   * `Json @default("[]")` generates `DEFAULT []` on SQLite — unquoted, where
+   * `[...]` is identifier-quoting syntax — so every row that predated the migration
+   * got an **empty string**, and `prisma.offer.findMany()` died on the whole table
+   * with "Inconsistent column data: EOF while parsing a value at line 1 column 0".
+   * The home page could not load.
+   *
+   * Null is a value Prisma can read. These check that a row with nothing in those
+   * columns still works everywhere they are read.
+   */
+  async function legacyRow(name) {
+    const created = await saveOffer(shopId, draft({ name }));
+    await prisma.$executeRawUnsafe(
+      `UPDATE "Offer" SET "triggerCollections" = NULL, "excludeProducts" = NULL,
+       "excludeCollections" = NULL WHERE id = ?`,
+      created.id,
+    );
+    return created.id;
+  }
+
+  test("listing the offers does not blow up on them", async () => {
+    const id = await legacyRow("Legacy offer");
+
+    const listed = await listOffers(shopId);
+    expect(listed.map((entry) => entry.id)).toContain(id);
+    expect(listed.find((entry) => entry.id === id).triggerCollections).toBeNull();
+  });
+
+  test("duplicating one produces real empty lists", async () => {
+    // `?? []` on the read, so the copy is well-formed even when the original had
+    // nothing in those columns.
+    const id = await legacyRow("Legacy offer");
+    const copy = await duplicateOffer(shopId, id);
+
+    expect(copy.triggerCollections).toEqual([]);
+    expect(copy.excludeProducts).toEqual([]);
+    expect(copy.excludeCollections).toEqual([]);
+  });
+
+  test("saving one fills them in", async () => {
+    const id = await legacyRow("Legacy offer");
+    const saved = await saveOffer(shopId, draft({ id, name: "Legacy offer" }));
+
+    expect(saved.triggerCollections).toEqual([]);
   });
 });
 

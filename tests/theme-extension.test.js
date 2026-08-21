@@ -759,6 +759,89 @@ describe("two blocks, six sources", () => {
     expect(runtime).toContain("var COUNTDOWN_HIDE_MS = 24 * 60 * 60 * 1000");
   });
 
+  test("the embed matches shop-scope offers against the product in front of it", () => {
+    /*
+     * An "all products" or collections offer cannot be mirrored per product, so it
+     * lives in one shop metafield and the **trigger is matched here** — which is
+     * what makes "all products" include products added after the offer was
+     * published.
+     */
+    const embed = readLiquid(join(BLOCKS, "app-embed.liquid"));
+
+    expect(embed).toContain('shop.metafields["$app"].reco_offers.value.offers');
+    // The product's own list wins: a merchant who named this product meant it.
+    expect(embed.indexOf('product.metafields["$app"].reco_overrides.value')).toBeLessThan(
+      embed.indexOf("reco_offers"),
+    );
+    expect(embed).toContain("if reco.items == blank");
+
+    // Trigger: all, or this product's collections by handle.
+    expect(embed).toContain("candidate_offer.trigger.mode == 'all'");
+    expect(embed).toContain("candidate_offer.trigger.collections contains product_collection.handle");
+
+    // Exclusions are checked after the trigger and win over it.
+    expect(embed).toContain("candidate_offer.exclude.products contains product_id_string");
+    expect(embed).toContain("candidate_offer.exclude.collections contains product_collection.handle");
+
+    // First match wins, and the list arrives oldest-first.
+    expect(embed).toContain("break");
+  });
+
+  test("the embed does not write a mixed and/or chain", () => {
+    /*
+     * Liquid has no operator precedence and evaluates `a and b or c` right to left,
+     * so that form says something other than it reads. The trigger-product skip was
+     * written that way once; it is spelled out now.
+     */
+    const embed = readLiquid(join(BLOCKS, "app-embed.liquid"));
+    expect(embed).not.toMatch(/\{%-?\s*if[^%]*\band\b[^%]*\bor\b/);
+    expect(embed).toContain("assign include_candidate");
+  });
+
+  test("an automated offer ships an intent instead of a list", () => {
+    /*
+     * Shopify supplies the products in the browser — the same request the theme
+     * block's Related and Complementary sources make — so there is nothing for
+     * Liquid to resolve and no stale copy of the list to ship.
+     */
+    const embed = readLiquid(join(BLOCKS, "app-embed.liquid"));
+    const runtime = readFileSync(join(EXTENSION, "assets", "reco.js"), "utf8");
+
+    expect(embed).toContain("if reco.source.mode == 'automated'");
+    expect(embed).toContain("if reco.items or automated");
+    expect(embed).toContain("source: {%- if reco.source -%}");
+
+    expect(runtime).toContain('offer.source.mode === "automated"');
+    expect(runtime).toContain('block.setAttribute("data-reco-intent", offer.source.intent');
+  });
+
+  test("cart contents are only emitted when an offer asked for the filter", () => {
+    // `cart` is readable in Liquid and nowhere else, but putting the shopper's cart
+    // on every page for a filter nobody turned on is not free.
+    const embed = readLiquid(join(BLOCKS, "app-embed.liquid"));
+    const guard = embed.slice(embed.indexOf("window.EasyReco.cart") - 400, embed.indexOf("window.EasyReco.cart"));
+
+    expect(guard).toContain("if reco.visibility.hideInCart");
+    expect(embed).toContain("line.product_id");
+  });
+
+  test("the block carries the offer's visibility rules too", () => {
+    /*
+     * The same three settings apply wherever the offer renders, so reco.js reads
+     * them off the block and applies them to whatever is in the track — cards
+     * Liquid drew here, or cards the embed injected.
+     */
+    expect(panel).toContain("copy.visibility.hideInCart");
+    expect(panel).toContain("copy.visibility.quantityPicker");
+
+    const runtime = readFileSync(join(EXTENSION, "assets", "reco.js"), "utf8");
+    expect(runtime).toContain("function applyVisibility(block)");
+    // Before wire(), so a hidden card never reports an impression.
+    expect(runtime.indexOf("function applyVisibility")).toBeLessThan(
+      runtime.indexOf("function wire(block)"),
+    );
+  });
+
   test("the embed passes the offer type through to the runtime", () => {
     /*
      * The type is what decides the injected layout — a carousel of rows for the

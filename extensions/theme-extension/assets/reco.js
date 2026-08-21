@@ -53,6 +53,74 @@
     return (window.EasyReco && window.EasyReco.offer) || null;
   }
 
+  /**
+   * Product ids already in the cart, published by the embed.
+   *
+   * Only emitted when an offer asked for the filter — `cart` is readable in Liquid
+   * and nowhere else, and putting the shopper's cart on every page for a filter
+   * nobody turned on is not free. An absent list simply means no filtering, which
+   * is the behaviour every offer had before the setting existed.
+   */
+  function cartProductIds() {
+    var ids = (window.EasyReco && window.EasyReco.cart) || [];
+    return Array.isArray(ids) ? ids.map(String) : [];
+  }
+
+  /**
+   * Drop cards the offer's visibility rules exclude, and add a quantity picker
+   * where it asked for one.
+   *
+   * Applied to whatever is in the track, so it covers both paths: cards Liquid
+   * server-rendered and cards renderFallback drew. It runs *before* wire(), so a
+   * removed card never reports an impression — a hidden recommendation was not
+   * shown, and counting it would overstate the offer's reach.
+   */
+  function applyVisibility(block) {
+    var hideInCart = block.getAttribute("data-reco-hide-in-cart") === "true";
+    var quantities = block.getAttribute("data-reco-quantity") === "true";
+    if (!hideInCart && !quantities) return;
+
+    var inCart = hideInCart ? cartProductIds() : [];
+
+    block.querySelectorAll("[data-reco-card]").forEach(function (card) {
+      var productId = String(card.getAttribute("data-reco-product-id") || "");
+
+      if (hideInCart && inCart.indexOf(productId) !== -1) {
+        card.remove();
+        return;
+      }
+
+      if (!quantities) return;
+
+      /*
+       * Next to the add button rather than in the card body: it belongs to the
+       * action, and a card whose product cannot be added straight to the cart (a
+       * multi-variant one, which renders a link instead) gets no picker at all.
+       */
+      var button = card.querySelector("[data-reco-add]");
+      if (!button || button.tagName !== "BUTTON") return;
+      if (card.querySelector("[data-reco-quantity-input]")) return;
+
+      var input = document.createElement("input");
+      input.type = "number";
+      input.min = "1";
+      input.step = "1";
+      input.value = "1";
+      input.className = "reco-card__quantity";
+      input.setAttribute("data-reco-quantity-input", "");
+      input.setAttribute("aria-label", config().strings.quantity || "Quantity");
+      button.parentNode.insertBefore(input, button);
+    });
+
+    /*
+     * Everything filtered out. The block hides rather than showing a heading over
+     * nothing — and no serve is reported, because nothing was served.
+     */
+    if (block.querySelectorAll("[data-reco-card]").length === 0) {
+      block.hidden = true;
+    }
+  }
+
   function uid() {
     try {
       if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
@@ -445,6 +513,13 @@
     var behavior = block.getAttribute("data-reco-atc") || "ajax";
     var clickId = uid();
     /*
+     * From the card's own picker when the offer asked for one, clamped to at least
+     * 1: an empty or negative box means the shopper cleared it, not that they want
+     * nothing added.
+     */
+    var quantityInput = card && card.querySelector("[data-reco-quantity-input]");
+    var quantity = Math.max(1, Math.round(Number(quantityInput && quantityInput.value) || 1));
+    /*
      * Markup, not text: the offer carousel's button holds an icon beside its
      * label, and restoring from textContent dropped the icon for good once the
      * "Added" confirmation expired. This is a round-trip of the button's own
@@ -461,7 +536,7 @@
         items: [
           {
             id: Number(variantId),
-            quantity: 1,
+            quantity: quantity,
             // Read back by the orders/create webhook to attribute revenue.
             // Underscore-prefixed properties are hidden from the customer.
             properties: {
@@ -1507,6 +1582,21 @@
     // still drawn by renderFallback, which needs the template below.
     block.setAttribute("data-reco-server-rendered", "false");
 
+    /*
+     * An automated offer has no list: Shopify supplies it, so the intent replaces
+     * the fixed `related` above and initEmbeddedOffer fetches instead of rendering
+     * what the embed inlined.
+     */
+    var visibility = offer.visibility || {};
+    if (offer.source && offer.source.mode === "automated") {
+      block.setAttribute("data-reco-intent", offer.source.intent || "related");
+      block.setAttribute("data-reco-source", "shopify");
+      block.setAttribute("data-reco-limit", "4");
+    }
+
+    if (visibility.hideInCart) block.setAttribute("data-reco-hide-in-cart", "true");
+    if (visibility.quantityPicker) block.setAttribute("data-reco-quantity", "true");
+
     if (carousel) {
       block.style.setProperty("--reco-columns-mobile", "1");
       block.style.setProperty("--reco-columns-desktop", "1");
@@ -1646,7 +1736,14 @@
    */
   function initEmbeddedOffer() {
     var offer = embeddedOffer();
-    if (!offer || !offer.items || offer.items.length === 0) return;
+    if (!offer) return;
+
+    /*
+     * An automated offer arrives with no items on purpose — the list comes from
+     * Shopify in the browser. A *specific* offer with none has nothing to draw.
+     */
+    var automated = Boolean(offer.source && offer.source.mode === "automated");
+    if (!automated && (!offer.items || offer.items.length === 0)) return;
 
     // Already handled, or a theme block owns this placement.
     if (document.querySelector("[data-reco-embedded]")) return;
@@ -1671,10 +1768,28 @@
       anchor.parentNode.insertBefore(block, anchor.nextSibling);
     }
 
-    renderFallback(block, offer.items);
     initCountdown(block, offer.copy || {}, String(offer.productId));
     block.setAttribute("data-reco-ready", "true");
-    wire(block);
+
+    if (automated) {
+      /*
+       * The same fetch the theme block's Related and Complementary sources make —
+       * `fetchFallback` reads the intent, the source product and the limit off the
+       * block, all of which buildBlock has set. It hides the block itself if
+       * Shopify has nothing, which for an automated offer is a real answer rather
+       * than a fault.
+       */
+      fetchFallback(block).then(function (rendered) {
+        if (!rendered) return;
+        applyVisibility(block);
+        if (!block.hidden) wire(block);
+      });
+      return;
+    }
+
+    renderFallback(block, offer.items);
+    applyVisibility(block);
+    if (!block.hidden) wire(block);
   }
 
   function init() {
@@ -1706,7 +1821,9 @@
       }
 
       if (block.getAttribute("data-reco-server-rendered") === "true") {
-        wire(block);
+        // Liquid drew the cards; the offer's visibility rules still apply to them.
+        applyVisibility(block);
+        if (!block.hidden) wire(block);
         return;
       }
 
@@ -1716,7 +1833,9 @@
           : fetchFallback(block);
 
       load.then(function (rendered) {
-        if (rendered) wire(block);
+        if (!rendered) return;
+        applyVisibility(block);
+        if (!block.hidden) wire(block);
       });
     });
   }

@@ -578,7 +578,8 @@ describe("the offer editor", () => {
      * claims a third cell.
      */
     const row = source.slice(
-      source.indexOf('gridTemplateColumns="1fr 1fr" gap="small-300"'),
+      // Attribute-per-line after prettier, so the anchor is the value alone.
+      source.indexOf('gridTemplateColumns="1fr 1fr"'),
       source.indexOf('<s-popover id="countdown-end-date">'),
     );
 
@@ -696,10 +697,16 @@ describe("the offer editor", () => {
   });
 
   test("the Offer tab picks both product lists", () => {
-    expect(source).toContain("Show this offer on");
-    expect(source).toContain("Recommend these products");
-    // A product must never be a recommendation for itself.
-    expect(source).toContain("exclude={targets.map((target) => target.id)}");
+    // Renamed with the Trigger / Offer split, so the labels match the design.
+    expect(source).toContain('label="Product pages"');
+    expect(source).toContain('label="Recommended products"');
+    /*
+     * A product must never be a recommendation for itself. The storefront enforces
+     * it too (`hideTriggerProduct`), but the picker is where a merchant finds out —
+     * and it only applies to a named-products trigger, since the other two modes
+     * have no target list to compare against.
+     */
+    expect(source).toContain("exclude={trigger.targets.map((target) => target.id)}");
   });
 
   test("the preview is wired to the copy fields", () => {
