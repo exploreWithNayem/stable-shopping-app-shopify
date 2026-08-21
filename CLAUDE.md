@@ -1326,6 +1326,19 @@ recommendations. The Offer tab turns both halves into rules.
 **Offer — what it shows**
 
 - **Specific products** is the curated `items` list, unchanged.
+> ⚠️ **An automated offer that shows nothing is usually Shopify, not the app.** It ships no
+> products — Shopify supplies them in the shopper's browser — and both intents can
+> legitimately answer empty: `related` is built from order history, so a new store or a new
+> product returns nothing, and `complementary` answers only for products linked in the
+> Search & Discovery app. `fetchFallback` hid the row silently in both cases, which is
+> indistinguishable from a broken feature. It now logs which silence it is, and the Offer
+> tab says so under the intent radios *before* a merchant publishes.
+>
+> The failure worth knowing about: a **password-protected store** answers
+> `/recommendations/products.json` with a **302 to `/password`**, `fetch` follows it, and
+> `response.json()` throws on the HTML. That lands in the `catch`, which now warns rather
+> than hiding without a word.
+
 - **Automated recommendations** ships **no items at all** and an `intent` instead:
   the storefront asks Shopify for `related` or `complementary` products, which is the
   same request the theme block's own sources make (§7.2). Shipping a stale copy of
@@ -2093,7 +2106,7 @@ so the first can declare `enabled_on` and the second can own a real collection p
 They share their markup through `reco-panel` and `reco-collection-cards`; only the schema JSON
 duplicates, and a test pins the two copies together. A third block, **Upsell**, is a
 **Bought Together** bundle over the same Custom list (§7.4) — product templates only, its own
-`upsell` placement, billable. 642 Vitest tests pass; lint and typecheck are clean — though see the
+`upsell` placement, billable. 643 Vitest tests pass; lint and typecheck are clean — though see the
 warning in §4: typecheck does not read a single `.js`/`.jsx` file, which is all of them.
 
 Custom recommendations are no longer a paid-only feature: **Free covers 10 products** and the

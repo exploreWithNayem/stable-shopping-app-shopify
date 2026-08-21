@@ -938,6 +938,16 @@ describe("two blocks, six sources", () => {
     expect(embed).toContain("source: {%- if reco.source -%}");
 
     expect(runtime).toContain('offer.source.mode === "automated"');
+
+    /*
+     * And it says which silence it is. An automated offer that renders nothing looks
+     * identical to a broken one, and the two causes need different actions: Shopify having
+     * no data for the product, versus the request failing — which is what a
+     * password-protected store does, answering with a 302 to /password that `fetch`
+     * follows before `response.json()` throws on HTML.
+     */
+    expect(runtime).toContain("products for product");
+    expect(runtime).toContain("the recommendations request failed for product");
     expect(runtime).toContain('block.setAttribute("data-reco-intent", offer.source.intent');
   });
 

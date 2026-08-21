@@ -1906,12 +1906,16 @@ function OfferTab({ trigger, offer, maxItems, maxTargets, onContinue }) {
                   Complementary products
                 </s-choice>
               </s-choice-list>
-              {offer.intent === 'complementary' && (
-                <s-text color="subdued">
-                  Shopify only answers this for products you have linked in the Search &amp;
-                  Discovery app, so it shows nothing until you have.
-                </s-text>
-              )}
+              {/*
+                Both intents can legitimately come back empty, and a merchant who picks
+                this source needs to know that *before* they publish and see nothing. The
+                app supplies no products here — Shopify does, in the shopper's browser.
+              */}
+              <s-text color="subdued">
+                {offer.intent === 'complementary'
+                  ? 'Shopify only answers this for products you have linked in the Search & Discovery app, so it shows nothing until you have.'
+                  : 'Shopify builds these from your order history, so a new store or a new product can come back empty — the offer then shows nothing on that page.'}
+              </s-text>
             </s-stack>
           )}
 

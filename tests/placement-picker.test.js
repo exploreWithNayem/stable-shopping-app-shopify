@@ -746,6 +746,14 @@ describe("the offer editor", () => {
     expect(source).toContain('Every product in the collections you chose');
   });
 
+  test("both automated intents warn that Shopify may return nothing", () => {
+    // The app supplies no products for this source — Shopify does, in the shopper's
+    // browser — and both intents can legitimately come back empty. A merchant needs that
+    // before they publish and see nothing.
+    expect(source).toContain('Search & Discovery app');
+    expect(source).toContain('builds these from your order history');
+  });
+
   test("the exclusion checkboxes control their pickers", () => {
     /*
      * They shipped with the picker rendered whenever the list was empty — so it was

@@ -418,6 +418,20 @@
             return false;
           }
 
+          /*
+           * Say which of the two silences this is. An automated offer that renders
+           * nothing looks identical to a broken one from the outside, and the merchant
+           * chose this source deliberately — "Shopify has nothing for this product" and
+           * "the request failed" need very different actions from them.
+           */
+          console.info(
+            "[easy-reco] Shopify returned no " +
+              intent +
+              " products for product " +
+              productId +
+              " — nothing to show",
+          );
+
           block.hidden = true;
           return false;
         }
@@ -428,7 +442,20 @@
         renderFallback(block, products);
         return true;
       })
-      .catch(function () {
+      .catch(function (error) {
+        /*
+         * Includes the case that costs the most time to diagnose: a password-protected
+         * store answers this endpoint with a **302 to /password**, `fetch` follows it, and
+         * `response.json()` then throws on HTML. Indistinguishable from "no products" to
+         * anyone watching the page, hence the different message.
+         */
+        console.warn(
+          "[easy-reco] the recommendations request failed for product " +
+            productId +
+            "; the row is hidden",
+          error,
+        );
+
         block.removeAttribute("data-reco-loading");
         block.hidden = true;
         return false;
