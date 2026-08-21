@@ -905,12 +905,13 @@ themselves.
 | Anchor | The offer's own CSS selector first, then a built-in chain (`.product-form__buttons`, the submit button, `.shopify-payment-button`, `product-form`, the cart form, then the info wrapper). A selector that matches nothing **falls through to the chain** — a theme rename should cost a worse position, not the offer |
 | Visibility | Ancestors are walked for `display:none` / `visibility:hidden` / `[hidden]`, and `querySelectorAll` is used so a hidden duplicate earlier in the document does not consume the selector's turn. Themes ship duplicate buy forms for drawers and quick-add |
 | Position | `before` / `after` the **insertion target**, from the offer |
-| Insertion target | The anchor, unless its parent lays children out horizontally — a flex **row** or a grid with more than one column track. Then the point climbs to that parent, bounded to three levels |
+| Insertion target | The **buy form** (`form[action*="/cart/add"]`, `product-form`) when the anchor is inside one — a deterministic boundary, so the offer lands below the whole buy area and never inside the row holding the quantity box and Add to cart. With no form, the point climbs out of flex **rows** and multi-column grids instead. A merchant's own selector overrules both: their selector is an instruction about *where* |
 | A theme block wins | If any `[data-reco-block][data-reco-placement="pdp"]` is on the page, nothing is injected. The merchant placed it and said where they want it; rendering both would double the products *and* bill two serves for one page view (§3.3) |
 | Idempotent | `data-reco-embedded` guards re-entry, so `shopify:section:load` cannot inject twice |
 | Escaping | The title, badge and button text are merchant-authored and reach the page through `innerHTML`, so they go through `escapeHtml()` |
 
-> ⚠️ **The insertion point is not always the anchor** (fixed 2026-08-21). A theme that
+> ⚠️ **The insertion point is not the anchor, and style-guessing was not enough**
+> (2026-08-21). A theme that
 > lays the quantity box and Add to cart out as a **flex row** treats the injected block
 > as a third item: the row wraps, the quantity takes its own line, the button stretches
 > across the next. The offer rendered perfectly and rebuilt the buy area doing it.
@@ -958,9 +959,35 @@ metafield (§3.1) and `buildBlock()` branches on it:
 | Card shape | row: image, title + price, button on the trailing edge | tile: image over text |
 | Arrows | in the header beside the title | none |
 
-- **It reuses the slider, it is not a second carousel.** `reco--slider` is what brings the scroll-snap
-  CSS and makes `wire()` call `setupSlider()`; one card per view is just the column count set to 1,
-  which the existing `flex-basis` calc resolves to 100%. `reco--offer` only turns each card into a row.
+- **It steps; it does not scroll.** It shipped reusing `.reco--slider` — the scroll-snap flex row with
+  one card per view — and that broke a real product page. A flex row of three cards each
+  `flex: 0 0 100%` has a **max-content width of three cards**, and `overflow-x: auto` caps what is
+  *painted*, not what the layout is told the element needs. On a page whose media and info columns are
+  flex items with `flex-basis: auto`, the info column demanded ~3× and **the product image shrank to
+  pay for it**. `setupOfferCarousel()` shows one card and steps with the arrows, so the track asks for
+  one card's width; `reco--offer` resets the track to `display: block`. Two side benefits: it matches
+  what the admin preview has always done, and it needs no layout, so the arrows are testable in jsdom
+  where a scroll position is not.
+
+  > ⚠️ **`[hidden]` needs help from the stylesheet.** It is a UA rule with almost no
+  > specificity, so `.reco--offer .reco-card { display: grid }` beat it and the carousel
+  > rendered as a **stack of three cards** with "Product 1 of 3" underneath — the same trap
+  > `.reco__nav[hidden]` has carried since Phase 8, repeated one section later.
+  > `.reco--offer .reco-card[hidden] { display: none }` fixes it. Note what the tests could
+  > *not* see: they assert `card.hidden`, the attribute, which was set correctly the whole
+  > time — only the cascade was wrong, so this is pinned as a source check instead.
+
+- **A step is animated** (2026-08-21): the outgoing card fades and slides in the direction
+  of travel, the incoming one arrives from the other side. Sequenced with a timeout, not
+  `transitionend`, because a card leaves flow via `hidden` and **transitions do not run
+  across a `display` change** — so it is two animations either side of the swap, and the
+  incoming card's start state is set *before* it enters flow or it animates from rest. The
+  arriving attribute is dropped two frames later; doing it in the same frame the card
+  appears runs no transition at all. `STEP_MS` in `reco.js` and the stylesheet's duration
+  are the same number, pinned by a test. A click mid-step is ignored rather than
+  interleaved, and `prefers-reduced-motion` skips **both** the transition and the delay —
+  a timeout with no animation is just lag. Only ever one card is in flow, so none of this
+  changes what the block asks its column for.
 - **The arrows sit in the header**, via `.reco__nav--header` resetting the absolute positioning the
   block's slider uses. Overlaid arrows straddle the first and last card, which works for a row of
   tiles and would cover the image and the button on a single wide row. They start `hidden` and
@@ -2066,7 +2093,7 @@ so the first can declare `enabled_on` and the second can own a real collection p
 They share their markup through `reco-panel` and `reco-collection-cards`; only the schema JSON
 duplicates, and a test pins the two copies together. A third block, **Upsell**, is a
 **Bought Together** bundle over the same Custom list (§7.4) — product templates only, its own
-`upsell` placement, billable. 633 Vitest tests pass; lint and typecheck are clean — though see the
+`upsell` placement, billable. 642 Vitest tests pass; lint and typecheck are clean — though see the
 warning in §4: typecheck does not read a single `.js`/`.jsx` file, which is all of them.
 
 Custom recommendations are no longer a paid-only feature: **Free covers 10 products** and the

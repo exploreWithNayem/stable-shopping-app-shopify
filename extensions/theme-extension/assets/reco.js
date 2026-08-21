@@ -623,6 +623,143 @@
     });
   });
 
+  /** rAF where it exists, a timeout where it does not. */
+  function requestFrame(callback) {
+    if (typeof window.requestAnimationFrame === "function") {
+      window.requestAnimationFrame(callback);
+      return;
+    }
+    window.setTimeout(callback, 16);
+  }
+
+  /**
+   * The offer carousel: one card shown, arrows step through them.
+   *
+   * Not `setupSlider`, which scrolls a flex row. That row asks for three cards' width
+   * even though one is visible — `overflow-x: auto` caps what is painted, not what the
+   * layout is told the element needs — and on a product page whose columns size from
+   * content that made the image shrink. Stepping shows one card and asks for one card.
+   *
+   * It also needs no layout to work, which means it behaves identically in jsdom: the
+   * arrows are testable here, where a scroll position is not.
+   */
+  function setupOfferCarousel(block) {
+    var cards = [].slice.call(block.querySelectorAll("[data-reco-card]"));
+    var nav = block.querySelector("[data-reco-nav]");
+    var count = block.querySelector("[data-reco-count]");
+    if (cards.length === 0) return;
+
+    var index = 0;
+
+    /*
+     * How long a step takes. Long enough to read as movement, short enough that a shopper
+     * clicking through three products never waits on it — and it is the same number the
+     * stylesheet transitions over, so the two cannot drift.
+     */
+    var STEP_MS = 160;
+
+    /*
+     * Read once, at setup. A shopper who asks for less motion gets the swap with no
+     * animation *and no delay*: keeping the timeout without the transition would just feel
+     * like lag. Same treatment slider autoplay already gives it.
+     */
+    var reducedMotion = Boolean(
+      window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+    );
+
+    // True while a step is mid-flight, so a second click cannot interleave with it.
+    var stepping = false;
+
+    function show() {
+      cards.forEach(function (card, at) {
+        card.hidden = at !== index;
+      });
+
+      if (count) {
+        count.textContent =
+          cards.length > 1
+            ? (config().strings.count || "Product [current] of [total]")
+                .replace("[current]", index + 1)
+                .replace("[total]", cards.length)
+            : "";
+      }
+
+      if (!nav) return;
+      // One card needs no controls at all.
+      nav.hidden = cards.length < 2;
+      var prev = nav.querySelector("[data-reco-prev]");
+      var next = nav.querySelector("[data-reco-next]");
+      if (prev) prev.disabled = index === 0;
+      if (next) next.disabled = index >= cards.length - 1;
+    }
+
+    /**
+     * Move by one card, with the outgoing one leaving in the direction of travel and the
+     * incoming one arriving from the other side.
+     *
+     * Sequenced with a timeout rather than `transitionend`: a card is taken out of flow
+     * with `hidden`, and transitions do not run across a `display` change — so the fade
+     * out and the fade in are two separate animations either side of the swap.
+     */
+    function step(delta) {
+      if (stepping) return;
+
+      var next = Math.min(Math.max(index + delta, 0), cards.length - 1);
+      if (next === index) return;
+
+      var leaving = cards[index];
+      var direction = delta > 0 ? "next" : "prev";
+
+      if (reducedMotion) {
+        index = next;
+        show();
+        return;
+      }
+
+      stepping = true;
+      leaving.setAttribute("data-reco-leaving", direction);
+
+      window.setTimeout(function () {
+        leaving.removeAttribute("data-reco-leaving");
+        index = next;
+
+        var arriving = cards[index];
+        // Set the start state *before* the card enters flow, or it animates from rest.
+        arriving.setAttribute("data-reco-entering", direction);
+        show();
+
+        /*
+         * Two frames: one for the browser to lay the card out in its start state, the next
+         * to change it. Dropping the attribute in the same frame the card appears means no
+         * transition runs at all.
+         */
+        requestFrame(function () {
+          requestFrame(function () {
+            arriving.removeAttribute("data-reco-entering");
+            stepping = false;
+          });
+        });
+      }, STEP_MS);
+    }
+
+    if (nav) {
+      var prevButton = nav.querySelector("[data-reco-prev]");
+      var nextButton = nav.querySelector("[data-reco-next]");
+      if (prevButton) {
+        prevButton.addEventListener("click", function () {
+          step(-1);
+        });
+      }
+      if (nextButton) {
+        nextButton.addEventListener("click", function () {
+          step(1);
+        });
+      }
+    }
+
+    show();
+  }
+
   function setupSlider(block) {
     var track_ = block.querySelector("[data-reco-track]");
     var nav = block.querySelector("[data-reco-nav]");
@@ -777,7 +914,16 @@
       flush();
     });
 
-    if (block.classList.contains("reco--slider")) setupSlider(block);
+    /*
+     * The injected offer steps; a theme block's slider scrolls. Same markup, different
+     * mechanics, and the offer's is the one that must not ask its column for three
+     * cards' width.
+     */
+    if (block.classList.contains("reco--offer")) {
+      setupOfferCarousel(block);
+    } else if (block.classList.contains("reco--slider")) {
+      setupSlider(block);
+    }
 
     // One serve per widget that actually showed something. Sent from here
     // rather than the server because the override path renders in Liquid and
@@ -1269,13 +1415,23 @@
     if (offer.render && offer.render.selector) selectors.push(offer.render.selector);
     selectors = selectors.concat(ANCHORS);
 
+    var merchantSelector = Boolean(offer.render && offer.render.selector);
+
     for (var i = 0; i < selectors.length; i += 1) {
       try {
         // All matches, not the first: a hidden duplicate earlier in the document
         // must not consume the selector's turn in the chain.
         var found = document.querySelectorAll(selectors[i]);
         for (var j = 0; j < found.length; j += 1) {
-          if (isVisible(found[j]) && found[j].parentNode) return found[j];
+          if (isVisible(found[j]) && found[j].parentNode) {
+            /*
+             * `exact` when the merchant named this element themselves. Their selector is
+             * an instruction about *where*, so nothing below may second-guess it — the
+             * built-in chain, by contrast, only aims at the buy area and the position is
+             * this file's problem.
+             */
+            return { node: found[j], exact: merchantSelector && i === 0 };
+          }
         }
       } catch (error) {
         /* an invalid selector from the merchant must not stop the chain */
@@ -1305,7 +1461,24 @@
    * walk to `<body>`, and an offer slightly below the buy area beats one that rebuilt
    * it.
    */
-  function insertionTarget(anchor) {
+  function insertionTarget(anchor, exact) {
+    // The merchant said exactly where. Nothing here overrules that.
+    if (exact) return anchor;
+
+    /*
+     * The buy area as a whole, when the anchor is inside one.
+     *
+     * This is the deterministic rule, and it replaces guessing from computed styles as
+     * the *first* answer: a product form is a form, so inserting after it puts the offer
+     * below the entire buy area — never inside the row that holds the quantity box and
+     * Add to cart, whatever that row's display happens to be. The climb below stays as
+     * the fallback for themes that wrap their buttons in no form at all.
+     */
+    if (anchor.closest) {
+      var form = anchor.closest('form[action*="/cart/add"], product-form');
+      if (form && form.parentNode) return form;
+    }
+
     var node = anchor;
 
     for (var depth = 0; depth < 3; depth += 1) {
@@ -1876,8 +2049,8 @@
      */
     if (countdownIsOver(offer.copy, String(offer.productId))) return;
 
-    var anchor = findAnchor(offer);
-    if (!anchor) return;
+    var found = findAnchor(offer);
+    if (!found) return;
 
     /*
      * Nothing is injected until the app has confirmed the offer.
@@ -1906,16 +2079,17 @@
       // the first check was still in flight.
       if (document.querySelector("[data-reco-embedded]")) return;
 
-      renderEmbeddedOffer(offer, anchor, automated);
+      renderEmbeddedOffer(offer, found, automated);
     });
   }
 
   /** The injection itself, once the app has vouched for the offer. */
-  function renderEmbeddedOffer(offer, anchor, automated) {
+  function renderEmbeddedOffer(offer, found, automated) {
+    var anchor = found.node;
     var block = buildBlock(offer);
     var position = offer.render && offer.render.position === "before" ? "before" : "after";
-    // Not the anchor itself: see insertionTarget for why a flex row cannot host it.
-    var target = insertionTarget(anchor);
+    // Not the anchor itself: see insertionTarget for why the buy row cannot host it.
+    var target = insertionTarget(anchor, found.exact);
 
     if (position === "before") {
       target.parentNode.insertBefore(block, target);

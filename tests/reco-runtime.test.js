@@ -534,17 +534,23 @@ describe("app embed injection", () => {
     new Function(SRC)();
   }
 
-  test("injects the offer after the add-to-cart button", async () => {
+  test("injects the offer below the whole buy area", async () => {
     bootEmbed(productPage(), offer());
     await tick(1000);
 
     const block = document.querySelector('[data-reco-embedded="true"]');
     expect(block).toBeTruthy();
 
-    // Directly after the buttons container, so it lands under the buy area
-    // rather than at the end of the document.
-    const anchor = document.querySelector('.product-form__buttons');
-    expect(anchor.nextElementSibling).toBe(block);
+    /*
+     * After the **form**, not after the buttons container inside it.
+     *
+     * A theme lays the quantity box and Add to cart out as a row, and inserting a
+     * sibling into that row rebuilt it: quantity on one line, the button stretched
+     * across the next. The form is a deterministic boundary — no computed style to read,
+     * no layout to guess at — and "below the buy area" is where the offer belongs.
+     */
+    expect(document.querySelector('form').nextElementSibling).toBe(block);
+    expect(document.querySelector('form [data-reco-embedded]')).toBeNull();
     expect(document.querySelectorAll('[data-reco-card]')).toHaveLength(2);
   });
 
@@ -1390,15 +1396,162 @@ describe("app embed injection", () => {
    * item: the row wraps, the quantity box gets its own line and the button stretches
    * across the next. The offer was right and the product page was broken.
    */
+  /*
+   * The offer carousel steps rather than scrolls, and that is not cosmetic: a flex row
+   * of three cards each `flex: 0 0 100%` asks its column for three cards' width, because
+   * `overflow-x: auto` caps what is painted and not what the layout is told is needed. On
+   * a product page whose columns size from content, that shrank the product image.
+   *
+   * Stepping needs no layout, so unlike a scroll position it is testable here.
+   */
+  describe("the offer carousel steps through its cards", () => {
+    const threeCards = () =>
+      offer({ items: [offerProduct(2001), offerProduct(2002), offerProduct(2003)] });
+
+    test("shows one card at a time", async () => {
+      bootEmbed(productPage(), threeCards());
+      await tick(1000);
+
+      const cards = [...document.querySelectorAll('[data-reco-card]')];
+      expect(cards).toHaveLength(3);
+      expect(cards.filter((card) => !card.hidden)).toHaveLength(1);
+      expect(cards[0].hidden).toBe(false);
+      expect(document.querySelector('[data-reco-count]').textContent).toBe('Product 1 of 3');
+    });
+
+    test("the arrows move it, and stop at the ends", async () => {
+      bootEmbed(productPage(), threeCards());
+      await tick(1000);
+
+      const next = document.querySelector('[data-reco-next]');
+      const prev = document.querySelector('[data-reco-prev]');
+      const cards = () => [...document.querySelectorAll('[data-reco-card]')];
+
+      expect(prev.disabled).toBe(true);
+
+      // A step is animated, so the swap lands after the transition rather than on click.
+      next.click();
+      await tick(400);
+      expect(cards()[1].hidden).toBe(false);
+      expect(document.querySelector('[data-reco-count]').textContent).toBe('Product 2 of 3');
+      expect(prev.disabled).toBe(false);
+
+      next.click();
+      await tick(400);
+      expect(next.disabled).toBe(true);
+
+      // Past the end is a no-op, not an empty carousel.
+      next.click();
+      await tick(400);
+      expect(cards()[2].hidden).toBe(false);
+
+      prev.click();
+      await tick(400);
+      expect(cards()[1].hidden).toBe(false);
+    });
+
+    test("the outgoing card leaves in the direction of travel", async () => {
+      bootEmbed(productPage(), threeCards());
+      await tick(1000);
+
+      const cards = () => [...document.querySelectorAll('[data-reco-card]')];
+      document.querySelector('[data-reco-next]').click();
+
+      // Mid-step: the old card is on its way out and still in flow.
+      expect(cards()[0].getAttribute('data-reco-leaving')).toBe('next');
+      expect(cards()[0].hidden).toBe(false);
+
+      await tick(400);
+
+      // Settled: the new card is in place and nothing is left marked.
+      expect(cards()[1].hidden).toBe(false);
+      expect(document.querySelector('[data-reco-leaving]')).toBeNull();
+      expect(document.querySelector('[data-reco-entering]')).toBeNull();
+    });
+
+    test("a second click mid-step is ignored rather than interleaved", async () => {
+      // Two overlapping steps would leave a card marked and the index out of step with
+      // what is on screen.
+      bootEmbed(productPage(), threeCards());
+      await tick(1000);
+
+      const next = document.querySelector('[data-reco-next]');
+      next.click();
+      next.click();
+      await tick(400);
+
+      expect([...document.querySelectorAll('[data-reco-card]')][1].hidden).toBe(false);
+      expect(document.querySelector('[data-reco-count]').textContent).toBe('Product 2 of 3');
+    });
+
+    test("reduced motion swaps with no animation and no delay", async () => {
+      /*
+       * Keeping the timeout without the transition would just feel like lag, so the whole
+       * sequence is skipped — the swap is immediate on click.
+       */
+      window.matchMedia = (query) => ({
+        matches: query.includes('prefers-reduced-motion'),
+        media: query,
+        addEventListener() {},
+        removeEventListener() {},
+      });
+
+      bootEmbed(productPage(), threeCards());
+      await tick(1000);
+
+      document.querySelector('[data-reco-next]').click();
+
+      expect([...document.querySelectorAll('[data-reco-card]')][1].hidden).toBe(false);
+      expect(document.querySelector('[data-reco-leaving]')).toBeNull();
+
+      delete window.matchMedia;
+    });
+
+    test("one card gets no controls and no counter", async () => {
+      bootEmbed(productPage(), offer({ items: [offerProduct(2001)] }));
+      await tick(1000);
+
+      expect(document.querySelector('[data-reco-nav]').hidden).toBe(true);
+      expect(document.querySelector('[data-reco-count]').textContent).toBe('');
+    });
+
+    test("a hidden card reports no impression", async () => {
+      // It was not shown, and counting it would overstate the offer's reach.
+      bootEmbed(productPage(), threeCards());
+      await tick(1000);
+
+      expect((await typesOf('impression')).length).toBeLessThanOrEqual(1);
+    });
+  });
+
   describe("insertion point", () => {
-    /** Report a display for chosen elements, as a theme's stylesheet would. */
+    /*
+     * Report a display for chosen elements, as a theme's stylesheet would.
+     *
+     * Restored after every case, and layered over the real declaration with a Proxy
+     * rather than a spread. Both matter: the first version leaked the stub into every
+     * later test in the file, and spreading a `CSSStyleDeclaration` loses `display`
+     * entirely — its properties live on the prototype, so the copy answered `undefined`
+     * for everything the insertion logic reads.
+     */
+    const realGetComputedStyle = window.getComputedStyle;
+
+    afterEach(() => {
+      window.getComputedStyle = realGetComputedStyle;
+    });
+
     function stubLayout(map) {
       const real = window.getComputedStyle.bind(window);
       window.getComputedStyle = (element, ...rest) => {
+        const base = real(element, ...rest);
         for (const [selector, style] of map) {
-          if (element.matches?.(selector)) return { ...real(element, ...rest), ...style };
+          if (element.matches?.(selector)) {
+            return new Proxy(base, {
+              get: (target, key) => (key in style ? style[key] : target[key]),
+            });
+          }
         }
-        return real(element, ...rest);
+        return base;
       };
     }
 
@@ -1406,24 +1559,46 @@ describe("app embed injection", () => {
      * The anchor is `.product-form__buttons`, so the decision is about **its parent**,
      * the form: that is the box a new sibling would join.
      */
-    test("climbs out of a flex row rather than joining it", async () => {
+    /** A theme that wraps its buy buttons in no form at all. */
+    const formless = () => `
+      <div class="product__info-wrapper">
+        <h1>A product</h1>
+        <div class="buy-area">
+          <div class="product-form__buttons">
+            <button type="submit" class="product-form__submit">Add to cart</button>
+          </div>
+        </div>
+      </div>`;
+
+    test("a form is the boundary, whatever its display", async () => {
+      // The deterministic rule: no computed style is consulted at all.
       stubLayout([['form', { display: 'flex', flexDirection: 'row' }]]);
 
       bootEmbed(productPage(), offer());
       await tick(1000);
 
-      const block = document.querySelector('[data-reco-embedded]');
-      // Past the form, so the buy row keeps exactly the items the theme put in it.
-      expect(document.querySelector('form').nextElementSibling).toBe(block);
-      expect(document.querySelector('form [data-reco-embedded]')).toBeNull();
+      expect(document.querySelector('form').nextElementSibling).toBe(
+        document.querySelector('[data-reco-embedded]'),
+      );
     });
 
-    test("stays in a flex column, where a new item is a new row", async () => {
-      // Climbing out of a column would push the offer away from the buy area for no
-      // reason — a column is the layout the offer wants to join.
-      stubLayout([['form', { display: 'flex', flexDirection: 'column' }]]);
+    test("with no form, it climbs out of a flex row", async () => {
+      stubLayout([['.buy-area', { display: 'flex', flexDirection: 'row' }]]);
 
-      bootEmbed(productPage(), offer());
+      bootEmbed(formless(), offer());
+      await tick(1000);
+
+      // Past the row, so the row keeps exactly the items the theme put in it.
+      expect(document.querySelector('.buy-area').nextElementSibling).toBe(
+        document.querySelector('[data-reco-embedded]'),
+      );
+    });
+
+    test("with no form, it stays in a flex column", async () => {
+      // A column is the layout the offer wants to join: a new item is a new row.
+      stubLayout([['.buy-area', { display: 'flex', flexDirection: 'column' }]]);
+
+      bootEmbed(formless(), offer());
       await tick(1000);
 
       expect(document.querySelector('.product-form__buttons').nextElementSibling).toBe(
@@ -1431,22 +1606,28 @@ describe("app embed injection", () => {
       );
     });
 
-    test("climbs out of a multi-column grid but not a single-column one", async () => {
-      stubLayout([['form', { display: 'grid', gridTemplateColumns: '1fr 1fr' }]]);
-      bootEmbed(productPage(), offer());
+    test("with no form, a multi-column grid climbs and a single-column one does not", async () => {
+      stubLayout([['.buy-area', { display: 'grid', gridTemplateColumns: '1fr 1fr' }]]);
+      bootEmbed(formless(), offer());
       await tick(1000);
-      expect(document.querySelector('form [data-reco-embedded]')).toBeNull();
+      expect(document.querySelector('.buy-area [data-reco-embedded]')).toBeNull();
 
       document.body.innerHTML = '';
-      stubLayout([['form', { display: 'grid', gridTemplateColumns: '1fr' }]]);
-      bootEmbed(productPage(), offer());
+      stubLayout([['.buy-area', { display: 'grid', gridTemplateColumns: '1fr' }]]);
+      bootEmbed(formless(), offer());
       await tick(1000);
-      expect(document.querySelector('form [data-reco-embedded]')).toBeTruthy();
+      expect(document.querySelector('.buy-area [data-reco-embedded]')).toBeTruthy();
     });
 
-    test("normal flow is left alone", async () => {
-      // jsdom reports `block` for everything, so this is the untouched default.
-      bootEmbed(productPage(), offer());
+    test("a merchant's own selector is never second-guessed", async () => {
+      /*
+       * Their selector is an instruction about *where*. Neither the form boundary nor the
+       * climb may overrule it, even though this one points inside the form.
+       */
+      bootEmbed(
+        productPage(),
+        offer({ render: { selector: '.product-form__buttons', position: 'after' } }),
+      );
       await tick(1000);
 
       expect(document.querySelector('.product-form__buttons').nextElementSibling).toBe(
@@ -1478,7 +1659,8 @@ describe("app embed injection", () => {
 
     const block = document.querySelector('[data-reco-embedded]');
     expect(block).toBeTruthy();
-    expect(block.previousElementSibling?.style.display).not.toBe('none');
+    // Next to the visible form, not the hidden duplicate button container.
+    expect(block.previousElementSibling).toBe(document.querySelector('form'));
   });
 });
 

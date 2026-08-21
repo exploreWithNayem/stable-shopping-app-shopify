@@ -269,7 +269,27 @@
  * injected into a theme it knows nothing about, directly under the buy button,
  * and without an edge a single row reads as part of the product form.
  */
+/*
+ * One card in the DOM's flow at a time, not a scrolling row of three.
+ *
+ * This is what broke a real product page. `.reco--slider` lays the track out as a flex
+ * row where each card is `flex: 0 0 100%`, so the track's **max-content** width is three
+ * times the column plus gaps — and `overflow-x: auto` caps the *painting*, not the
+ * intrinsic contribution. A theme whose media and info columns are flex items with
+ * `flex-basis: auto` sizes them from content, so the info column demanded ~3× and the
+ * product image shrank to pay for it.
+ *
+ * Stepping one card at a time removes the multiplier at the root: the track holds one
+ * visible card, so it asks for one card's width. It also makes the storefront behave
+ * exactly like the admin preview, which has always stepped rather than scrolled.
+ */
+.reco--offer .reco__track {
+  display: block;
+  overflow-x: visible;
+}
+
 .reco--offer .reco-card {
+  flex: none;
   display: grid;
   grid-template-columns: 72px minmax(0, 1fr) auto;
   gap: 1rem;
@@ -280,6 +300,55 @@
   border-radius: 12px;
   padding: 1rem;
   background: #fff;
+}
+
+/*
+ * The step animation.
+ *
+ * The outgoing card fades and slides in the direction of travel; the incoming one arrives
+ * from the other side. Only ever one card is in flow, so nothing here changes what the
+ * block asks its column for — the reason it steps rather than scrolls in the first place.
+ *
+ * 160ms matches STEP_MS in reco.js, which sequences the swap between the two halves.
+ */
+.reco--offer .reco-card {
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease;
+}
+
+.reco--offer .reco-card[data-reco-leaving="next"],
+.reco--offer .reco-card[data-reco-entering="prev"] {
+  opacity: 0;
+  transform: translateX(-0.75rem);
+}
+
+.reco--offer .reco-card[data-reco-leaving="prev"],
+.reco--offer .reco-card[data-reco-entering="next"] {
+  opacity: 0;
+  transform: translateX(0.75rem);
+}
+
+/* A shopper who asks for less motion gets the swap and nothing else. */
+@media (prefers-reduced-motion: reduce) {
+  .reco--offer .reco-card {
+    transition: none;
+  }
+}
+
+/*
+ * The stepped-past cards.
+ *
+ * `[hidden]` is a UA rule (`display: none`) with almost no specificity, so
+ * `.reco--offer .reco-card { display: grid }` beat it and every card stayed on screen —
+ * the carousel rendered as a stack of three with "Product 1 of 3" underneath. Exactly the
+ * trap `.reco__nav[hidden]` above already carries; the same mistake, one section later.
+ *
+ * jsdom cannot catch this: the tests assert `card.hidden`, which is the attribute, and the
+ * attribute was set correctly the whole time. Only the cascade was wrong.
+ */
+.reco--offer .reco-card[hidden] {
+  display: none;
 }
 
 .reco--offer .reco-card__media {

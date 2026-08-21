@@ -759,6 +759,55 @@ describe("two blocks, six sources", () => {
     expect(runtime).toContain("var COUNTDOWN_HIDE_MS = 24 * 60 * 60 * 1000");
   });
 
+  test("the offer carousel steps, so it asks its column for one card", () => {
+    /*
+     * The concrete break: `.reco--slider` lays the track out as a flex row of cards each
+     * `flex: 0 0 100%`, so its **max-content** is three cards wide — `overflow-x: auto`
+     * caps what is painted, not what the layout is told is needed. A product page whose
+     * media and info columns are flex items with `flex-basis: auto` sizes them from
+     * content, so the info column demanded ~3× and the image shrank to pay for it.
+     *
+     * One card in flow at a time removes the multiplier at the root, and matches what the
+     * admin preview has always done.
+     */
+    const runtime = readFileSync(join(EXTENSION, "assets", "reco.js"), "utf8");
+    const css = readFileSync(join(EXTENSION, "assets", "reco.css"), "utf8");
+
+    expect(css).toContain(".reco--offer .reco__track");
+    expect(css).toContain("overflow-x: visible");
+    expect(runtime).toContain("function setupOfferCarousel(block)");
+    // The offer path must not fall through to the scrolling slider.
+    expect(runtime).toContain('if (block.classList.contains("reco--offer"))');
+    expect(runtime).toContain("card.hidden = at !== index");
+
+    /*
+     * And the stylesheet has to let `[hidden]` win. It is a UA rule with almost no
+     * specificity, so `.reco--offer .reco-card { display: grid }` beat it and the carousel
+     * rendered as a stack of three cards with "Product 1 of 3" underneath — the same trap
+     * `.reco__nav[hidden]` already carries, one section later.
+     *
+     * jsdom cannot catch it: the tests assert `card.hidden`, the attribute, which was set
+     * correctly the whole time. Only the cascade was wrong, so this is a source check.
+     */
+    expect(css).toContain(".reco--offer .reco-card[hidden]");
+
+    /*
+     * The step is animated, and the two halves have to agree on the duration: reco.js
+     * sequences the swap with `STEP_MS` and the stylesheet transitions over the same
+     * number. Reduced motion turns the transition off, and reco.js skips the delay with
+     * it — a timeout without a transition is just lag.
+     */
+    expect(runtime).toContain("var STEP_MS = 160");
+    expect(css).toContain("transform 160ms ease");
+    expect(css).toContain('[data-reco-leaving="next"]');
+    expect(css).toContain('[data-reco-entering="next"]');
+    expect(css).toContain("prefers-reduced-motion: reduce");
+    expect(runtime).toContain("prefers-reduced-motion: reduce");
+    expect(css.indexOf(".reco--offer .reco-card {")).toBeLessThan(
+      css.indexOf(".reco--offer .reco-card[hidden]"),
+    );
+  });
+
   test("the injected block never joins a horizontal row", () => {
     /*
      * A theme that lays quantity and Add to cart out as a flex row treats the injected
@@ -772,11 +821,18 @@ describe("two blocks, six sources", () => {
     const runtime = readFileSync(join(EXTENSION, "assets", "reco.js"), "utf8");
     const css = readFileSync(join(EXTENSION, "assets", "reco.css"), "utf8");
 
-    expect(runtime).toContain("function insertionTarget(anchor)");
+    /*
+     * A form is the deterministic boundary and is tried first: no computed style to read,
+     * no layout to guess at. The style-based climb is the fallback for themes that wrap
+     * their buy buttons in no form at all, and a merchant's own selector overrules both.
+     */
+    expect(runtime).toContain("function insertionTarget(anchor, exact)");
+    expect(runtime).toContain("if (exact) return anchor;");
+    expect(runtime).toContain("anchor.closest('form[action*=\"/cart/add\"], product-form')");
     expect(runtime).toContain('direction === "row" || direction === "row-reverse"');
     // Bounded, or a fully flex-based theme walks to <body>.
     expect(runtime).toContain("depth < 3");
-    expect(runtime).toContain("var target = insertionTarget(anchor)");
+    expect(runtime).toContain("var target = insertionTarget(anchor, found.exact)");
 
     expect(css).toContain(".reco--embedded");
     expect(css).toContain("flex-basis: 100%");
