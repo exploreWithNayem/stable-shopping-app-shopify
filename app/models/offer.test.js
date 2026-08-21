@@ -1,6 +1,12 @@
 import { afterAll, beforeEach, describe, expect, test } from "vitest";
 import prisma from "../db.server";
 import {
+  DEFAULT_COUNTDOWN_MINUTES,
+  DEFAULT_COUNTDOWN_TITLE,
+  MAX_COUNTDOWN_MINUTES,
+  clampCountdownMinutes,
+} from "../lib/countdown";
+import {
   MAX_ITEMS,
   MAX_TARGETS,
   countOffers,
@@ -107,6 +113,81 @@ describe("validation", () => {
     expect(
       validateForPublish(draft({ name: "", title: "", targets: [], items: [] })),
     ).toHaveLength(4);
+  });
+});
+
+describe("countdown", () => {
+  test("minutes are clamped, never rejected", () => {
+    /*
+     * The field is a number input: a merchant who types 0 or 100000 means "very
+     * short" or "very long", not "refuse my save". One minute is the shortest
+     * countdown that can be read.
+     */
+    expect(clampCountdownMinutes(0)).toBe(1);
+    expect(clampCountdownMinutes(-5)).toBe(1);
+    expect(clampCountdownMinutes(999999)).toBe(MAX_COUNTDOWN_MINUTES);
+    expect(clampCountdownMinutes(45)).toBe(45);
+    expect(clampCountdownMinutes("30")).toBe(30);
+    // Nothing usable at all falls back to the default rather than to zero.
+    expect(clampCountdownMinutes("")).toBe(DEFAULT_COUNTDOWN_MINUTES);
+    expect(clampCountdownMinutes(undefined)).toBe(DEFAULT_COUNTDOWN_MINUTES);
+  });
+
+  test("saving keeps the countdown settings, defaulted", async () => {
+    const offer = await saveOffer(shopId, draft({ countdown: true }));
+
+    expect(offer).toMatchObject({
+      countdown: true,
+      countdownMode: "fixed",
+      countdownMinutes: DEFAULT_COUNTDOWN_MINUTES,
+      countdownTitle: DEFAULT_COUNTDOWN_TITLE,
+    });
+    expect(offer.countdownEndsAt).toBeNull();
+  });
+
+  test("an unknown mode falls back to fixed and a blank title to the default", async () => {
+    // The values come from a form, so neither is trusted; a countdown with no
+    // wording would render a bare clock with nothing explaining it.
+    const offer = await saveOffer(
+      shopId,
+      draft({ countdown: true, countdownMode: "whenever", countdownTitle: "   " }),
+    );
+
+    expect(offer.countdownMode).toBe("fixed");
+    expect(offer.countdownTitle).toBe(DEFAULT_COUNTDOWN_TITLE);
+  });
+
+  test("a date-mode countdown stores the instant, and unparseable input is null", async () => {
+    const at = await saveOffer(
+      shopId,
+      draft({ countdown: true, countdownMode: "date", countdownEndsAt: "2026-09-01T18:00" }),
+    );
+    expect(at.countdownEndsAt).toBeInstanceOf(Date);
+
+    const junk = await saveOffer(
+      shopId,
+      draft({
+        id: at.id,
+        countdown: true,
+        countdownMode: "date",
+        countdownEndsAt: "not a date",
+      }),
+    );
+    expect(junk.countdownEndsAt).toBeNull();
+  });
+
+  test("publishing a date-mode countdown needs a date", () => {
+    /*
+     * Without one the storefront would render no timer and hide the offer instead
+     * — the worst of both. A duration needs no such check: minutes are clamped.
+     */
+    const base = draft({ countdown: true, countdownMode: "date" });
+
+    expect(validateForPublish(base).join(" ")).toContain("date and time");
+    expect(validateForPublish({ ...base, countdownEndsAt: "2026-09-01T18:00" })).toEqual([]);
+    expect(validateForPublish({ ...base, countdownMode: "fixed" })).toEqual([]);
+    // Switched off, the mode is nobody's business.
+    expect(validateForPublish({ ...base, countdown: false })).toEqual([]);
   });
 });
 

@@ -206,6 +206,47 @@
       </div>
     {%- endif -%}
 
+    {%- comment -%}
+      The offer's countdown, when it has one.
+
+      Rendered here as well as by the app embed (§7.6) so the feature does not
+      vanish the moment a merchant places the block — the block is the documented
+      path, and an offer's countdown is part of the offer, not of the embed.
+
+      The clock itself is left empty: reco.js fills it, ticks it, and removes the
+      bar when there is no deadline to show. The settings ride on data attributes
+      because this markup comes from Liquid, where there is no offer object in JS
+      to read.
+
+      `escape` on both halves — this is merchant-authored copy going into markup.
+    {%- endcomment -%}
+    {%- if copy.countdown -%}
+      {%- liquid
+        assign timer_parts = copy.countdownTitle | split: '{{timer}}'
+        assign timer_lead = timer_parts[0]
+        assign timer_trail = timer_parts[1]
+        comment
+          No token means the clock goes after the merchant's sentence rather than
+          nowhere, which is the same reading reco.js takes.
+        endcomment
+        if timer_parts.size < 2
+          assign timer_lead = copy.countdownTitle | append: ' '
+          assign timer_trail = ''
+        endif
+      -%}
+      <div
+        class="reco__countdown"
+        data-reco-countdown
+        data-reco-countdown-mode="{{ copy.countdownMode | default: 'fixed' }}"
+        data-reco-countdown-minutes="{{ copy.countdownMinutes | default: 60 }}"
+        data-reco-countdown-ends-at="{{ copy.countdownEndsAt }}"
+      >
+        {{- timer_lead | escape -}}
+        <strong class="reco__countdown-value" data-reco-countdown-value></strong>
+        {{- timer_trail | escape -}}
+      </div>
+    {%- endif -%}
+
     <div class="reco__viewport">
       <div class="reco__track" data-reco-track>{{ cards }}</div>
 

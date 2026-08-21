@@ -643,6 +643,122 @@ describe("two blocks, six sources", () => {
     expect(runtime).toContain("window.EasyReco.loaded = true;");
   });
 
+  test("the counter string is a locale key, not English in the runtime", () => {
+    /*
+     * "Product 1 of 2" is merchant-visible copy on a live storefront, so it goes
+     * through the locale file like every other string; reco.js substitutes the
+     * numbers. The English default stays in the file as the fallback for a store
+     * with the embed off — which cannot happen on this path, but the runtime must
+     * not be the place a translation lives.
+     */
+    const locales = JSON.parse(
+      readFileSync(join(EXTENSION, "locales", "en.default.json"), "utf8"),
+    );
+    const runtime = readFileSync(join(EXTENSION, "assets", "reco.js"), "utf8");
+    const embed = readLiquid(join(BLOCKS, "app-embed.liquid"));
+
+    expect(locales.recommendations.count).toContain("[current]");
+    expect(locales.recommendations.count).toContain("[total]");
+    expect(embed).toContain("recommendations.count");
+    expect(runtime).toContain('config().strings.count');
+  });
+
+  test("the countdown wording and its token come from the offer", () => {
+    /*
+     * The merchant's sentence carries `{{timer}}` where the clock goes, so both
+     * halves are escaped and only the clock is markup of ours. The locale file
+     * holds the fallback sentence for a store whose offer said nothing.
+     */
+    const runtime = readFileSync(join(EXTENSION, "assets", "reco.js"), "utf8");
+    const css = readFileSync(join(EXTENSION, "assets", "reco.css"), "utf8");
+    const locales = JSON.parse(
+      readFileSync(join(EXTENSION, "locales", "en.default.json"), "utf8"),
+    );
+
+    expect(runtime).toContain('var COUNTDOWN_TOKEN = "{{timer}}"');
+    expect(runtime).toContain("escapeHtml(lead)");
+    expect(runtime).toContain("escapeHtml(trail)");
+    expect(locales.recommendations.countdown).toContain("{{timer}}");
+
+    // The clock is the only bold thing in the bar, and tabular figures stop the
+    // row jittering as the digits change.
+    expect(css).toContain(".reco__countdown-value");
+    expect(css).toContain("font-variant-numeric: tabular-nums");
+  });
+
+  test("the storefront clock and the admin's agree on their defaults", () => {
+    /*
+     * reco.js is a plain theme asset with no bundler, so it cannot import
+     * app/lib/countdown.js — each carries its own copy of the same clock. The
+     * *format* is pinned behaviourally on both sides (tests/reco-runtime.test.js
+     * runs reco.js, app/lib/countdown.test.js runs the shared one, against the
+     * same expected strings); what this checks is that the fallbacks match, since
+     * a preview promising a clock the shopper does not get is the failure here.
+     */
+    const runtime = readFileSync(join(EXTENSION, "assets", "reco.js"), "utf8");
+    const shared = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "..", "app", "lib", "countdown.js"),
+      "utf8",
+    );
+
+    expect(shared).toContain("DEFAULT_COUNTDOWN_MINUTES = 60");
+    expect(runtime).toContain("Number(copy.countdownMinutes) || 60");
+
+    // Both step up to days past 24 hours — a week-long countdown read "130:37:21"
+    // on a live storefront before they did.
+    for (const source of [shared, runtime]) {
+      expect(source).toContain("86400");
+    }
+    // The storefront takes the day letter from the locale file; the shared copy is
+    // for the English admin and takes a parameter.
+    expect(runtime).toContain("config().strings.countdownDays");
+    expect(locales.recommendations.countdown_days).toBe("d");
+    expect(shared).toContain('dayUnit = "d"');
+
+    // And on the token, which is what the merchant types.
+    expect(shared).toContain('COUNTDOWN_TOKEN = "{{timer}}"');
+    expect(runtime).toContain('COUNTDOWN_TOKEN = "{{timer}}"');
+  });
+
+  test("the block renders the countdown too, not just the app embed", () => {
+    /*
+     * The block is the documented storefront path, so an offer's countdown cannot
+     * be a feature of the embed alone — it would vanish the moment a merchant
+     * placed the block. Liquid emits the bar with the settings on data attributes
+     * and the clock empty; reco.js reads them back into the same shape it gets
+     * from the embed's offer object.
+     */
+    expect(panel).toContain("data-reco-countdown");
+    expect(panel).toContain("data-reco-countdown-mode");
+    expect(panel).toContain("data-reco-countdown-minutes");
+    expect(panel).toContain("data-reco-countdown-ends-at");
+    expect(panel).toContain("data-reco-countdown-value");
+
+    // Merchant copy going into markup — Liquid does not escape by default.
+    expect(panel).toContain("timer_lead | escape");
+    expect(panel).toContain("timer_trail | escape");
+    // Split on the token, with the no-token case falling back to "clock last".
+    expect(panel).toContain("split: '{{timer}}'");
+    expect(panel).toContain("if timer_parts.size < 2");
+
+    const runtime = readFileSync(join(EXTENSION, "assets", "reco.js"), "utf8");
+    expect(runtime).toContain("function countdownFromBlock(block)");
+  });
+
+  test("an expired countdown stops the offer being rendered at all", () => {
+    /*
+     * Checked before injection on purpose: rendering and then hiding would flash
+     * the offer and fire the serve beacon, billing a recommendation nobody saw.
+     */
+    const runtime = readFileSync(join(EXTENSION, "assets", "reco.js"), "utf8");
+    const injection = runtime.slice(runtime.indexOf("function initEmbeddedOffer"));
+
+    expect(injection.indexOf("countdownIsOver(")).toBeLessThan(injection.indexOf("buildBlock("));
+    // 24 hours, then the cycle starts again — urgency that works on a page most
+    // shoppers see once.
+    expect(runtime).toContain("var COUNTDOWN_HIDE_MS = 24 * 60 * 60 * 1000");
+  });
+
   test("the embed passes the offer type through to the runtime", () => {
     /*
      * The type is what decides the injected layout — a carousel of rows for the

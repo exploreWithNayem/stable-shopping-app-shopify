@@ -34,7 +34,10 @@
         the embed is off — but this path *is* the embed, so it never has to.
       {%- endcomment -%}
       previous: {{ 'recommendations.previous' | t | json }},
-      next: {{ 'recommendations.next' | t | json }}
+      next: {{ 'recommendations.next' | t | json }},
+      count: {{ 'recommendations.count' | t | json }},
+      countdown: {{ 'recommendations.countdown' | t | json }},
+      countdownDays: {{ 'recommendations.countdown_days' | t | json }}
     }
   };
 </script>

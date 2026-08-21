@@ -526,6 +526,175 @@ describe("the offer editor", () => {
     expect(hydrate).toContain("} catch {");
   });
 
+  test("the countdown controls only appear when it is switched on", () => {
+    /*
+     * Fixed length or a custom end date, plus the sentence the clock sits inside.
+     * The mode toggle is a two-button row rather than a segmented control because
+     * Polaris web components ship none — that is the tabs idiom above, not an
+     * invented widget.
+     */
+    expect(source).toContain('{countdown && (');
+    // The mode toggle is its own component now, wired to the same state.
+    expect(source).toContain('<CountdownModeToggle value={countdownMode} onChange={setCountdownMode} />');
+    expect(source).toContain("{ key: 'fixed', label: 'Fixed' }");
+    expect(source).toContain("{ key: 'date', label: 'Custom end date' }");
+
+    // The token has to be spelled out for the merchant, or `{{timer}}` is a secret.
+    expect(source).toContain('where you want the countdown to appear');
+    expect(source).toContain('COUNTDOWN_TOKEN');
+  });
+
+  test("Fixed / Custom end date is one joined control, built from box and clickable", () => {
+    /*
+     * Two dead ends, both pinned out here.
+     *
+     * `s-button-group gap="none"` is *documented* as the segmented control and
+     * rendered an **empty box** — its props are `ActionSlots`, so plain children
+     * land in no slot and never display.
+     *
+     * Two `s-button`s in a grid did render, but a button brings its own chrome: the
+     * selected half showed as a bordered white button and the other as bare text,
+     * which reads as one button and one label rather than one control.
+     *
+     * `s-clickable` takes `background`, so the halves are `subdued` against
+     * `transparent` inside one bordered box — Polaris tokens, no hardcoded colour.
+     */
+    expect(source).not.toContain('<s-button-group');
+    expect(source).toContain('function CountdownModeToggle');
+    expect(source).toContain('<s-box border="base" borderRadius="base" overflow="hidden">');
+    expect(source).toContain("background={value === mode.key ? 'subdued' : 'transparent'}");
+    // Without overflow hidden the selected half's square background paints over
+    // the box's rounded corner.
+    expect(source).toContain('overflow="hidden"');
+    // The toggle is not two buttons any more.
+    expect(source).not.toContain("countdownMode === 'fixed' ? 'secondary' : 'tertiary'");
+  });
+
+  test("the date and time halves share a row", () => {
+    /*
+     * Polaris fields fill their container, so in an inline stack the select took the
+     * whole row and pushed the date button onto its own line. A two-column grid is
+     * what puts them side by side — and the popover has to sit outside it, or it
+     * claims a third cell.
+     */
+    const row = source.slice(
+      source.indexOf('gridTemplateColumns="1fr 1fr" gap="small-300"'),
+      source.indexOf('<s-popover id="countdown-end-date">'),
+    );
+
+    expect(row).toContain('icon="calendar"');
+    expect(row).toContain('inlineSize="fill"');
+    expect(row).toContain('icon="clock"');
+    expect(row).not.toContain('<s-popover');
+  });
+
+  test("the fixed length keeps its label hidden and the reference wording", () => {
+    expect(source).toContain('suffix="min"');
+    expect(source).toContain(
+      'The offer will disappear for 24 hours after the countdown ends',
+    );
+
+    /*
+     * No icon on the number field, though the design shows a clock and
+     * `NumberFieldProps` reads as though it inherits one: the React wrapper omits
+     * it and the Polaris validator rejects it outright. `s-select` does take one,
+     * which is why the time half has a clock and this does not — asserted so the
+     * icon does not get "helpfully" added back.
+     */
+    const field = source.slice(source.indexOf('<s-number-field'), source.indexOf('</s-stack>', source.indexOf('<s-number-field')));
+    expect(field).not.toContain('icon=');
+  });
+
+  test("the end date is a pill with a calendar, not a full-width field", () => {
+    /*
+     * `s-date-field` is full width and takes no icon — its props omit
+     * FieldDecorationProps entirely — so the date is a button carrying the chosen
+     * date as its label, opening `s-date-picker` in a popover. The time is a
+     * select, which does take an icon and already reads as a pill.
+     */
+    expect(source).toContain('icon="calendar"');
+    expect(source).toContain('commandFor="countdown-end-date"');
+    expect(source).toContain('<s-popover id="countdown-end-date">');
+    expect(source).toContain('<s-date-picker');
+    expect(source).toContain('icon="clock"');
+    expect(source).not.toContain('<s-date-field');
+
+    // The label comes from the lib, where the local-noon parse and its off-by-one
+    // are unit-tested (`new Date("2026-08-22")` is UTC midnight, which is the day
+    // before in any negative offset).
+    expect(source).toContain('formatDayLabel(endDate)');
+  });
+
+  test("a custom end date is one deadline in two controls", () => {
+    /*
+     * Date and time side by side, as a deadline reads. Two controls because Polaris
+     * has a date field and no time field; the pair holds one stored local
+     * "YYYY-MM-DDTHH:mm" string, split for rendering and reassembled on change.
+     */
+    expect(source).toContain("const endDate = countdownEndsAt.slice(0, 10)");
+    expect(source).toContain("const endTime = countdownEndsAt.slice(11) || DEFAULT_END_TIME");
+
+    // The time select's label is hidden rather than absent: the design shows none
+    // and a screen reader still needs to know what it sets. The date is a button,
+    // so its own label is the date and the purpose goes in accessibilityLabel.
+    expect(source).toContain('labelAccessibilityVisibility="exclusive"');
+    expect(source).toContain('accessibilityLabel="Choose the countdown end date"');
+
+    /*
+     * Stored 24-hour, shown 12-hour: the string keeps "18:04" and the pill reads
+     * "6:04 PM", which is how a merchant reads a deadline. `readTime` / `writeTime`
+     * are the one pair that converts, so the picker and the label cannot disagree.
+     */
+    expect(source).toContain('readTime(');
+    expect(source).toContain('writeTime(');
+    expect(source).toContain('formatClockTime(endTime)');
+    expect(source).toContain('formatDayLabel(endDate)');
+
+    // The conversions themselves live in the client-safe lib and are unit-tested
+    // there (app/lib/countdown.test.js) rather than asserted as source text — the
+    // route just wires them up.
+    expect(source).toContain("from '../lib/countdown'");
+  });
+
+  test("the time opens a picker, the same way the date does", () => {
+    /*
+     * Polaris has `s-date-picker` and no time picker, so this one is built from
+     * `s-scroll-box` + `s-clickable` — the only element that scrolls (a box's
+     * `overflow` takes nothing but hidden/visible) and the only one that takes a
+     * `background`. What it replaced was an `s-select` of half-hour slots: a native
+     * menu beside a calendar, two interactions for the two halves of one deadline,
+     * and no way to say 6:04.
+     */
+    expect(source).toContain('function TimePicker');
+    expect(source).toContain('<s-popover id="countdown-end-time">');
+    expect(source).toContain('commandFor="countdown-end-time"');
+    expect(source).toContain('<s-scroll-box maxBlockSize="240px"');
+    expect(source).not.toContain('TIME_SLOTS');
+    // Minute precision, from the lib's own option lists.
+    expect(source).toContain('MINUTE_OPTIONS');
+    expect(source).toContain('HOUR_OPTIONS');
+
+    // Scoped to the countdown panel: the Placement tab has its own legitimate
+    // select for where the offer is injected.
+    const panel = source.slice(source.indexOf('{countdown && ('), source.indexOf('Continue to offer'));
+    expect(panel).not.toContain('<s-select');
+
+    // AM/PM has two items, so it gets no scroller — an empty half-column beside
+    // the other two reads as a broken layout.
+    expect(source).toContain('MERIDIEMS.map(');
+  });
+
+  test("the preview ticks the countdown rather than describing it", () => {
+    // It used to render "Countdown timer shows here on the storefront." — a
+    // placeholder that told the merchant nothing about their own wording.
+    expect(source).not.toContain('Countdown timer shows here on the storefront');
+    expect(source).toContain('function CountdownPreview');
+    expect(source).toContain('setInterval(() => setNow(Date.now()), 1000)');
+    // Same reading as reco.js: a deadline already gone means the offer is hidden,
+    // not a frozen clock.
+    expect(source).toContain('would not show on the storefront');
+  });
+
   test("the Offer tab picks both product lists", () => {
     expect(source).toContain("Show this offer on");
     expect(source).toContain("Recommend these products");

@@ -444,7 +444,13 @@
     var recoProductId = card && card.getAttribute("data-reco-product-id");
     var behavior = block.getAttribute("data-reco-atc") || "ajax";
     var clickId = uid();
-    var original = button.textContent;
+    /*
+     * Markup, not text: the offer carousel's button holds an icon beside its
+     * label, and restoring from textContent dropped the icon for good once the
+     * "Added" confirmation expired. This is a round-trip of the button's own
+     * markup, not new content.
+     */
+    var original = button.innerHTML;
 
     button.setAttribute("aria-busy", "true");
 
@@ -500,13 +506,13 @@
 
         button.textContent = config().strings.added || "Added";
         setTimeout(function () {
-          button.textContent = original;
+          button.innerHTML = original;
         }, 1800);
       })
       .catch(function () {
         button.textContent = config().strings.error || "Try again";
         setTimeout(function () {
-          button.textContent = original;
+          button.innerHTML = original;
         }, 1800);
       })
       .finally(function () {
@@ -539,13 +545,45 @@
 
     var prev = nav.querySelector("[data-reco-prev]");
     var next = nav.querySelector("[data-reco-next]");
+    // Only the offer carousel has one; the block's slider shows several cards at
+    // once, where "product 1 of 6" would be describing nothing the shopper sees.
+    var count = block.querySelector("[data-reco-count]");
 
     function overflowing() {
       return track_.scrollWidth > track_.clientWidth + 4;
     }
 
+    /** Which card the track is scrolled to, 1-based. */
+    function position() {
+      var cards = track_.querySelectorAll("[data-reco-card]");
+      if (cards.length === 0) return { current: 0, total: 0 };
+
+      var step = cards[0].offsetWidth + 16;
+      var index = step > 0 ? Math.round(track_.scrollLeft / step) : 0;
+      return {
+        current: Math.min(Math.max(index + 1, 1), cards.length),
+        total: cards.length,
+      };
+    }
+
     function sync() {
       nav.hidden = !overflowing();
+
+      if (count) {
+        var at = position();
+        /*
+         * Emptied rather than hidden when there is nothing to page through: one
+         * product needs no counter, and the admin preview drops it at one product
+         * for the same reason.
+         */
+        count.textContent =
+          at.total > 1
+            ? (config().strings.count || "Product [current] of [total]")
+                .replace("[current]", at.current)
+                .replace("[total]", at.total)
+            : "";
+      }
+
       if (nav.hidden) return;
       prev.disabled = track_.scrollLeft <= 2;
       next.disabled = track_.scrollLeft + track_.clientWidth >= track_.scrollWidth - 2;
@@ -1205,6 +1243,240 @@
     );
   }
 
+  // --- Countdown -----------------------------------------------------------
+
+  /*
+   * The offer's urgency timer.
+   *
+   * Two shapes, both from the offer (§3.1 `copy`):
+   *
+   *   fixed — a per-visitor duration. The clock starts the first time this
+   *           shopper sees the offer and is remembered, so a reload does not hand
+   *           them a fresh hour. When it runs out the offer hides for 24 hours and
+   *           then starts over, which is what makes urgency work on a page most
+   *           shoppers visit once.
+   *   date  — one deadline for everybody. When it passes the offer is over, and
+   *           there is nothing per-visitor to remember.
+   *
+   * Everything here is best-effort: private browsing throws on localStorage, and
+   * a shopper who cannot be remembered simply gets the full duration again. A
+   * timer must never be the reason a product page breaks.
+   */
+  var COUNTDOWN_HIDE_MS = 24 * 60 * 60 * 1000;
+
+  /** Where the live clock goes in the merchant's own sentence. */
+  var COUNTDOWN_TOKEN = "{{timer}}";
+
+  function countdownKey(productId, copy) {
+    /*
+     * The duration is part of the key on purpose: a merchant who changes 60
+     * minutes to 10 has changed the offer, and every shopper should get the new
+     * clock rather than the tail of an old one.
+     */
+    return "easy-reco:countdown:" + productId + ":" + (copy.countdownMinutes || 0);
+  }
+
+  function readStore(key) {
+    try {
+      var raw = window.localStorage.getItem(key);
+      var value = raw ? JSON.parse(raw) : null;
+      return value && typeof value === "object" ? value : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function writeStore(key, value) {
+    try {
+      window.localStorage.setItem(key, JSON.stringify(value));
+    } catch (error) {
+      /* private mode, or a full quota — the timer just restarts next visit */
+    }
+  }
+
+  /** When this shopper's countdown ends, in epoch ms, or null if there is none. */
+  function countdownDeadline(copy, productId) {
+    if (!copy || !copy.countdown) return null;
+
+    if (copy.countdownMode === "date") {
+      var at = Date.parse(copy.countdownEndsAt || "");
+      return Number.isNaN(at) ? null : at;
+    }
+
+    var minutes = Number(copy.countdownMinutes) || 60;
+    var key = countdownKey(productId, copy);
+    var stored = readStore(key);
+    var now = Date.now();
+
+    if (stored && stored.endsAt > now) return stored.endsAt;
+
+    /*
+     * Past the hide window: the cycle starts again. Below it, the caller has
+     * already decided not to render, so reaching here means it is over.
+     */
+    if (stored && stored.hiddenUntil && stored.hiddenUntil > now) return null;
+
+    var endsAt = now + minutes * 60000;
+    writeStore(key, { endsAt: endsAt, hiddenUntil: null });
+    return endsAt;
+  }
+
+  /**
+   * Whether the offer should not be shown at all right now.
+   *
+   * Only ever true for a timer that has actually run out: a countdown that has
+   * never started is not over, and neither is one with no settings behind it.
+   */
+  function countdownIsOver(copy, productId) {
+    if (!copy || !copy.countdown) return false;
+
+    if (copy.countdownMode === "date") {
+      var at = Date.parse(copy.countdownEndsAt || "");
+      return !Number.isNaN(at) && at <= Date.now();
+    }
+
+    var stored = readStore(countdownKey(productId, copy));
+    if (!stored) return false;
+
+    var now = Date.now();
+    if (stored.hiddenUntil && stored.hiddenUntil > now) return true;
+    // Ran out while the shopper was on the page, and the hide window has not been
+    // written yet — the tick below does that, but a reload can land here first.
+    return Boolean(stored.endsAt && stored.endsAt <= now && !stored.hiddenUntil);
+  }
+
+  /**
+   * The clock, at whatever scale the remaining time needs: mm:ss, then h:mm:ss past
+   * an hour, then "5d 10:37:21" past a day.
+   *
+   * The days step exists because a week-long countdown read **130:37:21** — an
+   * hours counter run past anything a shopper can parse. Hours are padded once a
+   * day is shown, so the tail keeps a fixed width as it counts down.
+   *
+   * The day letter comes from the locale file through the embed's config; "d" is
+   * the fallback, which is the kind of value §7.5 allows to be embed-only — a
+   * string whose fallback is merely suboptimal, never wrong.
+   */
+  function formatDuration(ms) {
+    var total = Math.max(0, Math.floor(ms / 1000));
+    var seconds = total % 60;
+    var minutes = Math.floor(total / 60) % 60;
+    var hours = Math.floor(total / 3600) % 24;
+    var days = Math.floor(total / 86400);
+    var pad = function (value) {
+      return value < 10 ? "0" + value : String(value);
+    };
+
+    if (days > 0) {
+      var unit = config().strings.countdownDays || "d";
+      return days + unit + " " + pad(hours) + ":" + pad(minutes) + ":" + pad(seconds);
+    }
+
+    return hours > 0
+      ? hours + ":" + pad(minutes) + ":" + pad(seconds)
+      : pad(minutes) + ":" + pad(seconds);
+  }
+
+  /*
+   * One interval per element, dropped when the element leaves the DOM — the theme
+   * editor re-renders sections without a page load, and an orphaned interval keeps
+   * ticking a detached node for the rest of the session.
+   */
+  var countdownTimers = [];
+
+  document.addEventListener("shopify:section:unload", function () {
+    countdownTimers = countdownTimers.filter(function (entry) {
+      if (document.contains(entry.node)) return true;
+      clearInterval(entry.timer);
+      return false;
+    });
+  });
+
+  /**
+   * The countdown settings a Liquid-rendered block carries.
+   *
+   * The embed hands reco.js the offer as an object; the theme block renders from
+   * Liquid, where there is no such object — so the same values ride on data
+   * attributes and are read back into the same shape.
+   */
+  function countdownFromBlock(block) {
+    var node = block.querySelector("[data-reco-countdown]");
+    if (!node) return null;
+
+    var endsAt = node.getAttribute("data-reco-countdown-ends-at");
+
+    return {
+      countdown: true,
+      countdownMode:
+        node.getAttribute("data-reco-countdown-mode") === "date" ? "date" : "fixed",
+      countdownMinutes: Number(node.getAttribute("data-reco-countdown-minutes")) || 60,
+      countdownEndsAt: endsAt || null,
+    };
+  }
+
+  function initCountdown(block, copy, productId) {
+    var node = block.querySelector("[data-reco-countdown]");
+    if (!node) return;
+
+    var deadline = countdownDeadline(copy, productId);
+    if (!deadline) {
+      node.remove();
+      return;
+    }
+
+    var value = node.querySelector("[data-reco-countdown-value]");
+    if (!value) return;
+
+    function tick() {
+      var left = deadline - Date.now();
+
+      if (left <= 0) {
+        value.textContent = formatDuration(0);
+        /*
+         * The offer goes, not just the timer: an expired offer that stays on the
+         * page is a promise the merchant did not make. Fixed mode remembers the
+         * hide so the next 24 hours of visits skip it before rendering anything.
+         */
+        if (copy.countdownMode !== "date") {
+          writeStore(countdownKey(productId, copy), {
+            endsAt: deadline,
+            hiddenUntil: Date.now() + COUNTDOWN_HIDE_MS,
+          });
+        }
+        block.hidden = true;
+        return true;
+      }
+
+      value.textContent = formatDuration(left);
+      return false;
+    }
+
+    if (tick()) return;
+
+    var timer = setInterval(function () {
+      if (!document.contains(node)) {
+        clearInterval(timer);
+        return;
+      }
+      if (tick()) clearInterval(timer);
+    }, 1000);
+
+    countdownTimers.push({ node: node, timer: timer });
+  }
+
+  /**
+   * The `+` on the offer's add button, drawn for the same reason as the chevrons:
+   * a typed `+` picks up the theme font's weight and sits off-centre next to the
+   * label.
+   */
+  function plusIcon() {
+    return (
+      '<svg class="reco-card__button-icon" viewBox="0 0 24 24" aria-hidden="true" ' +
+      'focusable="false"><path d="M12 6v12M6 12h12" fill="none" stroke="currentColor" ' +
+      'stroke-width="2" stroke-linecap="round"/></svg>'
+    );
+  }
+
   /** The container the embed renders into, shaped like reco-panel's output. */
   function buildBlock(offer) {
     var copy = offer.copy || {};
@@ -1261,13 +1533,23 @@
         "</div>"
       : "";
 
+    /*
+     * The offer's heading is one step down from the block's.
+     *
+     * `--md` is the theme block's own default, sized for a section heading with a
+     * row of tiles under it. This one is injected into the buy area, a step below
+     * the product title, and the admin preview shows it at that scale — the two
+     * are meant to be the same screen.
+     */
+    var headingSize = carousel ? "reco__heading--sm" : "reco__heading--md";
+
     // The header is also what holds the nav, so a carousel with no title still
     // needs one — otherwise the arrows would have nowhere to go.
     var heading =
       copy.title || nav
         ? '<div class="reco__header">' +
           (copy.title
-            ? '<h2 class="reco__heading reco__heading--md">' + escapeHtml(copy.title) + "</h2>"
+            ? '<h2 class="reco__heading ' + headingSize + '">' + escapeHtml(copy.title) + "</h2>"
             : "") +
           (copy.badge ? '<span class="reco__badge">' + escapeHtml(copy.badge) + "</span>" : "") +
           nav +
@@ -1276,7 +1558,12 @@
 
     var button =
       '<button type="button" class="reco-card__button reco-card__button--solid" data-reco-add>' +
+      // The plus is part of the button in the admin preview, and the preview is a
+      // promise about this markup.
+      (carousel ? plusIcon() : "") +
+      "<span>" +
       escapeHtml(copy.buttonText || strings.addToCart || "Add to cart") +
+      "</span>" +
       "</button>";
 
     var info =
@@ -1289,9 +1576,47 @@
       (carousel ? "" : button) +
       "</div>";
 
+    /*
+     * The countdown bar, above the cards.
+     *
+     * The merchant's sentence with `{{timer}}` swapped for a live clock — so
+     * "Hurry up! Offer expires in 09:12" and "09:12 left" are both writable. The
+     * wording is escaped; only the two halves around the token are ours. Rendered
+     * empty and filled by initCountdown, which also removes it when there is no
+     * deadline to show.
+     */
+    var timer = "";
+    if (copy.countdown) {
+      var sentence = String(copy.countdownTitle || strings.countdown || "");
+      var token = sentence.indexOf(COUNTDOWN_TOKEN);
+      // No token means the merchant wants the clock at the end of their sentence
+      // rather than nowhere, which is the only reading that renders a timer.
+      var lead = token >= 0 ? sentence.slice(0, token) : sentence ? sentence + " " : "";
+      var trail = token >= 0 ? sentence.slice(token + COUNTDOWN_TOKEN.length) : "";
+
+      timer =
+        '<div class="reco__countdown" data-reco-countdown>' +
+        escapeHtml(lead) +
+        '<strong class="reco__countdown-value" data-reco-countdown-value></strong>' +
+        escapeHtml(trail) +
+        "</div>";
+    }
+
+    /*
+     * "Product 1 of 2", under the card.
+     *
+     * One card per view hides how many there are — the arrows say a next one
+     * exists but not how far it runs. setupSlider fills this in and empties it
+     * when there is nothing to page through, so a single-product offer shows no
+     * counter at all.
+     */
+    var counter = carousel ? '<p class="reco__count" data-reco-count></p>' : "";
+
     block.innerHTML =
       heading +
+      timer +
       '<div class="reco__viewport"><div class="reco__track" data-reco-track></div></div>' +
+      counter +
       "<template data-reco-card-template>" +
       '<div class="reco-card" data-reco-card>' +
       '<a class="reco-card__media" data-reco-link>' +
@@ -1327,6 +1652,13 @@
     if (document.querySelector("[data-reco-embedded]")) return;
     if (document.querySelector('[data-reco-block][data-reco-placement="pdp"]')) return;
 
+    /*
+     * A finished countdown hides the offer, and it is checked *before* anything is
+     * injected. Rendering and then hiding would flash the offer, fire the serve
+     * beacon and bill a recommendation for something no shopper ever saw (§3.3).
+     */
+    if (countdownIsOver(offer.copy, String(offer.productId))) return;
+
     var anchor = findAnchor(offer);
     if (!anchor) return;
 
@@ -1340,6 +1672,7 @@
     }
 
     renderFallback(block, offer.items);
+    initCountdown(block, offer.copy || {}, String(offer.productId));
     block.setAttribute("data-reco-ready", "true");
     wire(block);
   }
@@ -1356,6 +1689,21 @@
     document.querySelectorAll("[data-reco-block]").forEach(function (block) {
       if (block.hasAttribute("data-reco-ready")) return;
       block.setAttribute("data-reco-ready", "true");
+
+      /*
+       * An offer's countdown, when the block's Liquid rendered one. Checked before
+       * anything else: a finished countdown hides the whole row and skips wire(),
+       * so no serve beacon is sent for a row the shopper never saw (§3.3).
+       */
+      var timer = countdownFromBlock(block);
+      if (timer) {
+        var sourceProduct = block.getAttribute("data-reco-source-product") || "*";
+        if (countdownIsOver(timer, sourceProduct)) {
+          block.hidden = true;
+          return;
+        }
+        initCountdown(block, timer, sourceProduct);
+      }
 
       if (block.getAttribute("data-reco-server-rendered") === "true") {
         wire(block);

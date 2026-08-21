@@ -166,6 +166,23 @@ export function normalizePresentation(presentation) {
    */
   const type = String(presentation.type ?? "").trim();
 
+  /*
+   * Countdown settings, kept only when the countdown is actually on — storing the
+   * duration of a switched-off timer would put it in the metafield for reco.js to
+   * find. Every field is rebuilt by name here, which is exactly how `type` went
+   * missing the first time: anything the storefront needs has to be named.
+   */
+  const timer = countdown
+    ? {
+        countdownMode: presentation.countdownMode === "date" ? "date" : "fixed",
+        countdownMinutes: Number(presentation.countdownMinutes) || null,
+        countdownEndsAt: presentation.countdownEndsAt
+          ? new Date(presentation.countdownEndsAt).toISOString()
+          : null,
+        countdownTitle: String(presentation.countdownTitle ?? "").trim(),
+      }
+    : null;
+
   const selector = String(presentation.anchor?.selector ?? "").trim();
   const position = presentation.anchor?.position === "before" ? "before" : "after";
   // Only stored when it says something: a bare default is reco.js's job.
@@ -180,6 +197,7 @@ export function normalizePresentation(presentation) {
     badge,
     buttonText,
     countdown,
+    ...(timer ?? {}),
     ...(anchor ? { anchor } : {}),
   };
 }

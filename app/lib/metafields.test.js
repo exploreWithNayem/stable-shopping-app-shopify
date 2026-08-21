@@ -113,6 +113,69 @@ describe("buildMetafieldValue", () => {
       badge: "Limited offer",
       buttonText: "Add to cart",
       countdown: true,
+      // A countdown that is on always names its mode; the duration and wording
+      // fall back to reco.js's own defaults when the offer said nothing.
+      countdownMode: "fixed",
+    });
+  });
+
+  test("a countdown carries its own settings, and only when it is on", () => {
+    const withTimer = JSON.parse(
+      buildMetafieldValue([{ id: 1 }], {
+        presentation: {
+          title: "Complete the set",
+          countdown: true,
+          countdownMode: "date",
+          countdownMinutes: 45,
+          countdownEndsAt: "2026-09-01T10:30:00.000Z",
+          countdownTitle: "Ends in {{timer}}",
+        },
+      }),
+    );
+
+    expect(withTimer.copy).toMatchObject({
+      countdown: true,
+      countdownMode: "date",
+      countdownMinutes: 45,
+      // ISO, so Date.parse handles it in every browser.
+      countdownEndsAt: "2026-09-01T10:30:00.000Z",
+      countdownTitle: "Ends in {{timer}}",
+    });
+
+    // Switched off, the settings are payload that can only mislead: reco.js reads
+    // `countdown` first and would never look at them.
+    const off = JSON.parse(
+      buildMetafieldValue([{ id: 1 }], {
+        presentation: {
+          title: "Complete the set",
+          countdown: false,
+          countdownMode: "date",
+          countdownMinutes: 45,
+          countdownTitle: "Ends in {{timer}}",
+        },
+      }),
+    );
+
+    expect(off.copy.countdown).toBe(false);
+    expect("countdownMode" in off.copy).toBe(false);
+    expect("countdownTitle" in off.copy).toBe(false);
+  });
+
+  test("a null duration or blank wording is left out, not written as null", () => {
+    // Every key here is read by hand on the other side, and reco.js already has
+    // defaults for both.
+    const value = JSON.parse(
+      buildMetafieldValue([{ id: 1 }], {
+        presentation: { countdown: true, countdownMinutes: null, countdownTitle: "  " },
+      }),
+    );
+
+    expect(value.copy).toEqual({
+      title: "",
+      badge: "",
+      buttonText: "",
+      countdown: true,
+      countdownMode: "fixed",
     });
   });
 

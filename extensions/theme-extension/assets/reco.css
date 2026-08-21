@@ -236,17 +236,20 @@
  */
 .reco--offer .reco-card {
   display: grid;
-  grid-template-columns: 64px minmax(0, 1fr) auto;
-  gap: 0.75rem;
+  grid-template-columns: 72px minmax(0, 1fr) auto;
+  gap: 1rem;
   align-items: center;
   text-align: left;
-  border: 1px solid rgba(0, 0, 0, 0.12);
-  border-radius: 8px;
-  padding: 0.75rem;
+  /* Matched to the admin preview's card: same radius, same hairline, same inset. */
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 12px;
+  padding: 1rem;
+  background: #fff;
 }
 
 .reco--offer .reco-card__media {
   aspect-ratio: 1/1;
+  border-radius: 8px;
 }
 
 .reco--offer .reco-card__info {
@@ -255,9 +258,74 @@
   gap: 0.125rem;
 }
 
+/*
+ * 600, to sit level with the preview's `s-text type="strong"`. The theme's own
+ * font is whatever it is — that part cannot be matched — but the weight
+ * relationship between the name and the price can be.
+ */
+.reco--offer .reco-card__title {
+  font-weight: 600;
+}
+
+/* Subdued, as in the preview — the price is supporting detail beside the name. */
+.reco--offer .reco-card__price {
+  opacity: 0.65;
+}
+
 .reco--offer .reco-card__button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
   margin-top: 0;
+  padding: 0.5rem 0.875rem;
+  border-radius: 8px;
   white-space: nowrap;
+}
+
+/* Sized against the label rather than fixed, so it tracks the button's text. */
+.reco-card__button-icon {
+  display: block;
+  width: 0.875em;
+  height: 0.875em;
+}
+
+/*
+ * The countdown bar.
+ *
+ * Its own bordered band above the cards, matching the admin preview: centred,
+ * with the clock the only bold thing in it. `tabular-nums` stops the row jittering
+ * as the digits change — a timer that shifts the text every second reads as broken.
+ */
+.reco__countdown {
+  margin-bottom: 0.75rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 12px;
+  background: #fff;
+  text-align: center;
+  font-size: 0.9375rem;
+}
+
+.reco__countdown-value {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * "Product 1 of 2".
+ *
+ * One card per view hides how many there are: the arrows say another exists but
+ * not how far the row runs. Emptied by reco.js when there is nothing to page
+ * through, so it takes no space on a one-product offer.
+ */
+.reco__count {
+  margin: 0.625rem 0 0;
+  font-size: 0.875rem;
+  opacity: 0.65;
+}
+
+.reco__count:empty {
+  display: none;
 }
 
 /*

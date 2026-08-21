@@ -104,7 +104,10 @@ Metafield shape (`$app:reco_overrides`, type `json`) — **`v: 2` since 2026-08-
     "title": "Complete the set",
     "badge": "Limited offer",
     "buttonText": "Add to cart",
-    "countdown": true
+    "countdown": true,
+    "countdownMode": "fixed",
+    "countdownMinutes": 60,
+    "countdownTitle": "Hurry up! Offer expires in {{timer}}"
   },
   "items": [
     { "id": "12345678", "handle": "blue-snowboard" },
@@ -927,6 +930,136 @@ metafield (§3.1) and `buildBlock()` branches on it:
 - **`box-sizing: border-box` is now set on `.reco` and its descendants.** Most themes set it globally,
   but a card that is 100% wide *plus* its own padding and border overflows its own scroller in one
   that does not — and this block is injected into themes the app has never seen.
+- **The card is matched to the admin preview, detail by detail** (2026-08-21). The preview is a promise
+  about this markup, so the two are kept level: 72px thumbnail with an 8px radius, 1rem inset, 12px
+  card radius, name at weight 600 with the price subdued under it, a `+` icon inside the add button,
+  the heading one step down (`--sm`, since this sits in the buy area rather than heading a section),
+  and a **"Product 1 of 2"** line under the card. The counter is `recommendations.count` with
+  `[current]`/`[total]` substituted in JS — merchant-visible storefront copy belongs in the locale
+  file, not in the runtime — and it is **emptied** rather than hidden when there is nothing to page
+  through, so a one-product offer shows no counter at all. Only the offer carousel gets one; the
+  block's slider shows several cards at once, where "product 1 of 6" describes nothing on screen.
+
+> ⚠️ **The add button's confirmation state restores markup, not text.** `original` in `addToCart()`
+> was `button.textContent`, so the 1800ms "Added" state threw the `+` icon away permanently on the
+> first add. It is `innerHTML` now — a round-trip of the button's own markup. Anything else put inside
+> a card button has the same trap waiting for it.
+
+### 7.7 The offer countdown
+
+Added 2026-08-21. The `countdown` boolean had reached the metafield since offers shipped and drew
+nothing: a countdown needs something to count down *to*, and the model had no end time. It has one
+now, in two shapes, and **`copy.countdown` is read before its settings** — a switched-off timer
+publishes none of them.
+
+| | `fixed` | `date` |
+| --- | --- | --- |
+| Deadline | now + `countdownMinutes`, per visitor | `countdownEndsAt`, one instant for everybody |
+| Remembered | in `localStorage`, so a reload does not hand out a fresh hour | nothing to remember |
+| When it runs out | offer hides for **24 hours**, then the cycle starts again | offer is over |
+| Publish needs | nothing — minutes are clamped | the date; publishing without one is refused |
+
+- **Why the 24-hour cycle.** A per-visitor timer on a page most people see once has to be able to
+  come back, or the second visit shows an offer with a dead clock. `COUNTDOWN_HIDE_MS` is that
+  window; after it, the stored deadline is thrown away and a new one starts.
+- **The storage key carries the duration** (`easy-reco:countdown:<productId>:<minutes>`). A merchant
+  who changes 60 minutes to 10 has changed the offer, and every shopper should get the new clock
+  rather than the tail of the old one.
+- **Expiry is checked before anything is injected or wired.** Rendering and then hiding would flash
+  the offer, fire the `served` beacon and bill a recommendation nobody saw (§3.3). On the embed path
+  `initEmbeddedOffer` returns early; on the block path the `init` loop hides the row and skips
+  `wire()`.
+- **Fixed / Custom end date is `CountdownModeToggle`**, built from `s-box` + two `s-clickable`s in a
+  two-column `s-grid`: the selected half is `background="subdued"` against `transparent`, inside one
+  bordered, rounded box with `overflow="hidden"` (without which the selected half's square background
+  paints over the box's rounded corner). Polaris tokens throughout — no hardcoded colour, which is
+  what keeps it native to the admin.
+
+  > ⚠️ **Two dead ends before this, both pinned out by tests.**
+  >
+  > `s-button-group gap="none"` is what Polaris *documents* as the segmented control, and it rendered
+  > an **empty box**: the group's props are `ActionSlots`, so plain children land in no slot and never
+  > display. The validator was green, lint was green, all 527 tests were green — nothing any of them
+  > reads can tell whether a slotted child is displayed. Only a screenshot caught it.
+  >
+  > Two `s-button`s in a grid then *did* render, and still read wrong: a button brings its own chrome,
+  > so the selected half showed as a bordered white button and the other as bare text — one button
+  > and one label, not one control. `s-clickable` is the primitive that takes a `background`, which is
+  > why the control is built from boxes rather than buttons.
+
+- **The date and time halves share a two-column grid**, not an inline stack. Polaris fields fill their
+  container, so in a stack the select took the whole row and pushed the date button onto its own
+  line. The `s-popover` sits *outside* the grid: an overlay is still a DOM child, and inside it would
+  claim a third cell.
+
+- **The fixed-length field carries no icon**, though the design shows a clock and `NumberFieldProps`
+  reads as if it inherits `FieldDecorationProps`. The React wrapper omits it and the validator says so
+  outright — *"Property 'icon' does not exist"*. `s-select` genuinely takes one, which is why the time
+  half has its clock and this does not. Its label is hidden rather than dropped
+  (`labelAccessibilityVisibility="exclusive"`), and the help line is the reference's own: *"The offer
+  will disappear for 24 hours after the countdown ends"*.
+- **A custom end date is one deadline in two pills**, side by side as a deadline reads. The pair holds
+  one stored local `YYYY-MM-DDTHH:mm` string, split for rendering and reassembled on change.
+  - The **date is a button** carrying the chosen date as its label (`Aug 22, 2026`), opening
+    `s-date-picker` in an `s-popover`. Not `s-date-field`: that is full width and takes **no icon** —
+    its props omit `FieldDecorationProps` entirely, so there is no supported way to put a calendar in
+    it, and the design's control is a pill with one. Formatted from `new Date(\`${value}T12:00\`)`,
+    local noon, because `new Date("2026-08-22")` is UTC midnight and lands on the previous day in any
+    negative offset.
+  - The **time is a matching pill** that opens `TimePicker` in its own popover: hour, minute and
+    AM/PM as three columns, the selected cell `background="strong"`, the two scrolling ones in
+    `s-scroll-box` — the only Polaris element that scrolls, since a box's `overflow` accepts nothing
+    but `hidden` and `visible`. AM/PM gets no scroller: two items in one would leave an empty
+    half-column beside the other two.
+
+    It replaced an `s-select` of half-hour slots, for two reasons. A native menu beside a calendar
+    made the two halves of one deadline behave differently, and half-hours could not say **6:04** at
+    all — the picker is minute-precise.
+
+  - **Stored 24-hour, shown 12-hour.** `readTime` / `writeTime` / `formatClockTime` /
+    `formatDayLabel` are in `app/lib/countdown.js` and unit-tested there, so the pill's label and the
+    picker's highlighted cells cannot disagree. Two traps they carry:
+    - **`Number("")` is 0 and finite**, so a blank time read as *midnight* instead of the default —
+      the same trap `clampCountdownMinutes` already had. Blank now falls back to `DEFAULT_END_TIME`,
+      whose two halves the fallback is derived from so they cannot drift.
+    - **The date label is parsed at local noon.** `new Date("2026-08-22")` is UTC midnight, which is
+      the day *before* in any negative offset — a deadline reading a day early.
+    - A date picked with no time means the **end of that day** (23:30), not that morning.
+  - The select's label is hidden rather than absent (`labelAccessibilityVisibility="exclusive"`), and
+    the date button's purpose lives in `accessibilityLabel` since its visible text is the date. The
+    design shows no labels; a screen reader still needs both.
+- **The clock steps up to days past 24 hours** — `5d 10:37:21`, not `130:37:21`, which is what a
+  week-long countdown actually rendered on the storefront. Hours are padded from the days step on, so
+  the tail keeps a fixed width while it counts down. The day letter comes from
+  `recommendations.countdown_days` through the embed's config (fallback `"d"`, the kind of
+  embed-only string §7.5 permits); the shared admin copy takes it as a `dayUnit` parameter.
+- **`{{timer}}` is a token in the merchant's own sentence**, not a fixed prefix — so "Hurry up! Offer
+  expires in 09:12" and "09:12 left on this offer" are both writable. Both halves are escaped; only
+  the clock is markup of ours. **No token puts the clock after their sentence**, which is the only
+  reading that still renders a timer.
+- **Both storefront paths render it.** The embed builds the bar in `buildBlock`; `reco-panel.liquid`
+  emits the same markup with the settings on `data-reco-countdown-*` attributes, because on that path
+  there is no offer object in JS. One runtime drives both. Leaving it to the embed would have made an
+  offer's countdown disappear the moment a merchant placed the block — the documented path.
+- **The admin preview ticks.** It used to say "Countdown timer shows here on the storefront", which
+  told a merchant nothing about their own wording. Fixed mode counts from the moment the preview
+  mounts (a shopper's first view); date mode counts to the deadline, and one already passed says the
+  offer would not show rather than freezing at 00:00.
+- **An empty minutes field means "nothing given", not zero.** `Number("")` is 0 and finite, so the
+  clamp turned a cleared box into a one-minute countdown. Guarded in `clampCountdownMinutes`, pinned
+  by a test.
+
+> ⚠️ **`app/lib/countdown.js` is client-safe, and that is not incidental.** The constants, the clamp
+> and the formatter live there because the offer builder renders them **in a component**. Importing
+> them from `app/models/offer.server.js` broke `npm run build` outright —
+> *"Server-only module referenced by client"* — which neither lint nor `npm test` can see (§4). Any
+> value the builder's JSX needs belongs in a plain lib, never in a `.server` module.
+>
+> `reco.js` carries its own copy of the formatter: the storefront runtime is a plain theme asset with
+> no bundler and cannot import from `app/`. Both copies are pinned behaviourally against the same
+> expected strings — `app/lib/countdown.test.js` runs one, `tests/reco-runtime.test.js` runs the
+> other — and a test checks their defaults and the token still match. A drift means the preview
+> promises a clock the shopper does not get.
 
 `tests/reco-runtime.test.js` drives all of this in jsdom against a Dawn-shaped buy form: injection
 position, the offer's copy, escaping, money format, the serve beacon, attributed add-to-cart, the
@@ -1302,6 +1435,11 @@ marking done.
      the Override row and metafield for every product the offer no longer targets. Without that, a
      product dropped from a live offer kept rendering it with nothing in the admin still claiming it
      did — and no way left to take it down short of the Settings re-sync.
+   - **The countdown is four more columns on `Offer`** (`countdownMode`, `countdownMinutes`,
+     `countdownEndsAt`, `countdownTitle`, migration `offer_countdown`) and four more keys in the
+     metafield's `copy`. What they mean is §7.7; what matters here is that publishing a `date`-mode
+     countdown with no date is **refused**, because the storefront would render no timer and hide the
+     offer instead — the worst of both.
    - **A save can still never publish a draft.** Only an offer that is *already* live republishes on
      save; `saveOffer()` itself never touches `status`, so going live is always a deliberate press of
      Publish.
@@ -1615,7 +1753,7 @@ so the first can declare `enabled_on` and the second can own a real collection p
 They share their markup through `reco-panel` and `reco-collection-cards`; only the schema JSON
 duplicates, and a test pins the two copies together. A third block, **Upsell**, is a
 **Bought Together** bundle over the same Custom list (§7.4) — product templates only, its own
-`upsell` placement, billable. 485 Vitest tests pass; lint and typecheck are clean — though see the
+`upsell` placement, billable. 541 Vitest tests pass; lint and typecheck are clean — though see the
 warning in §4: typecheck does not read a single `.js`/`.jsx` file, which is all of them.
 
 Custom recommendations are no longer a paid-only feature: **Free covers 10 products** and the

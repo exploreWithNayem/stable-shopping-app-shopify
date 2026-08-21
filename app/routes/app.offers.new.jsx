@@ -21,6 +21,29 @@ import { isUnlimited } from '../lib/plans';
 import { getProductsByIds } from '../lib/products.server';
 import { formatMoney, formatNumber } from '../lib/format';
 import { OFFER_TYPE_KEYS, OFFER_TYPE_LABELS } from '../lib/offer-labels';
+/*
+ * From the client-safe lib, never from `offer.server`. These are rendered in the
+ * component below, and a route component that imports a `.server` module drags it
+ * into the client bundle — which fails `npm run build` and nothing else.
+ */
+import {
+  COUNTDOWN_TOKEN,
+  DEFAULT_COUNTDOWN_MINUTES,
+  DEFAULT_COUNTDOWN_TITLE,
+  DEFAULT_END_TIME,
+  HOUR_OPTIONS,
+  MAX_COUNTDOWN_MINUTES,
+  MERIDIEMS,
+  MINUTE_OPTIONS,
+  MIN_COUNTDOWN_MINUTES,
+  formatClockTime,
+  formatDayLabel,
+  formatDuration,
+  pad2,
+  readTime,
+  splitCountdownTitle,
+  writeTime,
+} from '../lib/countdown';
 import Card from '../components/Card';
 import PlacementThumb from '../components/PlacementThumb';
 
@@ -216,6 +239,14 @@ function readOffer(formData) {
     badge: formData.get('badge') ?? '',
     buttonText: formData.get('buttonText') ?? '',
     countdown: formData.get('countdown') === 'true',
+    countdownMode: formData.get('countdownMode') ?? 'fixed',
+    countdownMinutes: formData.get('countdownMinutes') ?? DEFAULT_COUNTDOWN_MINUTES,
+    /*
+     * A local "YYYY-MM-DDTHH:mm" from the two controls, which `new Date()` reads
+     * in the browser's own zone — the merchant's, which is the one they meant.
+     */
+    countdownEndsAt: formData.get('countdownEndsAt') || null,
+    countdownTitle: formData.get('countdownTitle') ?? '',
     anchorSelector: formData.get('anchorSelector') ?? '',
     anchorPosition: formData.get('anchorPosition') ?? 'after',
     targets: json('targets'),
@@ -582,11 +613,43 @@ function formValues(offer) {
     badge: offer?.badge ?? '',
     buttonText: offer?.buttonText ?? 'Add',
     countdown: Boolean(offer?.countdown),
+    countdownMode: offer?.countdownMode ?? 'fixed',
+    // A string, because that is what the number field puts back into state — one
+    // type in, one type out, and `sameForm` compares them as numbers.
+    countdownMinutes: String(offer?.countdownMinutes ?? DEFAULT_COUNTDOWN_MINUTES),
+    // Held as the form's own local string, not the ISO the loader sends, so the
+    // two controls and the dirty check compare the same thing the merchant sees.
+    countdownEndsAt: toLocalInput(offer?.countdownEndsAt),
+    countdownTitle: offer?.countdownTitle ?? DEFAULT_COUNTDOWN_TITLE,
     anchorSelector: offer?.anchorSelector ?? '',
     anchorPosition: offer?.anchorPosition ?? 'after',
     targets: offer?.targets ?? [],
     items: offer?.items ?? [],
   };
+}
+
+/**
+ * An ISO timestamp as the value a date + time pair holds: `YYYY-MM-DDTHH:mm`, in
+ * the browser's own zone.
+ *
+ * Deliberately local rather than UTC. A merchant setting "ends 1 Sep, 18:00"
+ * means six in the evening where they are, and the stored instant is computed from
+ * that by `new Date()` on the way back in.
+ */
+function toLocalInput(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+
+  const pad = (part) => String(part).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(
+    date.getHours(),
+  )}:${pad(date.getMinutes())}`;
+}
+
+/** Today, as the stored value's date half. */
+function todayLocal() {
+  return toLocalInput(Date.now()).slice(0, 10);
 }
 
 /** The fields an offer actually stores per product. */
@@ -614,6 +677,10 @@ function sameForm(a, b) {
     a.badge === b.badge &&
     a.buttonText === b.buttonText &&
     a.countdown === b.countdown &&
+    a.countdownMode === b.countdownMode &&
+    Number(a.countdownMinutes) === Number(b.countdownMinutes) &&
+    a.countdownEndsAt === b.countdownEndsAt &&
+    a.countdownTitle === b.countdownTitle &&
     a.anchorSelector === b.anchorSelector &&
     a.anchorPosition === b.anchorPosition &&
     ids(a.targets) === ids(b.targets) &&
@@ -636,6 +703,10 @@ function OfferEditor({ type, offer, maxItems, maxTargets }) {
   const [badge, setBadge] = useState(initial.badge);
   const [buttonText, setButtonText] = useState(initial.buttonText);
   const [countdown, setCountdown] = useState(initial.countdown);
+  const [countdownMode, setCountdownMode] = useState(initial.countdownMode);
+  const [countdownMinutes, setCountdownMinutes] = useState(initial.countdownMinutes);
+  const [countdownEndsAt, setCountdownEndsAt] = useState(initial.countdownEndsAt);
+  const [countdownTitle, setCountdownTitle] = useState(initial.countdownTitle);
   const [anchorSelector, setAnchorSelector] = useState(initial.anchorSelector);
   const [anchorPosition, setAnchorPosition] = useState(initial.anchorPosition);
   const [targets, setTargets] = useState(initial.targets);
@@ -657,6 +728,10 @@ function OfferEditor({ type, offer, maxItems, maxTargets }) {
     badge,
     buttonText,
     countdown,
+    countdownMode,
+    countdownMinutes,
+    countdownEndsAt,
+    countdownTitle,
     anchorSelector,
     anchorPosition,
     targets,
@@ -671,6 +746,10 @@ function OfferEditor({ type, offer, maxItems, maxTargets }) {
     setBadge(values.badge);
     setButtonText(values.buttonText);
     setCountdown(values.countdown);
+    setCountdownMode(values.countdownMode);
+    setCountdownMinutes(values.countdownMinutes);
+    setCountdownEndsAt(values.countdownEndsAt);
+    setCountdownTitle(values.countdownTitle);
     setAnchorSelector(values.anchorSelector);
     setAnchorPosition(values.anchorPosition);
     setTargets(values.targets);
@@ -726,6 +805,10 @@ function OfferEditor({ type, offer, maxItems, maxTargets }) {
         badge,
         buttonText,
         countdown: String(countdown),
+        countdownMode,
+        countdownMinutes: String(countdownMinutes),
+        countdownEndsAt,
+        countdownTitle,
         anchorSelector,
         anchorPosition,
         /*
@@ -740,6 +823,15 @@ function OfferEditor({ type, offer, maxItems, maxTargets }) {
       { method: 'POST' },
     );
   };
+
+  /*
+   * The stored value is one local "YYYY-MM-DDTHH:mm" string, but the design shows
+   * two controls, so it is split for rendering and reassembled on change. The
+   * time falls back to the end of the day: a deadline a merchant has not set a
+   * time for means "that day", not "that morning".
+   */
+  const endDate = countdownEndsAt.slice(0, 10);
+  const endTime = countdownEndsAt.slice(11) || DEFAULT_END_TIME;
 
   const placement = PLACEMENTS.find((entry) => entry.type === type);
   const published = status === 'published';
@@ -1051,6 +1143,134 @@ function OfferEditor({ type, offer, maxItems, maxTargets }) {
                   onChange={(event) => setCountdown(Boolean(event.currentTarget.checked))}
                 />
 
+                {countdown && (
+                  <s-stack direction="block" gap="base">
+                    <CountdownModeToggle value={countdownMode} onChange={setCountdownMode} />
+
+                    {countdownMode === 'fixed' ? (
+                      <s-stack direction="block" gap="small-300">
+                        {/*
+                          Label hidden rather than dropped, so a screen reader still
+                          knows what the number means.
+
+                          ⚠️ No `icon` here, though the design shows a clock and
+                          `NumberFieldProps` looks like it inherits one: the React
+                          wrapper omits `FieldDecorationProps`' icon, and the Polaris
+                          validator rejects it — *"Property 'icon' does not exist"*.
+                          `s-select` does take one, which is why the time half has
+                          its clock and this does not.
+                        */}
+                        <s-number-field
+                          label="Countdown length"
+                          labelAccessibilityVisibility="exclusive"
+                          name="countdownMinutes"
+                          suffix="min"
+                          min={MIN_COUNTDOWN_MINUTES}
+                          max={MAX_COUNTDOWN_MINUTES}
+                          step={1}
+                          inputMode="numeric"
+                          value={String(countdownMinutes)}
+                          onInput={(event) => setCountdownMinutes(event.currentTarget.value)}
+                        />
+                        <s-text color="subdued">
+                          The offer will disappear for 24 hours after the countdown ends
+                        </s-text>
+                      </s-stack>
+                    ) : (
+                      <s-stack direction="block" gap="small-300">
+                        {/*
+                          Date and time side by side, as one deadline reads.
+
+                          Two controls because Polaris has a date field and no time
+                          field; half-hour slots are as fine as a deadline needs to
+                          be. Their labels are hidden rather than absent
+                          (`labelAccessibilityVisibility="exclusive"`) — the design
+                          shows none, and a screen reader still needs to know which
+                          half is which.
+                        */}
+                        {/*
+                          A grid, not an inline stack: Polaris fields fill their
+                          container, so in a stack the select took the whole row and
+                          pushed the date onto its own line. Two `1fr` columns give
+                          the two halves the design shows.
+                        */}
+                        <s-grid gridTemplateColumns="1fr 1fr" gap="small-300" alignItems="center">
+                          {/*
+                            The date is a button that opens `s-date-picker` in a
+                            popover, not an `s-date-field`.
+
+                            The field is full width and takes no icon —
+                            `s-date-field`'s props omit `FieldDecorationProps`
+                            entirely, so there is no supported way to put a
+                            calendar in it. A button does take one, and it reads as
+                            the pill the design shows, with the chosen date as its
+                            label.
+                          */}
+                          <s-button
+                            icon="calendar"
+                            inlineSize="fill"
+                            commandFor="countdown-end-date"
+                            command="--show"
+                            accessibilityLabel="Choose the countdown end date"
+                          >
+                            {formatDayLabel(endDate)}
+                          </s-button>
+
+                          {/*
+                            The time matches the date: a pill that opens a picker in
+                            a popover, not a dropdown. An `s-select` was a native
+                            menu of half-hour slots beside a calendar — two
+                            different interactions for the two halves of one
+                            deadline, and no way to say 6:04.
+                          */}
+                          <s-button
+                            icon="clock"
+                            inlineSize="fill"
+                            commandFor="countdown-end-time"
+                            command="--show"
+                            accessibilityLabel="Choose the countdown end time"
+                          >
+                            {formatClockTime(endTime)}
+                          </s-button>
+                        </s-grid>
+
+                        {/*
+                          Outside the grid: a popover is an overlay, but it is still
+                          a DOM child — inside the grid it would claim a third cell
+                          and knock the two halves out of alignment.
+                        */}
+                        <s-popover id="countdown-end-date">
+                          <s-date-picker
+                            type="single"
+                            value={endDate}
+                            onChange={(event) =>
+                              setCountdownEndsAt(`${event.currentTarget.value}T${endTime}`)
+                            }
+                          />
+                        </s-popover>
+
+                        <s-popover id="countdown-end-time">
+                          <TimePicker
+                            value={endTime}
+                            onChange={(next) =>
+                              setCountdownEndsAt(`${endDate || todayLocal()}T${next}`)
+                            }
+                          />
+                        </s-popover>
+                        <s-text color="subdued">Timer that ends at the specific date</s-text>
+                      </s-stack>
+                    )}
+
+                    <s-text-field
+                      label="Title"
+                      name="countdownTitle"
+                      value={countdownTitle}
+                      details={`Use ${COUNTDOWN_TOKEN} where you want the countdown to appear.`}
+                      onInput={(event) => setCountdownTitle(event.currentTarget.value)}
+                    />
+                  </s-stack>
+                )}
+
                 <s-divider />
                 <s-button variant="secondary" onClick={() => setTab('offer')}>
                   Continue to offer
@@ -1159,6 +1379,10 @@ function OfferEditor({ type, offer, maxItems, maxTargets }) {
             badge={badge}
             buttonText={buttonText}
             countdown={countdown}
+            countdownMode={countdownMode}
+            countdownMinutes={countdownMinutes}
+            countdownEndsAt={countdownEndsAt}
+            countdownTitle={countdownTitle}
             items={items}
             placementTitle={placement?.title}
           />
@@ -1183,7 +1407,199 @@ const CAROUSEL_TYPES = new Set(['cross_sell', 'product_add_on']);
 /** What a card falls back to before any product has been picked. */
 const PLACEHOLDER = { id: 'placeholder', title: 'Recommended product' };
 
-function OfferPreview({ offerType, title, badge, buttonText, countdown, items, placementTitle }) {
+/**
+ * Hour, minute and AM/PM as three scrolling columns.
+ *
+ * Built here rather than reached for: Polaris has `s-date-picker` and no time
+ * picker, and a select of fixed slots next to a calendar made the two halves of one
+ * deadline behave differently — and could not say 6:04 at all.
+ *
+ * `s-scroll-box` is the only Polaris element that scrolls; a box's `overflow`
+ * accepts nothing but `hidden` and `visible`. The selected cell is
+ * `background="strong"` from the same token set the mode toggle uses, so there is
+ * no hardcoded colour here either.
+ */
+function TimePicker({ value, onChange }) {
+  const current = readTime(value);
+
+  const column = (label, items, selected, format, toPatch) => (
+    <s-scroll-box maxBlockSize="240px" accessibilityLabel={label}>
+      <s-stack direction="block" gap="small-500">
+        {items.map((item) => (
+          <s-clickable
+            key={item}
+            padding="small-400"
+            borderRadius="base"
+            background={item === selected ? 'strong' : 'transparent'}
+            onClick={() => onChange(writeTime({ ...current, ...toPatch(item) }))}
+            accessibilityLabel={`${label}: ${format(item)}`}
+          >
+            <s-stack direction="inline" justifyContent="center">
+              <s-text type={item === selected ? 'strong' : 'generic'}>{format(item)}</s-text>
+            </s-stack>
+          </s-clickable>
+        ))}
+      </s-stack>
+    </s-scroll-box>
+  );
+
+  return (
+    <s-box padding="small-300">
+      <s-grid gridTemplateColumns="1fr 1fr 1fr" gap="small-300">
+        {column('Hour', HOUR_OPTIONS, current.hour12, pad2, (hour12) => ({ hour12 }))}
+        {column('Minute', MINUTE_OPTIONS, current.minute, pad2, (minute) => ({ minute }))}
+        {/*
+          Not scrolled — two items need no scroller, and giving them one leaves an
+          empty half-column beside the other two.
+        */}
+        <s-stack direction="block" gap="small-500">
+          {MERIDIEMS.map((meridiem) => (
+            <s-clickable
+              key={meridiem}
+              padding="small-400"
+              borderRadius="base"
+              background={meridiem === current.meridiem ? 'strong' : 'transparent'}
+              onClick={() => onChange(writeTime({ ...current, meridiem }))}
+              accessibilityLabel={`Set ${meridiem}`}
+            >
+              <s-stack direction="inline" justifyContent="center">
+                <s-text type={meridiem === current.meridiem ? 'strong' : 'generic'}>
+                  {meridiem}
+                </s-text>
+              </s-stack>
+            </s-clickable>
+          ))}
+        </s-stack>
+      </s-grid>
+    </s-box>
+  );
+}
+
+/**
+ * Fixed | Custom end date, as one joined control.
+ *
+ * Built from `s-box` + `s-clickable` rather than buttons, because neither of the
+ * two routes through Polaris's own components gets there:
+ *
+ *   - `s-button-group gap="none"` is *documented* as the segmented control and
+ *     renders an **empty box** — its props are `ActionSlots`, so plain children
+ *     land in no slot and never display.
+ *   - Two `s-button`s in a grid do render, but a button carries its own chrome:
+ *     the selected half showed as a bordered white button and the other as bare
+ *     text, which reads as one button and one label rather than a control.
+ *
+ * `s-clickable` takes `background`, so the selected half is `subdued` against
+ * `transparent` inside one bordered, rounded box — Polaris tokens throughout, no
+ * hardcoded colour, which is what keeps this native to the admin.
+ *
+ * `overflow="hidden"` is what makes the corners look like one pill: without it the
+ * selected half's square background paints over the box's rounded corner.
+ */
+function CountdownModeToggle({ value, onChange }) {
+  const modes = [
+    { key: 'fixed', label: 'Fixed' },
+    { key: 'date', label: 'Custom end date' },
+  ];
+
+  return (
+    <s-box border="base" borderRadius="base" overflow="hidden">
+      <s-grid gridTemplateColumns="1fr 1fr" gap="none">
+        {modes.map((mode) => (
+          <s-clickable
+            key={mode.key}
+            padding="small-300 base"
+            background={value === mode.key ? 'subdued' : 'transparent'}
+            onClick={() => onChange(mode.key)}
+            accessibilityLabel={`Countdown ends: ${mode.label}`}
+          >
+            {/* The stack is what centres the label; a clickable has no alignment
+                props of its own. */}
+            <s-stack direction="inline" justifyContent="center">
+              <s-text type={value === mode.key ? 'strong' : 'generic'}>{mode.label}</s-text>
+            </s-stack>
+          </s-clickable>
+        ))}
+      </s-grid>
+    </s-box>
+  );
+}
+
+/**
+ * The countdown, ticking, exactly as reco.js renders it.
+ *
+ * Fixed mode counts from the moment the preview mounts, which is what a shopper's
+ * first view does; date mode counts to the merchant's deadline, so a date already
+ * gone shows the offer as hidden rather than a frozen 00:00.
+ */
+function CountdownPreview({ mode, minutes, endsAt, title }) {
+  const deadline = useMemo(() => {
+    if (mode === 'date') {
+      const at = endsAt ? new Date(endsAt).getTime() : NaN;
+      return Number.isNaN(at) ? null : at;
+    }
+    const length = Number(minutes);
+    return Date.now() + (Number.isFinite(length) ? length : DEFAULT_COUNTDOWN_MINUTES) * 60000;
+    // Restarts when the merchant changes the length, which is what makes the
+    // field feel connected to the preview.
+  }, [mode, minutes, endsAt]);
+
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  if (!deadline) {
+    return (
+      <Card>
+        <s-text color="subdued">Pick the date and time this countdown ends.</s-text>
+      </Card>
+    );
+  }
+
+  const left = deadline - now;
+
+  if (left <= 0) {
+    return (
+      <Card>
+        <s-text color="subdued">
+          That deadline has passed, so the offer would not show on the storefront.
+        </s-text>
+      </Card>
+    );
+  }
+
+  // Same split as reco.js: no token means the clock goes after the merchant's
+  // sentence rather than nowhere.
+  const { lead, trail } = splitCountdownTitle(title || DEFAULT_COUNTDOWN_TITLE);
+
+  return (
+    <Card>
+      <s-stack direction="inline" gap="small-500" justifyContent="center" alignItems="center">
+        <s-text>{lead}</s-text>
+        <s-text type="strong" fontVariantNumeric="tabular-nums">
+          {formatDuration(left)}
+        </s-text>
+        <s-text>{trail}</s-text>
+      </s-stack>
+    </Card>
+  );
+}
+
+function OfferPreview({
+  offerType,
+  title,
+  badge,
+  buttonText,
+  countdown,
+  countdownMode,
+  countdownMinutes,
+  countdownEndsAt,
+  countdownTitle,
+  items,
+  placementTitle,
+}) {
   const products = items.length > 0 ? items : [PLACEHOLDER];
   const carousel = CAROUSEL_TYPES.has(offerType);
 
@@ -1239,6 +1655,16 @@ function OfferPreview({ offerType, title, badge, buttonText, countdown, items, p
         )}
       </s-stack>
 
+      {/* Above the cards, where the storefront puts it. */}
+      {countdown && (
+        <CountdownPreview
+          mode={countdownMode}
+          minutes={countdownMinutes}
+          endsAt={countdownEndsAt}
+          title={countdownTitle}
+        />
+      )}
+
       {shown.map((product) => (
         <Card key={product.id}>
           <s-stack
@@ -1278,11 +1704,7 @@ function OfferPreview({ offerType, title, badge, buttonText, countdown, items, p
         <s-text color="subdued">{`Product ${index + 1} of ${products.length}`}</s-text>
       )}
 
-      {countdown && (
-        <Card>
-          <s-text color="subdued">Countdown timer shows here on the storefront.</s-text>
-        </Card>
-      )}
+
 
       <s-paragraph color="subdued">
         Preview of the {(placementTitle ?? 'product page').toLowerCase()} block. It follows the

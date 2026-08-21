@@ -1,5 +1,10 @@
 import prisma from "../db.server";
 import { OFFER_TYPE_KEYS } from "../lib/offer-labels";
+import {
+  COUNTDOWN_MODES,
+  DEFAULT_COUNTDOWN_TITLE,
+  clampCountdownMinutes,
+} from "../lib/countdown";
 
 /**
  * Data access for merchant-authored offers.
@@ -27,6 +32,7 @@ export const OFFER_TYPES = OFFER_TYPE_KEYS;
 export const STATUSES = ["draft", "published"];
 
 export const ANCHOR_POSITIONS = ["before", "after"];
+
 
 /**
  * Same ceiling as Override.MAX_OVERRIDE_ITEMS, and for the same reason: Liquid
@@ -106,8 +112,23 @@ export function validateForPublish(input = {}) {
   if (!String(input.title ?? "").trim()) {
     errors.push("Give the offer a title — shoppers see this above the products.");
   }
+  /*
+   * A date-mode countdown with no date would render nothing and quietly hide the
+   * offer, which is the worst of both. The duration mode needs no such check —
+   * minutes are clamped to something usable.
+   */
+  if (input.countdown && input.countdownMode === "date" && !toDate(input.countdownEndsAt)) {
+    errors.push("Pick the date and time the countdown ends, or switch it to a fixed length.");
+  }
 
   return errors;
+}
+
+/** A datetime-local value from a form, or null for anything unusable. */
+function toDate(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 const shape = (input) => ({
@@ -118,6 +139,12 @@ const shape = (input) => ({
   badge: String(input.badge ?? "").trim(),
   buttonText: String(input.buttonText ?? "").trim() || "Add",
   countdown: Boolean(input.countdown),
+  countdownMode: COUNTDOWN_MODES.includes(input.countdownMode) ? input.countdownMode : "fixed",
+  countdownMinutes: clampCountdownMinutes(input.countdownMinutes),
+  countdownEndsAt: toDate(input.countdownEndsAt),
+  // Blank falls back to the default sentence rather than storing "", because a
+  // countdown with no wording renders a bare clock with nothing explaining it.
+  countdownTitle: String(input.countdownTitle ?? "").trim() || DEFAULT_COUNTDOWN_TITLE,
   // Empty means "use reco.js's fallback chain", which is the right default —
   // storing a blank string would look like a selector that matches nothing.
   anchorSelector: String(input.anchorSelector ?? "").trim() || null,
@@ -221,6 +248,10 @@ export async function duplicateOffer(shopId, id) {
       badge: existing.badge,
       buttonText: existing.buttonText,
       countdown: existing.countdown,
+      countdownMode: existing.countdownMode,
+      countdownMinutes: existing.countdownMinutes,
+      countdownEndsAt: existing.countdownEndsAt,
+      countdownTitle: existing.countdownTitle,
       anchorSelector: existing.anchorSelector,
       anchorPosition: existing.anchorPosition,
       targets: existing.targets ?? [],

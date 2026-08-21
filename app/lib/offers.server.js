@@ -87,6 +87,10 @@ export async function publishOffer({ admin, shopId, offer, previousTargets = [] 
           badge: offer.badge,
           buttonText: offer.buttonText,
           countdown: offer.countdown,
+          countdownMode: offer.countdownMode,
+          countdownMinutes: offer.countdownMinutes,
+          countdownEndsAt: offer.countdownEndsAt,
+          countdownTitle: offer.countdownTitle,
           // Where the app embed injects it, when no theme block is present.
           anchor: { selector: offer.anchorSelector, position: offer.anchorPosition },
         },

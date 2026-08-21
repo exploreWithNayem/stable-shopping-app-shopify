@@ -145,11 +145,25 @@ const CARD_TEMPLATE = `
     </div>
   </template>`;
 
+/**
+ * A Liquid-rendered countdown bar, as reco-panel emits it: the settings on data
+ * attributes and the clock left empty for reco.js to fill.
+ */
+const countdownBar = ({ mode = "fixed", minutes = 60, endsAt = "" } = {}) => `
+  <div class="reco__countdown" data-reco-countdown
+       data-reco-countdown-mode="${mode}"
+       data-reco-countdown-minutes="${minutes}"
+       data-reco-countdown-ends-at="${endsAt}">
+    Hurry up! Offer expires in
+    <strong class="reco__countdown-value" data-reco-countdown-value></strong>
+  </div>`;
+
 function panel({
   attrs = "",
   cards = "",
   serverRendered = true,
   moneyFormat = "€{{amount}}",
+  countdown = "",
 } = {}) {
   return `
   <div class="reco reco--grid" data-reco-block
@@ -158,6 +172,7 @@ function panel({
        data-reco-atc="ajax"
        data-reco-server-rendered="${serverRendered}"
        ${attrs}>
+    ${countdown}
     <div class="reco__viewport"><div class="reco__track" data-reco-track>${cards}</div></div>
     ${serverRendered ? "" : CARD_TEMPLATE}
   </div>`;
@@ -788,6 +803,326 @@ describe("app embed injection", () => {
     expect(icon).toBeTruthy();
     expect(icon.getAttribute('aria-hidden')).toBe('true');
     expect(nav.querySelector('[data-reco-prev]').textContent.trim()).toBe('');
+  });
+
+  test("the offer card carries the preview's plus icon and counter", async () => {
+    /*
+     * The admin preview is a promise about this markup, so the two have to agree:
+     * a `+` inside the add button, and "Product 1 of 2" under the card. The
+     * counter is emptied rather than hidden when there is nothing to page through,
+     * which is what the preview does at one product.
+     */
+    bootEmbed(productPage(), offer({ type: 'cross_sell' }), {
+      enabled: true,
+      strings: { count: 'Product [current] of [total]' },
+    });
+    await tick(1000);
+
+    const block = document.querySelector('[data-reco-embedded]');
+    const button = block.querySelector('[data-reco-add]');
+
+    expect(button.querySelector('svg')).toBeTruthy();
+    // The label sits in its own span beside the icon, so it is still readable as
+    // text — the button is not an icon-only control.
+    expect(button.textContent.trim()).toBe('Add');
+
+    // jsdom reports no layout, so scrollLeft/scrollWidth are 0 and the counter
+    // reads the first of however many cards were rendered.
+    expect(block.querySelector('[data-reco-count]').textContent).toBe('Product 1 of 2');
+  });
+
+  test("no counter when there is nothing to page through", async () => {
+    bootEmbed(productPage(), offer({ type: 'cross_sell', items: [offerProduct(2001)] }), {
+      enabled: true,
+      strings: { count: 'Product [current] of [total]' },
+    });
+    await tick(1000);
+
+    expect(document.querySelector('[data-reco-count]').textContent).toBe('');
+  });
+
+  test("adding to cart puts the button back the way it was, icon included", async () => {
+    /*
+     * The confirmation state used to be restored from `textContent`, which threw
+     * the icon away for good — the button never got its plus back after the first
+     * add.
+     */
+    bootEmbed(productPage(), offer({ type: 'cross_sell' }));
+    await tick(1000);
+
+    const button = document.querySelector('[data-reco-add]');
+    const before = button.innerHTML;
+
+    button.click();
+    // Far enough for the cart call and the confirmation label, not the 1800ms
+    // restore — so the assertion below cannot pass by nothing having happened.
+    await tick(100);
+    expect(cartAdds).toHaveLength(1);
+    expect(button.textContent.trim()).toBe('Added');
+
+    await tick(2500);
+    expect(button.innerHTML).toBe(before);
+    expect(button.querySelector('svg')).toBeTruthy();
+  });
+
+  /*
+   * The countdown.
+   *
+   * Two shapes from the offer's copy: a per-visitor duration that hides the offer
+   * for 24 hours once it runs out, and one absolute deadline for everybody. The
+   * cases that matter are that it ticks, that an expired timer takes the offer with
+   * it, and that a finished countdown stops the offer being rendered — and billed —
+   * on the next visit.
+   */
+  describe("countdown", () => {
+    const timed = (extra) =>
+      offer({
+        type: 'cross_sell',
+        copy: {
+          title: 'You may also like',
+          buttonText: 'Add',
+          countdown: true,
+          countdownMode: 'fixed',
+          countdownMinutes: 60,
+          countdownTitle: 'Hurry up! Offer expires in {{timer}}',
+          ...extra,
+        },
+      });
+
+    test("renders the merchant's sentence with the clock inside it", async () => {
+      bootEmbed(productPage(), timed());
+      await tick(1000);
+
+      const bar = document.querySelector('[data-reco-countdown]');
+      expect(bar.textContent).toContain('Hurry up! Offer expires in');
+      // The clock is its own element so only it is bold, and only it is rewritten
+      // every second.
+      expect(bar.querySelector('[data-reco-countdown-value]').textContent).toBe('59:59');
+    });
+
+    test("counts down every second", async () => {
+      bootEmbed(productPage(), timed({ countdownMinutes: 2 }));
+      await tick(1000);
+
+      const value = document.querySelector('[data-reco-countdown-value]');
+      expect(value.textContent).toBe('01:59');
+
+      await tick(5000);
+      expect(value.textContent).toBe('01:54');
+    });
+
+    test("h:mm:ss once there is an hour or more to say", async () => {
+      bootEmbed(productPage(), timed({ countdownMinutes: 90 }));
+      await tick(1000);
+
+      expect(document.querySelector('[data-reco-countdown-value]').textContent).toBe('1:29:59');
+    });
+
+    test("days once there is more than a day, not a runaway hours count", async () => {
+      /*
+       * A week-long countdown rendered "130:37:21" on a live storefront — an hours
+       * counter past anything a shopper parses. The letter comes from the locale
+       * file through the embed's config.
+       */
+      bootEmbed(productPage(), timed({ countdownMinutes: 7830 }), {
+        enabled: true,
+        strings: { countdownDays: 'd' },
+      });
+      await tick(1000);
+
+      expect(document.querySelector('[data-reco-countdown-value]').textContent).toBe(
+        '5d 10:29:59',
+      );
+    });
+
+    test("the day letter falls back to English with no embed strings", async () => {
+      // A block works without the app embed (§7.5); a missing unit letter is the
+      // kind of default that is suboptimal, never wrong.
+      bootEmbed(productPage(), timed({ countdownMinutes: 2880 }), { enabled: true });
+      await tick(1000);
+
+      expect(document.querySelector('[data-reco-countdown-value]').textContent).toBe(
+        '1d 23:59:59',
+      );
+    });
+
+    test("the merchant's wording is escaped, not injected", async () => {
+      bootEmbed(
+        productPage(),
+        timed({ countdownTitle: '<img src=x onerror=1> {{timer}} <b>bold</b>' }),
+      );
+      await tick(1000);
+
+      const bar = document.querySelector('[data-reco-countdown]');
+      expect(bar.querySelector('img')).toBeNull();
+      expect(bar.querySelector('b')).toBeNull();
+      // Only the clock is markup of ours.
+      expect(bar.querySelector('[data-reco-countdown-value]')).toBeTruthy();
+    });
+
+    test("no token means the clock goes after the sentence, not nowhere", async () => {
+      bootEmbed(productPage(), timed({ countdownTitle: 'Ends soon' }));
+      await tick(1000);
+
+      const bar = document.querySelector('[data-reco-countdown]');
+      expect(bar.textContent.trim().startsWith('Ends soon')).toBe(true);
+      expect(bar.querySelector('[data-reco-countdown-value]').textContent).toBe('59:59');
+    });
+
+    test("running out hides the offer and remembers the 24-hour window", async () => {
+      bootEmbed(productPage(), timed({ countdownMinutes: 1 }));
+      await tick(1000);
+
+      const block = document.querySelector('[data-reco-embedded]');
+      expect(block.hidden).toBe(false);
+
+      await tick(61000);
+
+      // The offer goes, not just the timer: an expired offer left on the page is a
+      // promise the merchant did not make.
+      expect(block.hidden).toBe(true);
+
+      const stored = JSON.parse(window.localStorage.getItem('easy-reco:countdown:1001:1'));
+      expect(stored.hiddenUntil).toBeGreaterThan(Date.now());
+    });
+
+    test("the next visit inside that window renders nothing at all", async () => {
+      /*
+       * Checked before injection, so no serve beacon is sent — rendering and then
+       * hiding would bill a recommendation for something nobody saw (§3.3).
+       */
+      window.localStorage.setItem(
+        'easy-reco:countdown:1001:60',
+        JSON.stringify({ endsAt: Date.now() - 1000, hiddenUntil: Date.now() + 60000 }),
+      );
+
+      bootEmbed(productPage(), timed());
+      await tick(1000);
+
+      expect(document.querySelector('[data-reco-embedded]')).toBeNull();
+      expect(await typesOf('served')).toHaveLength(0);
+    });
+
+    test("after the window the countdown starts over", async () => {
+      window.localStorage.setItem(
+        'easy-reco:countdown:1001:60',
+        JSON.stringify({ endsAt: Date.now() - 90000000, hiddenUntil: Date.now() - 1000 }),
+      );
+
+      bootEmbed(productPage(), timed());
+      await tick(1000);
+
+      expect(document.querySelector('[data-reco-embedded]')).toBeTruthy();
+      expect(document.querySelector('[data-reco-countdown-value]').textContent).toBe('59:59');
+    });
+
+    test("a reload keeps the same deadline rather than granting a fresh hour", async () => {
+      bootEmbed(productPage(), timed());
+      await tick(30000);
+      expect(document.querySelector('[data-reco-countdown-value]').textContent).toBe('59:30');
+
+      // Same shopper, new page load.
+      delete window.EasyReco;
+      bootEmbed(productPage(), timed());
+      await tick(1000);
+
+      expect(document.querySelector('[data-reco-countdown-value]').textContent).toBe('59:29');
+    });
+
+    test("changing the length gives every shopper the new clock", async () => {
+      // The stored deadline is keyed by duration, so an old 60-minute tail cannot
+      // stand in for a new 10-minute offer.
+      bootEmbed(productPage(), timed());
+      await tick(30000);
+
+      delete window.EasyReco;
+      bootEmbed(productPage(), timed({ countdownMinutes: 10 }));
+      await tick(1000);
+
+      expect(document.querySelector('[data-reco-countdown-value]').textContent).toBe('09:59');
+    });
+
+    test("date mode counts to one deadline and needs no storage", async () => {
+      bootEmbed(
+        productPage(),
+        timed({
+          countdownMode: 'date',
+          countdownEndsAt: new Date(Date.now() + 120000).toISOString(),
+        }),
+      );
+      await tick(1000);
+
+      expect(document.querySelector('[data-reco-countdown-value]').textContent).toBe('01:59');
+      expect(window.localStorage.length).toBe(0);
+    });
+
+    test("a date already gone renders nothing", async () => {
+      bootEmbed(
+        productPage(),
+        timed({
+          countdownMode: 'date',
+          countdownEndsAt: new Date(Date.now() - 1000).toISOString(),
+        }),
+      );
+      await tick(1000);
+
+      expect(document.querySelector('[data-reco-embedded]')).toBeNull();
+      expect(await typesOf('served')).toHaveLength(0);
+    });
+
+    test("date mode with no date shows the offer without a timer", async () => {
+      // Publishing blocks this, but a metafield written by hand should degrade to
+      // the offer rather than hiding it.
+      bootEmbed(productPage(), timed({ countdownMode: 'date', countdownEndsAt: null }));
+      await tick(1000);
+
+      expect(document.querySelector('[data-reco-embedded]')).toBeTruthy();
+      expect(document.querySelector('[data-reco-countdown]')).toBeNull();
+    });
+
+    test("a theme block's own countdown ticks the same way", async () => {
+      /*
+       * The block renders the bar in Liquid with its settings on data attributes,
+       * because there is no offer object in JS on that path. Same runtime, same
+       * clock — the feature must not vanish because a merchant placed the block
+       * instead of relying on the app embed.
+       */
+      boot(
+        panel({
+          attrs: customAttrs,
+          cards: card(9001, 91),
+          countdown: countdownBar({ minutes: 2 }),
+        }),
+        { enabled: true },
+      );
+      await tick(1000);
+
+      expect(document.querySelector('[data-reco-countdown-value]').textContent).toBe('01:59');
+    });
+
+    test("an expired block countdown hides the row and bills nothing", async () => {
+      window.localStorage.setItem(
+        'easy-reco:countdown:1001:60',
+        JSON.stringify({ endsAt: Date.now() - 1000, hiddenUntil: Date.now() + 60000 }),
+      );
+
+      boot(
+        panel({ attrs: customAttrs, cards: card(9001, 91), countdown: countdownBar() }),
+        { enabled: true },
+      );
+      await tick(1000);
+
+      expect(document.querySelector('[data-reco-block]').hidden).toBe(true);
+      // wire() never ran, so no serve — the row was never seen.
+      expect(await typesOf('served')).toHaveLength(0);
+    });
+
+    test("no countdown, no bar", async () => {
+      bootEmbed(productPage(), offer({ type: 'cross_sell' }));
+      await tick(1000);
+
+      expect(document.querySelector('[data-reco-countdown]')).toBeNull();
+    });
   });
 
   test("a hidden anchor is skipped", async () => {

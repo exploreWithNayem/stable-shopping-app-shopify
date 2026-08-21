@@ -85,6 +85,12 @@ model Offer {
   badge       String    @default("")
   buttonText  String    @default("Add")
   countdown   Boolean   @default(false)
+  /// How the countdown ends: "fixed" is a per-visitor duration in minutes that
+  /// starts on first view, "date" is one absolute deadline for everybody.
+  countdownMode    String   @default("fixed") // fixed | date
+  countdownMinutes Int      @default(60)
+  countdownEndsAt  DateTime? // "date" mode only
+  countdownTitle   String   @default("Hurry up! Offer expires in {{timer}}")
   /// Where on the page the app embed injects the offer. Null means "use the
   /// built-in fallback chain in reco.js", which covers Dawn-family themes; a
   /// merchant on an unusual theme sets their own CSS selector.

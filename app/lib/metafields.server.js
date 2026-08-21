@@ -83,6 +83,32 @@ export function shouldPublishToStorefront(override) {
  */
 export const METAFIELD_VERSION = 2;
 
+/**
+ * The countdown's own settings, with anything that says nothing left out.
+ *
+ * A null duration or an empty title is noise on a public metafield: reco.js
+ * already has defaults for both, and every key here has to be read by hand on the
+ * other side.
+ */
+function countdownCopy(presentation) {
+  const minutes = Number(presentation.countdownMinutes);
+  const endsAt = presentation.countdownEndsAt
+    ? new Date(presentation.countdownEndsAt)
+    : null;
+  const title = String(presentation.countdownTitle ?? "").trim();
+
+  return {
+    countdownMode: presentation.countdownMode === "date" ? "date" : "fixed",
+    ...(Number.isFinite(minutes) && minutes > 0 ? { countdownMinutes: minutes } : {}),
+    // ISO, because Date.parse handles it everywhere — unlike the shop-local
+    // formats Liquid would otherwise hand the browser.
+    ...(endsAt && !Number.isNaN(endsAt.getTime())
+      ? { countdownEndsAt: endsAt.toISOString() }
+      : {}),
+    ...(title ? { countdownTitle: title } : {}),
+  };
+}
+
 export function buildMetafieldValue(items, { now = new Date(), presentation = null } = {}) {
   const copy = presentation
     ? {
@@ -90,6 +116,14 @@ export function buildMetafieldValue(items, { now = new Date(), presentation = nu
         badge: presentation.badge ?? "",
         buttonText: presentation.buttonText ?? "",
         countdown: Boolean(presentation.countdown),
+        /*
+         * The countdown's own settings, and only when it is on: reco.js reads
+         * `countdown` first, so shipping a duration for a switched-off timer is
+         * payload that can only mislead. `countdownEndsAt` is an ISO string —
+         * Date.parse handles it in every browser, unlike the shop-local formats
+         * Liquid would produce.
+         */
+        ...(presentation.countdown ? countdownCopy(presentation) : {}),
       }
     : null;
 

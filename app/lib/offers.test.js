@@ -256,7 +256,12 @@ describe("the offer's wording reaches the metafield", () => {
       title: "Complete the set",
       badge: "Limited offer",
       buttonText: "Add to cart",
+      // The countdown brings its own settings when it is on — the model defaults
+      // to a 60-minute per-visitor timer with the reference wording.
       countdown: true,
+      countdownMode: "fixed",
+      countdownMinutes: 60,
+      countdownTitle: "Hurry up! Offer expires in {{timer}}",
     });
     expect(value.items.map((item) => item.id)).toEqual(["10"]);
   });
