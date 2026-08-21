@@ -8,6 +8,7 @@ import { listOffers } from '../models/offer.server';
 import { analyticsRetentionDays, rawEventRetentionDays } from '../lib/entitlements';
 import { addDays, startOfUtcDay } from '../lib/dates';
 import { formatNumber, formatPercent, formatShortDate } from '../lib/format';
+import { offerLocationLabel, offerTypeLabel } from '../lib/offer-labels';
 import QuotaBanner from '../components/QuotaBanner';
 import EmptyState from '../components/EmptyState';
 import StatCard, { StatCardGrid } from '../components/StatCard';
@@ -75,18 +76,17 @@ export const loader = async ({ request }) => {
     unsyncedCount: unsynced.length,
     overriddenProducts,
     /*
-     * Only the fields the list draws. The stored rows carry the whole targets and
-     * items arrays, and sending a dozen of those through a loader to render two
-     * counts is payload nobody reads — Json columns are the easy thing to leak
-     * into a page.
+     * Only the fields the list draws. The stored rows carry whole `targets` and
+     * `items` arrays, and sending a dozen of those through a loader so a table can
+     * render four short strings is payload nobody reads — Json columns are the
+     * easy thing to leak into a page.
      */
     offers: offers.slice(0, OFFERS_SHOWN).map((offer) => ({
       id: offer.id,
       name: offer.name,
       status: offer.status,
+      offerType: offer.offerType,
       placement: offer.placement,
-      targetCount: (offer.targets ?? []).length,
-      itemCount: (offer.items ?? []).length,
     })),
     // One row was over-fetched to answer this without a second count query.
     moreOffers: Math.max(0, offers.length - OFFERS_SHOWN),
@@ -172,47 +172,48 @@ export default function Index() {
           <s-stack direction="block" gap="base">
             <s-table variant="auto">
               <s-table-header-row>
-                <s-table-header listSlot="primary">Offer</s-table-header>
+                <s-table-header listSlot="primary">Offer name</s-table-header>
+                <s-table-header>Offer type</s-table-header>
+                <s-table-header>Offer location</s-table-header>
                 <s-table-header listSlot="kicker">Status</s-table-header>
-                <s-table-header format="numeric">Shows on</s-table-header>
-                <s-table-header format="numeric">Recommends</s-table-header>
-                <s-table-header>Actions</s-table-header>
               </s-table-header-row>
 
               <s-table-body>
-                {offers.map((offer) => (
-                  <s-table-row key={offer.id}>
-                    <s-table-cell>
-                      <s-link href={`/app/offers/new?type=${offer.placement}&id=${offer.id}`}>
-                        {offer.name || 'Untitled offer'}
-                      </s-link>
-                    </s-table-cell>
+                {offers.map((offer) => {
+                  /*
+                    Every cell is a description of the offer, so the whole row is the
+                    way back into it — `clickDelegate` names the link that click
+                    lands on. The link itself stays in the markup rather than being
+                    replaced by a row handler: clickDelegate adds no keyboard or
+                    screen reader affordance, so the anchor is what keyboard users
+                    tab to.
+                  */
+                  const editHref = `/app/offers/new?type=${offer.placement}&id=${offer.id}`;
+                  const linkId = `offer-link-${offer.id}`;
 
-                    <s-table-cell>
-                      <s-badge tone={offer.status === 'published' ? 'success' : 'neutral'}>
-                        {offer.status === 'published' ? 'Published' : 'Draft'}
-                      </s-badge>
-                    </s-table-cell>
+                  return (
+                    <s-table-row key={offer.id} clickDelegate={linkId}>
+                      <s-table-cell>
+                        {/* tone="neutral" because the name is the row's label, not a
+                            call to action sitting among plain cells — the row's own
+                            hover state is what says it is clickable. */}
+                        <s-link id={linkId} href={editHref} tone="neutral">
+                          <s-text type="strong">{offer.name || 'Untitled offer'}</s-text>
+                        </s-link>
+                      </s-table-cell>
 
-                    <s-table-cell>
-                      {`${formatNumber(offer.targetCount)} product${
-                        offer.targetCount === 1 ? '' : 's'
-                      }`}
-                    </s-table-cell>
+                      <s-table-cell>{offerTypeLabel(offer.offerType)}</s-table-cell>
 
-                    <s-table-cell>
-                      {`${formatNumber(offer.itemCount)} product${
-                        offer.itemCount === 1 ? '' : 's'
-                      }`}
-                    </s-table-cell>
+                      <s-table-cell>{offerLocationLabel(offer.placement)}</s-table-cell>
 
-                    <s-table-cell>
-                      <s-link href={`/app/offers/new?type=${offer.placement}&id=${offer.id}`}>
-                        Edit
-                      </s-link>
-                    </s-table-cell>
-                  </s-table-row>
-                ))}
+                      <s-table-cell>
+                        <s-badge tone={offer.status === 'published' ? 'success' : 'neutral'}>
+                          {offer.status === 'published' ? 'Published' : 'Not published'}
+                        </s-badge>
+                      </s-table-cell>
+                    </s-table-row>
+                  );
+                })}
               </s-table-body>
             </s-table>
 

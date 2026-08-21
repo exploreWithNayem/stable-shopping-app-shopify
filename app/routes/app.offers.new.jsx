@@ -17,6 +17,7 @@ import { countOverriddenProducts } from '../models/override.server';
 import { canAddOverride, overrideLimit } from '../lib/entitlements';
 import { isUnlimited } from '../lib/plans';
 import { formatNumber } from '../lib/format';
+import { OFFER_TYPE_KEYS, OFFER_TYPE_LABELS } from '../lib/offer-labels';
 import Card from '../components/Card';
 import PlacementThumb from '../components/PlacementThumb';
 
@@ -378,12 +379,15 @@ function ProductList({ label, help, products, max, onChange, exclude = [] }) {
 
 /* ------------------------------------------------------------ offer editor */
 
-const OFFER_TYPES = [
-  { value: 'cross_sell', label: 'Cross-sell' },
-  { value: 'volume_discount', label: 'Volume discount' },
-  { value: 'frequently_bought_together', label: 'Frequently bought together' },
-  { value: 'product_add_on', label: 'Product add-on' },
-];
+/*
+ * Built from the shared label map rather than restated here — the Home offer list
+ * draws the same names in its "Offer type" column, and the model validates
+ * against the same keys.
+ */
+const OFFER_TYPES = OFFER_TYPE_KEYS.map((value) => ({
+  value,
+  label: OFFER_TYPE_LABELS[value],
+}));
 
 const TABS = [
   { id: 'content', label: 'Content' },

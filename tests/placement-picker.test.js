@@ -266,16 +266,25 @@ describe("the offer editor", () => {
     expect(source).toMatch(/const BUILDABLE = PLACEMENTS\.filter\(/);
   });
 
-  test("carries the four offer types", () => {
-    const block = source.slice(source.indexOf("const OFFER_TYPES"));
+  test("carries the four offer types, named in one shared place", () => {
+    /*
+     * The builder's radios and the Home offer list draw the same names, so the
+     * labels live in app/lib/offer-labels.js and both read them from there —
+     * a fifth type is one edit, not three that can drift.
+     */
+    const labels = readFileSync(join(root, "app", "lib", "offer-labels.js"), "utf8");
+
     for (const label of [
       "Cross-sell",
       "Volume discount",
       "Frequently bought together",
       "Product add-on",
     ]) {
-      expect(block).toContain(label);
+      expect(labels).toContain(label);
     }
+
+    expect(source).toContain("OFFER_TYPE_KEYS.map(");
+    expect(source).toContain("OFFER_TYPE_LABELS[value]");
   });
 
   test("carries the four tabs, with Content first", () => {

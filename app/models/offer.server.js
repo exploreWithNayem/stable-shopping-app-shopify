@@ -1,4 +1,5 @@
 import prisma from "../db.server";
+import { OFFER_TYPE_KEYS } from "../lib/offer-labels";
 
 /**
  * Data access for merchant-authored offers.
@@ -16,12 +17,12 @@ import prisma from "../db.server";
 /** The only placement with a surface built for it. */
 export const PLACEMENTS = ["PRODUCT_PAGE"];
 
-export const OFFER_TYPES = [
-  "cross_sell",
-  "volume_discount",
-  "frequently_bought_together",
-  "product_add_on",
-];
+/**
+ * The offer types, shared with the UI rather than restated here: the builder's
+ * radios and the Home list's "Offer type" column read the same keys, so a fifth
+ * type is one edit in app/lib/offer-labels.js.
+ */
+export const OFFER_TYPES = OFFER_TYPE_KEYS;
 
 export const STATUSES = ["draft", "published"];
 

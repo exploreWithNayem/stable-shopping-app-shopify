@@ -181,15 +181,32 @@ describe("route tree", () => {
   });
 
   test("Home does not ship whole Json columns to the client", () => {
-    // `targets` and `items` are unbounded lists; the table draws two counts from
+    // `targets` and `items` are unbounded lists and the table names neither of
     // them, so sending the arrays themselves is payload nobody reads.
     const home = readFileSync(`${appDirectory}routes/app._index.jsx`, "utf8");
     const payload = home.slice(home.indexOf("offers: offers.slice("), home.indexOf("moreOffers:"));
 
-    expect(payload).toContain("targetCount:");
-    expect(payload).toContain("itemCount:");
-    expect(payload).not.toMatch(/^\s*targets,/m);
-    expect(payload).not.toMatch(/^\s*items,/m);
+    // The four columns the table draws, and nothing else.
+    expect(payload).toContain("name: offer.name");
+    expect(payload).toContain("offerType: offer.offerType");
+    expect(payload).toContain("placement: offer.placement");
+    expect(payload).toContain("status: offer.status");
+    expect(payload).not.toMatch(/targets/);
+    expect(payload).not.toMatch(/items/);
+  });
+
+  test("the Home offer rows are clickable, with a real link to delegate to", () => {
+    /*
+     * Every cell describes the offer, so the row itself is the way back in.
+     * `clickDelegate` is click-only — it adds no keyboard or screen reader
+     * affordance — so the row must still contain the anchor it points at, and the
+     * id has to be per-offer or every row would open the same one.
+     */
+    const home = readFileSync(`${appDirectory}routes/app._index.jsx`, "utf8");
+
+    expect(home).toContain("const linkId = `offer-link-${offer.id}`");
+    expect(home).toContain("clickDelegate={linkId}");
+    expect(home).toContain("<s-link id={linkId}");
   });
 
   test("the override editor is reachable at /app/recommendations/:productId", () => {

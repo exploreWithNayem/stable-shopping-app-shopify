@@ -1300,13 +1300,32 @@ marking done.
    > `"@container (inline-size > 720px) 1fr 1fr 1fr, 1fr"`. `tests/placement-picker.test.js` now fails
    > if any route's grid carries more than one `@container` clause.
 8. Empty states for every widget when there is no data yet.
-9. **Offer list** (2026-08-20), directly under the metrics: name, Published/Draft badge, how many
-   product pages it shows on, how many products it recommends, and a link back into the editor at
-   `?type=<placement>&id=<id>`. Capped at 5 rows with an "N more" line — Home is a summary, not a
-   management screen. The loader projects only the counts, never the `targets`/`items` Json columns
-   themselves; `app/routes.test.js` pins both that and the link shape, since a row missing `?type=`
-   bounces back to the placement picker instead of opening the offer. `npm run seed` now creates one
-   published and one draft offer so both states render locally.
+9. **Offer list** (2026-08-20), directly under the metrics. Capped at 5 rows with an "N more" line —
+   Home is a summary, not a management screen. `npm run seed` creates one published and one draft
+   offer so both states render locally.
+
+   **Four columns — Offer name · Offer type · Offer location · Status** (revised 2026-08-21). It
+   first shipped as name / status / "shows on N products" / "recommends N products" / an Edit link;
+   the counts and the Edit column were replaced by what the offer *is*, which is what a merchant
+   scanning a list of offers is actually reading for. Consequences worth keeping:
+
+   - **The whole row is the link**, via `clickDelegate` on `s-table-row` pointing at the name's
+     `s-link` id — which is why the anchor stays in the markup rather than becoming a row `onClick`:
+     `clickDelegate` is documented as click-only and adds no keyboard or screen-reader affordance.
+     The id is per-offer (`offer-link-<id>`) or every row would open the same offer. That is what
+     retired the Edit column: a second link to the same place in a row that is already one link.
+   - The href is still `?type=<placement>&id=<id>` — a row missing `?type=` bounces back to the
+     placement picker instead of opening the offer, so `app/routes.test.js` pins the shape.
+   - The name is `s-text type="strong"` inside `s-link tone="neutral"`, not a default accent link:
+     it labels the row rather than acting as a call to action among plain cells.
+   - Draft rows read **"Not published"**, not "Draft" — the same badge wording the design uses.
+   - **The loader projects five scalars** (`id`, `name`, `status`, `offerType`, `placement`) and
+     never the `targets`/`items` Json columns; the test now asserts neither word appears in the
+     projection at all, since no column counts them any more.
+   - **The labels live in `app/lib/offer-labels.js`**, client-safe, and are the only copy of them:
+     the builder's offer-type radios map over `OFFER_TYPE_KEYS`/`OFFER_TYPE_LABELS`, and
+     `app/models/offer.server.js` validates against the same keys, so a fifth offer type is one
+     edit. Unknown keys humanise rather than render an empty cell — a blank cell reads as a bug.
 
 ### Phase 11 — Pricing & billing
 1. Add the `billing` config to `app/shopify.server.js` with the three plan definitions.
@@ -1464,7 +1483,7 @@ so the first can declare `enabled_on` and the second can own a real collection p
 They share their markup through `reco-panel` and `reco-collection-cards`; only the schema JSON
 duplicates, and a test pins the two copies together. A third block, **Upsell**, is a
 **Bought Together** bundle over the same Custom list (§7.4) — product templates only, its own
-`upsell` placement, billable. 352 Vitest tests pass; lint and typecheck are clean — though see the
+`upsell` placement, billable. 455 Vitest tests pass; lint and typecheck are clean — though see the
 warning in §4: typecheck does not read a single `.js`/`.jsx` file, which is all of them.
 
 Custom recommendations are no longer a paid-only feature: **Free covers 10 products** and the
@@ -1507,7 +1526,7 @@ long after 8.6 landed three; corrected 2026-08-20.
 4. **Phase 13** — Settings, and with it §12 Q2 (a global `intent` default).
 5. **Error boundaries on the remaining admin routes** (Phase 14 item 5, the only one left).
 
-**Last updated:** 2026-08-20
+**Last updated:** 2026-08-21
 
 | Phase | Status | Completed | Notes |
 | --- | --- | --- | --- |
