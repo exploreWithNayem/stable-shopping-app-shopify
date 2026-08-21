@@ -692,6 +692,104 @@ describe("app embed injection", () => {
     expect(await typesOf('impression')).toHaveLength(2);
   });
 
+  /*
+   * The injected offer has to look like the editor's preview: a merchant who set
+   * a cross-sell up and saw one product at a time with arrows should not find a
+   * grid of tiles on their product page. The offer type is what says which, and it
+   * travels in the metafield.
+   */
+  test("a cross-sell offer renders as a one-per-view carousel of rows", async () => {
+    bootEmbed(productPage(), offer({ type: 'cross_sell' }));
+    await tick(1000);
+
+    const block = document.querySelector('[data-reco-embedded]');
+
+    // Built on the slider layout, so the scrolling and the arrow wiring are the
+    // ones the theme block already uses.
+    expect(block.classList.contains('reco--slider')).toBe(true);
+    expect(block.classList.contains('reco--offer')).toBe(true);
+    expect(block.classList.contains('reco--grid')).toBe(false);
+
+    // One column per view is the whole carousel: flex-basis resolves to 100%.
+    expect(block.style.getPropertyValue('--reco-columns-desktop')).toBe('1');
+    expect(block.style.getPropertyValue('--reco-columns-mobile')).toBe('1');
+
+    // Arrows live in the header beside the title, not overlaid on the row, and
+    // both are wired for setupSlider to find.
+    const nav = block.querySelector('[data-reco-nav]');
+    expect(nav.closest('.reco__header')).toBeTruthy();
+    expect(nav.querySelector('[data-reco-prev]')).toBeTruthy();
+    expect(nav.querySelector('[data-reco-next]')).toBeTruthy();
+
+    // In a row the button is a column of its own beside the text, and it is still
+    // found and wired — renderFallback queries the whole card.
+    const card = block.querySelector('[data-reco-card]');
+    expect(card.querySelector('[data-reco-add]').parentElement).toBe(card);
+    expect(card.querySelector('.reco-card__info [data-reco-add]')).toBeNull();
+    expect(block.querySelectorAll('[data-reco-card]')).toHaveLength(2);
+  });
+
+  test("a bundle offer type keeps the grid", async () => {
+    // Frequently bought together is a stacked bundle with a running total and a
+    // volume discount is a list of tiers; neither scrolls.
+    for (const type of ['frequently_bought_together', 'volume_discount']) {
+      document.body.innerHTML = '';
+      bootEmbed(productPage(), offer({ type }));
+      await tick(1000);
+
+      const block = document.querySelector('[data-reco-embedded]');
+      expect(block.classList.contains('reco--grid'), type).toBe(true);
+      expect(block.classList.contains('reco--offer'), type).toBe(false);
+      expect(block.querySelector('[data-reco-nav]'), type).toBeNull();
+      // The button stays inside the info column, under the title and price.
+      expect(block.querySelector('.reco-card__info [data-reco-add]'), type).toBeTruthy();
+    }
+  });
+
+  test("an offer with no type still carousels; a plain curated list does not", async () => {
+    /*
+     * Metafields written before offers carried a type. `copy` is only ever written
+     * by an offer publish, so it still identifies one, and cross-sell is what an
+     * offer defaults to — otherwise every already published offer would keep the
+     * old grid until someone happened to re-publish it.
+     */
+    bootEmbed(productPage(), offer({ type: null }));
+    await tick(1000);
+    expect(
+      document.querySelector('[data-reco-embedded]').classList.contains('reco--offer'),
+    ).toBe(true);
+
+    // A list curated on the recommendations page has no copy and no type, and
+    // takes the plain grid.
+    document.body.innerHTML = '';
+    bootEmbed(productPage(), offer({ type: null, copy: null }));
+    await tick(1000);
+    expect(
+      document.querySelector('[data-reco-embedded]').classList.contains('reco--grid'),
+    ).toBe(true);
+  });
+
+  test("the carousel arrows carry the embed's own labels", async () => {
+    // The block's arrows come from Liquid with a translated aria-label; this path
+    // builds its own, so the strings ride on the embed's config.
+    bootEmbed(productPage(), offer({ type: 'cross_sell' }), {
+      enabled: true,
+      strings: { previous: 'Vorherige', next: 'Nächste' },
+    });
+    await tick(1000);
+
+    const nav = document.querySelector('[data-reco-nav]');
+    expect(nav.querySelector('[data-reco-prev]').getAttribute('aria-label')).toBe('Vorherige');
+    expect(nav.querySelector('[data-reco-next]').getAttribute('aria-label')).toBe('Nächste');
+
+    // The visible arrow is an SVG, so the label is the only thing a screen reader
+    // has to go on — and the icon itself must stay out of the accessibility tree.
+    const icon = nav.querySelector('[data-reco-prev] svg');
+    expect(icon).toBeTruthy();
+    expect(icon.getAttribute('aria-hidden')).toBe('true');
+    expect(nav.querySelector('[data-reco-prev]').textContent.trim()).toBe('');
+  });
+
   test("a hidden anchor is skipped", async () => {
     // Themes ship duplicate buy forms for drawers and quick-add; injecting into
     // one puts the offer somewhere the shopper never sees.

@@ -1162,12 +1162,66 @@
     return null;
   }
 
+  /**
+   * Offer types the admin previews as a carousel: one product at a time, laid out
+   * as a row.
+   *
+   * Frequently bought together is a stacked bundle with a running total (§7.4) and
+   * a volume discount is a list of quantity tiers, so neither scrolls — both keep
+   * the grid. Kept in step with CAROUSEL_TYPES in app/routes/app.offers.new.jsx:
+   * the whole point of the preview is that it is what the shopper gets.
+   */
+  var CAROUSEL_OFFER_TYPES = { cross_sell: true, product_add_on: true };
+
+  function offerIsCarousel(offer) {
+    if (offer.type) return CAROUSEL_OFFER_TYPES[offer.type] === true;
+
+    /*
+     * No type means a metafield written before offers carried one. `copy` is only
+     * ever written by an offer publish, so its presence still identifies one, and
+     * cross-sell is what an offer defaults to — without this an already published
+     * offer would keep the old grid until someone happened to re-publish it. A
+     * list curated on the recommendations page has no copy and stays a grid.
+     */
+    return Boolean(offer.copy);
+  }
+
+  /**
+   * A slider arrow, drawn rather than typed.
+   *
+   * These were the `‹` and `›` text glyphs, which every theme font renders at a
+   * different weight, size and baseline — thin and sitting slightly high in most
+   * of them. An SVG is the same shape in every theme, and it inherits the
+   * button's colour through `currentColor`. Kept identical to the copy in
+   * `snippets/reco-panel.liquid`, which draws the block's own slider nav.
+   */
+  function chevron(direction) {
+    return (
+      '<svg class="reco__nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">' +
+      '<path d="' +
+      (direction === "prev" ? "M15 5 8 12l7 7" : "M9 5l7 7-7 7") +
+      '" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" ' +
+      'stroke-linejoin="round"/></svg>'
+    );
+  }
+
   /** The container the embed renders into, shaped like reco-panel's output. */
   function buildBlock(offer) {
     var copy = offer.copy || {};
+    var strings = config().strings || {};
+    var carousel = offerIsCarousel(offer);
     var block = document.createElement("div");
 
-    block.className = "reco reco--grid reco--align-left reco--embedded";
+    /*
+     * The carousel reuses the slider layout rather than introducing a second
+     * scroller: `reco--slider` brings the scroll-snap CSS and makes wire() call
+     * setupSlider, and one column per view is just the column count set to 1.
+     * `reco--offer` is what turns each card into a row — image, then title and
+     * price, with the button on the trailing edge.
+     */
+    block.className =
+      "reco reco--align-left reco--embedded " +
+      (carousel ? "reco--slider reco--offer" : "reco--grid");
     block.setAttribute("data-reco-block", "");
     block.setAttribute("data-reco-embedded", "true");
     block.setAttribute("data-reco-placement", "pdp");
@@ -1181,30 +1235,70 @@
     // still drawn by renderFallback, which needs the template below.
     block.setAttribute("data-reco-server-rendered", "false");
 
-    var heading = copy.title
-      ? '<div class="reco__header"><h2 class="reco__heading reco__heading--md">' +
-        escapeHtml(copy.title) +
-        "</h2>" +
-        (copy.badge ? '<span class="reco__badge">' + escapeHtml(copy.badge) + "</span>" : "") +
+    if (carousel) {
+      block.style.setProperty("--reco-columns-mobile", "1");
+      block.style.setProperty("--reco-columns-desktop", "1");
+    }
+
+    /*
+     * Arrows sit in the header beside the title, which is where the offer editor
+     * previews them, rather than overlaid on the row as the theme block's slider
+     * does. They start hidden: setupSlider unhides them only when the track
+     * actually overflows, so a one-product offer shows no controls.
+     */
+    var nav = carousel
+      ? '<div class="reco__nav reco__nav--header" data-reco-nav hidden>' +
+        '<button type="button" class="reco__nav-button" data-reco-prev aria-label="' +
+        escapeHtml(strings.previous || "Previous") +
+        '">' +
+        chevron("prev") +
+        "</button>" +
+        '<button type="button" class="reco__nav-button" data-reco-next aria-label="' +
+        escapeHtml(strings.next || "Next") +
+        '">' +
+        chevron("next") +
+        "</button>" +
         "</div>"
       : "";
 
-    block.innerHTML =
-      heading +
-      '<div class="reco__viewport"><div class="reco__track" data-reco-track></div></div>' +
-      '<template data-reco-card-template>' +
-      '<div class="reco-card" data-reco-card>' +
-      '<a class="reco-card__media" data-reco-link>' +
-      '<img class="reco-card__image" width="400" height="400" loading="lazy" alt="">' +
-      "</a>" +
+    // The header is also what holds the nav, so a carousel with no title still
+    // needs one — otherwise the arrows would have nowhere to go.
+    var heading =
+      copy.title || nav
+        ? '<div class="reco__header">' +
+          (copy.title
+            ? '<h2 class="reco__heading reco__heading--md">' + escapeHtml(copy.title) + "</h2>"
+            : "") +
+          (copy.badge ? '<span class="reco__badge">' + escapeHtml(copy.badge) + "</span>" : "") +
+          nav +
+          "</div>"
+        : "";
+
+    var button =
+      '<button type="button" class="reco-card__button reco-card__button--solid" data-reco-add>' +
+      escapeHtml(copy.buttonText || strings.addToCart || "Add to cart") +
+      "</button>";
+
+    var info =
       '<div class="reco-card__info">' +
       '<a class="reco-card__title" data-reco-link data-reco-title></a>' +
       '<span class="reco-card__price"><span data-reco-price></span>' +
       '<s class="reco-card__compare" data-reco-compare hidden></s></span>' +
-      '<button type="button" class="reco-card__button reco-card__button--solid" data-reco-add>' +
-      escapeHtml(copy.buttonText || config().strings.addToCart || "Add to cart") +
-      "</button>" +
-      "</div>" +
+      // In a row the button is a column of its own, beside the text rather than
+      // under it. renderFallback finds it either way — it queries the whole card.
+      (carousel ? "" : button) +
+      "</div>";
+
+    block.innerHTML =
+      heading +
+      '<div class="reco__viewport"><div class="reco__track" data-reco-track></div></div>' +
+      "<template data-reco-card-template>" +
+      '<div class="reco-card" data-reco-card>' +
+      '<a class="reco-card__media" data-reco-link>' +
+      '<img class="reco-card__image" width="400" height="400" loading="lazy" alt="">' +
+      "</a>" +
+      info +
+      (carousel ? button : "") +
       "</div>" +
       "</template>";
 

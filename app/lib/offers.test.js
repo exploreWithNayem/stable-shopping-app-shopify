@@ -141,6 +141,72 @@ describe("publishOffer", () => {
     expect(result.offer.status).toBe("draft");
   });
 
+  test("re-publishing drops products the offer no longer targets", async () => {
+    /*
+     * Editing a live offer republishes it (the editor's save path), so a product
+     * the merchant removed has to lose its Override row *and* its metafield.
+     * Without that its page keeps rendering the offer while nothing in the admin
+     * claims it does — and the merchant has no way left to take it down.
+     */
+    const first = await saveOffer(shopId, {
+      name: "Offer",
+      placement: "PRODUCT_PAGE",
+      offerType: "cross_sell",
+      title: "You may also like",
+      targets: [product(1), product(2)],
+      items: [product(10)],
+    });
+    await publishOffer({ admin: stubAdmin(), shopId, offer: first });
+
+    const narrowed = await saveOffer(shopId, {
+      id: first.id,
+      name: "Offer",
+      placement: "PRODUCT_PAGE",
+      offerType: "cross_sell",
+      title: "You may also like",
+      targets: [product(1)],
+      items: [product(10)],
+    });
+
+    const admin = stubAdmin();
+    const result = await publishOffer({
+      admin,
+      shopId,
+      offer: narrowed,
+      previousTargets: first.targets,
+    });
+
+    expect(result.removed).toBe(1);
+    expect(result.synced).toBe(1);
+    expect(await getOverride({ shopId, productId: "2", placement: "pdp" })).toBeNull();
+    expect(await getOverride({ shopId, productId: "1", placement: "pdp" })).toBeTruthy();
+
+    // The metafield goes too — the theme reads nothing else, so leaving it behind
+    // is what keeps the old list rendering.
+    const deletes = admin.calls.filter((call) => call.query.includes("metafieldsDelete"));
+    expect(JSON.stringify(deletes)).toContain("/Product/2");
+    expect(JSON.stringify(deletes)).not.toContain("/Product/1");
+  });
+
+  test("a first publish takes nothing away", async () => {
+    // No previous targets means nothing to subtract; the parameter is optional so
+    // the plain publish path reads the same as it always did.
+    const offer = await saveOffer(shopId, {
+      name: "Offer",
+      placement: "PRODUCT_PAGE",
+      offerType: "cross_sell",
+      title: "You may also like",
+      targets: [product(1)],
+      items: [product(10)],
+    });
+
+    const admin = stubAdmin();
+    const result = await publishOffer({ admin, shopId, offer });
+
+    expect(result.removed).toBe(0);
+    expect(admin.calls.some((call) => call.query.includes("metafieldsDelete"))).toBe(false);
+  });
+
   test("re-publishing replaces the list rather than appending", async () => {
     const offer = await offerFor([product(1)], [product(10)]);
     await publishOffer({ admin: stubAdmin(), shopId, offer });
@@ -215,6 +281,35 @@ describe("the offer's wording reaches the metafield", () => {
       title: "Complete the set",
       buttonText: "Add to cart",
     });
+  });
+
+  test("publishing writes the offer type, end to end", async () => {
+    /*
+     * The type is what makes the injected offer render the way the editor
+     * previewed it — a carousel of rows for a cross-sell (§7.6). It has to travel
+     * the whole way: publish -> Override.presentation -> metafield. It once went
+     * onto the publish call but was dropped by normalizePresentation, so the
+     * storefront kept rendering a grid with every test still green.
+     */
+    const offer = await saveOffer(shopId, {
+      name: "Offer",
+      placement: "PRODUCT_PAGE",
+      offerType: "product_add_on",
+      title: "Add a case",
+      buttonText: "Add",
+      targets: [product(1)],
+      items: [product(10)],
+    });
+
+    const admin = stubAdmin();
+    await publishOffer({ admin, shopId, offer });
+
+    const value = JSON.parse(admin.calls[0].variables.metafields[0].value);
+    expect(value.type).toBe("product_add_on");
+
+    // And on the row, so the Settings re-sync writes it again without the offer.
+    const override = await getOverride({ shopId, productId: "1", placement: "pdp" });
+    expect(override.presentation).toMatchObject({ type: "product_add_on" });
   });
 
   test("an offer with no wording leaves the block settings in charge", async () => {

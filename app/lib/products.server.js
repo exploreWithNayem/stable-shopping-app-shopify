@@ -31,6 +31,12 @@ const PRODUCT_FIELDS = `#graphql
         }
       }
     }
+    priceRangeV2 {
+      minVariantPrice {
+        amount
+        currencyCode
+      }
+    }
   }`;
 
 const PRODUCT_LIST_QUERY = `#graphql
@@ -109,6 +115,13 @@ export function normalizeAdminProduct(node) {
   if (!node?.id) return null;
 
   const image = node.featuredMedia?.preview?.image ?? null;
+  /*
+   * The cheapest variant, which is what a storefront card shows as "from" price.
+   * Kept as the raw amount plus its currency rather than a formatted string: the
+   * offer preview formats it with Intl, and a pre-formatted string would have to
+   * be re-parsed to do anything else with it.
+   */
+  const price = node.priceRangeV2?.minVariantPrice ?? null;
 
   return {
     id: node.id.split("/").pop(),
@@ -119,6 +132,8 @@ export function normalizeAdminProduct(node) {
     totalInventory: node.totalInventory ?? 0,
     image: image?.url ?? null,
     imageAlt: image?.altText ?? node.title ?? "",
+    price: price ? Number(price.amount) : null,
+    currencyCode: price?.currencyCode ?? null,
   };
 }
 

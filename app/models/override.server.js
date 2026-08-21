@@ -158,6 +158,13 @@ export function normalizePresentation(presentation) {
   const badge = String(presentation.badge ?? "").trim();
   const buttonText = String(presentation.buttonText ?? "").trim();
   const countdown = Boolean(presentation.countdown);
+  /*
+   * The offer type, which is what tells the app embed whether to lay the offer out
+   * as a carousel of rows or a grid (§7.6). It is not wording, but it belongs here
+   * for the same reason the wording does: this row is what gets written to the
+   * metafield, so anything the storefront needs has to survive a Settings re-sync.
+   */
+  const type = String(presentation.type ?? "").trim();
 
   const selector = String(presentation.anchor?.selector ?? "").trim();
   const position = presentation.anchor?.position === "before" ? "before" : "after";
@@ -165,11 +172,29 @@ export function normalizePresentation(presentation) {
   const anchor = selector ? { selector, position } : null;
 
   // Nothing worth storing: let the theme block's own settings speak.
-  if (!title && !badge && !buttonText && !countdown && !anchor) return null;
+  if (!title && !badge && !buttonText && !countdown && !anchor && !type) return null;
 
-  return { title, badge, buttonText, countdown, ...(anchor ? { anchor } : {}) };
+  return {
+    ...(type ? { type } : {}),
+    title,
+    badge,
+    buttonText,
+    countdown,
+    ...(anchor ? { anchor } : {}),
+  };
 }
 
+/**
+ * `presentation` is deliberately **not** defaulted.
+ *
+ * Omitting it leaves whatever the row already had; passing it — even as null —
+ * replaces it. The recommendations page edits a product's list without knowing
+ * anything about offers, and while this defaulted to null that edit silently
+ * stripped a published offer's title, badge, button text and anchor out of the
+ * metafield, so the storefront lost the offer's wording and layout with no way to
+ * tell what had happened. Only the publish path, which does hold the copy, gets
+ * to clear it.
+ */
 export function upsertOverride({
   shopId,
   productId,
@@ -178,7 +203,7 @@ export function upsertOverride({
   placement = "pdp",
   items,
   enabled = true,
-  presentation = null,
+  presentation,
 }) {
   const normalized = normalizeItems(items);
   const copy = normalizePresentation(presentation);
@@ -193,7 +218,7 @@ export function upsertOverride({
       productHandle,
       items: normalized,
       enabled,
-      presentation: copy,
+      ...(presentation === undefined ? {} : { presentation: copy }),
       syncedAt: null,
     },
     create: {
@@ -202,6 +227,7 @@ export function upsertOverride({
       productHandle,
       items: normalized,
       enabled,
+      // Nothing to preserve on a first write.
       presentation: copy,
     },
   });

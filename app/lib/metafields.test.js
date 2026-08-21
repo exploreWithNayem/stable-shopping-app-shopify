@@ -123,6 +123,29 @@ describe("buildMetafieldValue", () => {
     expect("copy" in value).toBe(false);
   });
 
+  test("carries the offer type, so the embed can lay it out", () => {
+    /*
+     * The app embed has no theme settings to read (§7.6), so the offer type is the
+     * only thing that can tell it whether to render a carousel of rows or a grid.
+     */
+    const value = JSON.parse(
+      buildMetafieldValue([{ id: 1 }], {
+        presentation: { type: "cross_sell", title: "You may also like" },
+      }),
+    );
+
+    expect(value.type).toBe("cross_sell");
+  });
+
+  test("no type for a list curated on the recommendations page", () => {
+    // It has no offer behind it, so there is no type — and the theme block's own
+    // layout setting is the right answer there.
+    expect("type" in JSON.parse(buildMetafieldValue([{ id: 1 }]))).toBe(false);
+    expect(
+      "type" in JSON.parse(buildMetafieldValue([{ id: 1 }], { presentation: { type: "  " } })),
+    ).toBe(false);
+  });
+
   test("the sync reads copy off the row, not the caller", async () => {
     /*
      * The Settings re-sync has no offer in hand — it iterates Override rows. If

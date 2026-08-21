@@ -5,6 +5,7 @@ import {
   MAX_TARGETS,
   countOffers,
   deleteOffer,
+  duplicateOffer,
   getOffer,
   listOffers,
   markDraft,
@@ -201,6 +202,49 @@ describe("status and deletion", () => {
     expect(await deleteOffer("not-a-shop", offer.id)).toBeNull();
     expect(await deleteOffer(shopId, offer.id)).toMatchObject({ id: offer.id });
     expect(await countOffers(shopId)).toBe(0);
+  });
+
+  test("duplicateOffer copies the products but never the published status", async () => {
+    /*
+     * Publishing writes an Override row and a metafield per target, so a copy
+     * that arrived published would overwrite the original's storefront output on
+     * every product the two share — and nobody asked for that by pressing
+     * Duplicate.
+     */
+    const offer = await saveOffer(
+      shopId,
+      draft({ name: "Summer bundle", badge: "Limited", countdown: true }),
+    );
+    await markPublished(offer.id);
+
+    const copy = await duplicateOffer(shopId, offer.id);
+
+    expect(copy.id).not.toBe(offer.id);
+    expect(copy.status).toBe("draft");
+    expect(copy.publishedAt).toBeNull();
+    expect(copy.name).toBe("Summer bundle copy");
+    expect(copy).toMatchObject({
+      placement: offer.placement,
+      offerType: offer.offerType,
+      title: offer.title,
+      badge: "Limited",
+      buttonText: offer.buttonText,
+      countdown: true,
+    });
+    // The products come along — re-picking them by hand is the work being saved.
+    expect(copy.items).toEqual(offer.items);
+    expect(copy.targets).toEqual(offer.targets);
+
+    // The original is untouched, still live.
+    expect(await getOffer(shopId, offer.id)).toMatchObject({ status: "published" });
+    expect(await countOffers(shopId)).toBe(2);
+  });
+
+  test("duplicateOffer is scoped to the shop", async () => {
+    // An id in a form field is not proof of ownership.
+    const offer = await saveOffer(shopId, draft());
+    expect(await duplicateOffer("not-a-shop", offer.id)).toBeNull();
+    expect(await countOffers(shopId)).toBe(1);
   });
 
   test("listOffers is newest-edited first", async () => {

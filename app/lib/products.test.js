@@ -17,6 +17,7 @@ const node = (id, overrides = {}) => ({
   featuredMedia: {
     preview: { image: { url: `https://cdn/${id}.jpg`, altText: `Alt ${id}` } },
   },
+  priceRangeV2: { minVariantPrice: { amount: "30.00", currencyCode: "EUR" } },
   ...overrides,
 });
 
@@ -43,6 +44,24 @@ describe("normalizeAdminProduct", () => {
       image: "https://cdn/9.jpg",
       imageAlt: "Alt 9",
     });
+  });
+
+  test("carries the cheapest variant price and its currency", () => {
+    /*
+     * The offer preview renders this, so it is the raw amount plus the currency
+     * rather than a formatted string — formatting here would have to be undone to
+     * do anything else with the number.
+     */
+    const product = normalizeAdminProduct(node(9));
+    expect(product.price).toBe(30);
+    expect(product.currencyCode).toBe("EUR");
+  });
+
+  test("a product with no price range reports no price, not zero", () => {
+    // A zero would render as "$0.00" on a card, which reads as a free product.
+    const product = normalizeAdminProduct(node(9, { priceRangeV2: null }));
+    expect(product.price).toBeNull();
+    expect(product.currencyCode).toBeNull();
   });
 
   test("survives a product with no media", () => {

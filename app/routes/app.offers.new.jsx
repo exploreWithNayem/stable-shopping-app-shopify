@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useFetcher, useLoaderData } from 'react-router';
+import { useFetcher, useLoaderData, useNavigate } from 'react-router';
 import { SaveBar, useAppBridge } from '@shopify/app-bridge-react';
 import { authenticate } from '../shopify.server';
 import { ensureShop } from '../models/shop.server';
 import {
   MAX_ITEMS,
   MAX_TARGETS,
+  deleteOffer,
+  duplicateOffer,
   getOffer,
   publishedTargetIds,
   saveOffer,
@@ -16,7 +18,8 @@ import { newlyOccupiedTargets, publishOffer, unpublishOffer } from '../lib/offer
 import { countOverriddenProducts } from '../models/override.server';
 import { canAddOverride, overrideLimit } from '../lib/entitlements';
 import { isUnlimited } from '../lib/plans';
-import { formatNumber } from '../lib/format';
+import { getProductsByIds } from '../lib/products.server';
+import { formatMoney, formatNumber } from '../lib/format';
 import { OFFER_TYPE_KEYS, OFFER_TYPE_LABELS } from '../lib/offer-labels';
 import Card from '../components/Card';
 import PlacementThumb from '../components/PlacementThumb';
@@ -113,8 +116,56 @@ const BUILDABLE = PLACEMENTS.filter((placement) => placement.available).map(
 
 /* -------------------------------------------------------------------- loader */
 
+/**
+ * Fill in what the stored lists do not carry.
+ *
+ * An offer stores `{ id, handle, title, position }` per product — enough to
+ * publish, since the storefront resolves everything else from the product itself.
+ * The preview and the product rows want the image and the price too, so those are
+ * fetched once per load rather than stored: a product's image or price changing
+ * must not need every offer that mentions it to be re-saved.
+ *
+ * One `nodes(ids:)` call covers both lists. A product that has since been deleted
+ * simply comes back without details and keeps its stored title.
+ */
+async function hydrateProducts(admin, offer) {
+  if (!offer) return null;
+
+  const lists = [offer.targets ?? [], offer.items ?? []];
+  const ids = [...new Set(lists.flat().map((entry) => String(entry.id)))];
+  if (ids.length === 0) return offer;
+
+  let details = new Map();
+  try {
+    const products = await getProductsByIds(admin, ids);
+    details = new Map(products.map((product) => [product.id, product]));
+  } catch {
+    // The editor is still usable without images — a failed hydrate must not
+    // turn "open my offer" into an error page.
+    return offer;
+  }
+
+  const merge = (list) =>
+    list.map((entry) => {
+      const product = details.get(String(entry.id));
+      if (!product) return entry;
+
+      return {
+        ...entry,
+        title: entry.title || product.title,
+        handle: entry.handle || product.handle,
+        image: product.image,
+        imageAlt: product.imageAlt,
+        price: product.price,
+        currencyCode: product.currencyCode,
+      };
+    });
+
+  return { ...offer, targets: merge(offer.targets ?? []), items: merge(offer.items ?? []) };
+}
+
 export const loader = async ({ request }) => {
-  const { session } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
   const shop = await ensureShop(session.shop);
 
   const params = new URL(request.url).searchParams;
@@ -135,7 +186,7 @@ export const loader = async ({ request }) => {
 
   return {
     type,
-    offer,
+    offer: await hydrateProducts(admin, offer),
     used,
     limit: isUnlimited(limit) ? null : limit,
     canAdd: canAddOverride(shop.plan, used),
@@ -195,6 +246,66 @@ export const action = async ({ request }) => {
     };
   }
 
+  /*
+   * Duplicating never touches the storefront: the copy is a draft (see
+   * duplicateOffer), so this needs no admin client and no allowance check —
+   * a draft occupies no product slot until it is published.
+   */
+  if (intent === 'duplicate') {
+    const copy = await duplicateOffer(shop.id, formData.get('id'));
+    if (!copy) return { ok: false, error: 'That offer no longer exists.' };
+
+    /*
+     * The URL has to change, not just the state: `?id=` is what the editor opens
+     * from, and leaving it pointed at the original while the form holds the copy
+     * would make the back button and a refresh disagree with the screen.
+     */
+    return {
+      ok: true,
+      duplicated: true,
+      redirectTo: `/app/offers/new?type=${copy.placement}&id=${copy.id}`,
+    };
+  }
+
+  /*
+   * Delete takes the offer off the storefront first.
+   *
+   * Deleting the row alone would leave the Override rows and their metafields
+   * behind, and the theme block reads the metafield (§3.1) — so the products
+   * would keep showing an offer that no longer exists anywhere in the admin, with
+   * nothing left to unpublish it with.
+   */
+  if (intent === 'delete') {
+    const offer = await getOffer(shop.id, formData.get('id'));
+    if (!offer) return { ok: false, error: 'That offer no longer exists.' };
+
+    const takedown =
+      offer.status === 'published'
+        ? await unpublishOffer({ admin, shopId: shop.id, offer })
+        : { failures: [] };
+
+    /*
+     * A metafield that would not delete is reported, but the offer still goes:
+     * refusing to delete would leave the merchant with a row they cannot remove,
+     * and the Settings re-sync is what repairs a stuck metafield.
+     */
+    await deleteOffer(shop.id, offer.id);
+
+    const failures = takedown.failures;
+
+    return {
+      ok: failures.length === 0,
+      deleted: true,
+      failures,
+      /*
+       * Only a clean takedown leaves the page. With failures there is something
+       * the merchant has to be told — a product whose metafield is still live —
+       * and a redirect would take the banner saying so with it.
+       */
+      redirectTo: failures.length === 0 ? '/app' : null,
+    };
+  }
+
   if (intent !== 'save' && intent !== 'publish') {
     return { ok: false, error: 'Unknown action.' };
   }
@@ -206,17 +317,30 @@ export const action = async ({ request }) => {
   }
 
   /*
+   * Whether this save changes something shoppers can already see.
+   *
+   * Read *before* the write, because it decides both how the input is validated
+   * and whether the storefront has to be rewritten — and it needs the row's old
+   * target list to clean up products the offer no longer covers.
+   */
+  const before = input.id ? await getOffer(shop.id, input.id) : null;
+  const live = before?.status === 'published';
+
+  /*
    * Draft and publish are validated differently on purpose. A merchant who has
    * picked products but not written a title should be able to save and come back,
-   * so only publishing demands a complete offer.
+   * so only publishing demands a complete offer — and so does saving an offer that
+   * is already live, because that save goes straight to the storefront.
    */
-  const errors = intent === 'publish' ? validateForPublish(input) : validateOffer(input);
-  if (errors.length > 0) return { ok: false, errors };
+  const errors =
+    intent === 'publish' || live ? validateForPublish(input) : validateOffer(input);
+  if (errors.length > 0) return { ok: false, errors, live };
 
   const saved = await saveOffer(shop.id, input);
   if (!saved) return { ok: false, error: 'That offer no longer exists.' };
 
-  if (intent === 'save') return { ok: true, offer: saved, saved: true };
+  // A draft save stops here: nothing of it is on the storefront to update.
+  if (intent === 'save' && !live) return { ok: true, offer: saved, saved: true };
 
   /*
    * Enforced here as well as in the UI. Only targets nobody has published yet
@@ -241,14 +365,29 @@ export const action = async ({ request }) => {
     };
   }
 
-  const result = await publishOffer({ admin, shopId: shop.id, offer: saved });
+  /*
+   * `previousTargets` is what makes a re-publish subtractive as well as additive:
+   * a product dropped from the offer has to lose its Override row and metafield,
+   * or its page keeps rendering the offer with nothing in the admin still
+   * claiming it does.
+   */
+  const result = await publishOffer({
+    admin,
+    shopId: shop.id,
+    offer: saved,
+    previousTargets: before?.targets ?? [],
+  });
 
   return {
     ok: result.failures.length === 0,
     offer: result.offer,
     published: true,
+    // A save on a live offer updated the storefront rather than making it live,
+    // which is a different sentence for the merchant to read.
+    updated: intent === 'save',
     synced: result.synced,
     total: result.total,
+    removed: result.removed,
     failures: result.failures,
   };
 };
@@ -290,6 +429,28 @@ function PageHeading({ back, children, trailing = null }) {
 }
 
 /**
+ * The picker's cheapest price, whichever shape it hands back.
+ *
+ * The resource picker returns product resources shaped like the Storefront/Admin
+ * product rather than a documented DTO, so both the variant list and the price
+ * range are tried before giving up. A missing price is a missing price — the
+ * preview shows no line rather than a zero.
+ */
+function priceOf(node) {
+  const candidates = [
+    node?.priceRangeV2?.minVariantPrice?.amount,
+    node?.priceRange?.minVariantPrice?.amount,
+    ...(node?.variants ?? []).map((variant) => variant?.price),
+  ];
+
+  for (const value of candidates) {
+    const amount = Number(value);
+    if (Number.isFinite(amount)) return amount;
+  }
+  return null;
+}
+
+/**
  * A product list the merchant edits with the App Bridge picker.
  *
  * The picker is admin-hosted, so when it fails to open there is nothing this app
@@ -325,6 +486,18 @@ function ProductList({ label, help, products, max, onChange, exclude = [] }) {
           id: String(node.id).split('/').pop(),
           handle: node.handle ?? null,
           title: node.title ?? null,
+          /*
+           * The image and price are read straight off the picker's own result so
+           * the preview updates the moment products are chosen, with no round
+           * trip. They are display-only: `normalizeProducts` on the server keeps
+           * id/handle/title/position and drops the rest, and the loader
+           * re-hydrates them on the next open — a product whose price changes
+           * must not need every offer that mentions it to be re-saved.
+           */
+          image: node.images?.[0]?.originalSrc ?? node.images?.[0]?.url ?? null,
+          imageAlt: node.images?.[0]?.altText ?? node.title ?? '',
+          price: priceOf(node),
+          currencyCode: node.priceRangeV2?.minVariantPrice?.currencyCode ?? null,
         }))
         // A product is never a recommendation for itself.
         .filter((product) => !excluded.has(product.id));
@@ -353,7 +526,11 @@ function ProductList({ label, help, products, max, onChange, exclude = [] }) {
               justifyContent="space-between"
             >
               <s-stack direction="inline" gap="small-300" alignItems="center">
-                <s-thumbnail size="small" alt="" />
+                <s-thumbnail
+                  size="small"
+                  {...(product.image ? { src: product.image } : {})}
+                  alt={product.imageAlt ?? ''}
+                />
                 <s-text>{product.title || `Product ${product.id}`}</s-text>
               </s-stack>
               <s-button
@@ -412,6 +589,13 @@ function formValues(offer) {
   };
 }
 
+/** The fields an offer actually stores per product. */
+const storedProduct = (product) => ({
+  id: product.id,
+  handle: product.handle ?? null,
+  title: product.title ?? null,
+});
+
 /**
  * Whether two form states differ.
  *
@@ -439,6 +623,7 @@ function sameForm(a, b) {
 
 function OfferEditor({ type, offer, maxItems, maxTargets }) {
   const fetcher = useFetcher();
+  const navigate = useNavigate();
   const [tab, setTab] = useState('content');
 
   const initial = useMemo(() => formValues(offer), [offer]);
@@ -508,7 +693,28 @@ function OfferEditor({ type, offer, maxItems, maxTargets }) {
     setBaseline(formValues(result.offer));
   }, [result]);
 
+  /*
+   * Delete and duplicate change which offer the URL points at, so they are the
+   * two actions that navigate. Duplicating lands on the copy — the merchant
+   * pressed it to work on the copy, not to be told one exists — and a clean
+   * delete goes back to the list, since the offer this route was editing is gone.
+   */
+  useEffect(() => {
+    if (!result?.redirectTo) return;
+    navigate(result.redirectTo);
+  }, [result, navigate]);
+
   const submit = (intent) => {
+    /*
+     * Delete and duplicate act on the stored row, not on what is on screen, so
+     * they send nothing but the id — posting the form body would imply the copy
+     * or the takedown used the unsaved edits, which it does not.
+     */
+    if (intent === 'delete' || intent === 'duplicate') {
+      fetcher.submit({ intent, ...(id ? { id } : {}) }, { method: 'POST' });
+      return;
+    }
+
     fetcher.submit(
       {
         intent,
@@ -522,8 +728,14 @@ function OfferEditor({ type, offer, maxItems, maxTargets }) {
         countdown: String(countdown),
         anchorSelector,
         anchorPosition,
-        targets: JSON.stringify(targets),
-        items: JSON.stringify(items),
+        /*
+         * Stripped back to what is stored. The lists carry an image and a price
+         * for the preview, and posting those would send a few KB of CDN URLs the
+         * server drops on arrival (`normalizeProducts`) — and imply they are part
+         * of the offer, which they are not: they are re-read on every load.
+         */
+        targets: JSON.stringify(targets.map(storedProduct)),
+        items: JSON.stringify(items.map(storedProduct)),
       },
       { method: 'POST' },
     );
@@ -559,13 +771,51 @@ function OfferEditor({ type, offer, maxItems, maxTargets }) {
         back="/app/offers/new"
         trailing={
           <s-stack direction="inline" gap="small-300" alignItems="center">
-            <s-button
-              variant="secondary"
-              onClick={() => submit('save')}
-              {...(busy ? { loading: true } : {})}
-            >
-              Save draft
-            </s-button>
+            {/*
+              Delete and Duplicate only exist once there is a stored row to act
+              on — before the first save there is nothing to copy or remove, and
+              the form itself is the draft.
+            */}
+            {id && (
+              <>
+                <s-button
+                  variant="secondary"
+                  tone="critical"
+                  commandFor="offer-delete-modal"
+                  command="--show"
+                  {...(busy ? { disabled: true } : {})}
+                >
+                  Delete
+                </s-button>
+                {/*
+                  Disabled while the save bar is up: the copy is made from the
+                  stored row, so duplicating mid-edit would silently drop the
+                  changes the merchant is looking at.
+                */}
+                <s-button
+                  variant="secondary"
+                  onClick={() => submit('duplicate')}
+                  {...(busy || dirty ? { disabled: true } : {})}
+                >
+                  Duplicate
+                </s-button>
+              </>
+            )}
+            {/*
+              Saving a *new* offer needs a button of its own: the contextual save
+              bar only appears once something is dirty, and a first-time visitor
+              who has changed nothing still has to be able to store the defaults.
+              Once the row exists, the save bar is the place to save from.
+            */}
+            {!id && (
+              <s-button
+                variant="secondary"
+                onClick={() => submit('save')}
+                {...(busy ? { loading: true } : {})}
+              >
+                Save draft
+              </s-button>
+            )}
             <s-button
               variant="primary"
               onClick={() => submit(published ? 'unpublish' : 'publish')}
@@ -584,8 +834,70 @@ function OfferEditor({ type, offer, maxItems, maxTargets }) {
         </s-stack>
       </PageHeading>
 
+      {/*
+        Deleting is irreversible and takes products off the storefront with it, so
+        it asks first. The confirm button lives in the modal body rather than an
+        action slot: the slot names differ between hosts, and a confirmation that
+        renders in the wrong place is worse than one that renders plainly.
+      */}
+      {id && (
+        <s-modal id="offer-delete-modal" heading="Delete this offer?">
+          <s-stack direction="block" gap="base">
+            <s-paragraph>
+              {published
+                ? `This removes the offer from ${formatNumber(targets.length)} product page${
+                    targets.length === 1 ? '' : 's'
+                  } and deletes it. Those pages fall back to Shopify’s own recommendations.`
+                : 'This deletes the offer. It is not published, so nothing changes on your storefront.'}
+            </s-paragraph>
+            <s-stack direction="inline" gap="small-300">
+              <s-button
+                variant="primary"
+                tone="critical"
+                onClick={() => submit('delete')}
+                commandFor="offer-delete-modal"
+                command="--hide"
+                {...(busy ? { loading: true } : {})}
+              >
+                Delete offer
+              </s-button>
+              <s-button variant="secondary" commandFor="offer-delete-modal" command="--hide">
+                Cancel
+              </s-button>
+            </s-stack>
+          </s-stack>
+        </s-modal>
+      )}
+
+      {/*
+        Only reachable when the takedown left something behind — a clean delete
+        redirects to the offer list, so there is nothing to render here.
+      */}
+      {result?.deleted && result.failures?.length > 0 && (
+        <s-banner tone="warning" heading="Offer deleted, but some products may still show it">
+          <s-paragraph>
+            {formatNumber(result.failures.length)} product
+            {result.failures.length === 1 ? '' : 's'} kept the published list. Re-sync from Settings
+            to clear them.
+          </s-paragraph>
+          <s-button variant="secondary" href="/app/settings">
+            Re-sync
+          </s-button>
+        </s-banner>
+      )}
+
       {result?.errors?.length > 0 && (
-        <s-banner tone="critical" heading="Fix these before publishing">
+        <s-banner
+          tone="critical"
+          heading={
+            /*
+              A live offer is validated as a publish, because saving it *is* a
+              publish — so the heading has to say saving, or it reads as a
+              complaint about a button the merchant did not press.
+            */
+            result.live ? 'Fix these before saving a live offer' : 'Fix these before publishing'
+          }
+        >
           <s-unordered-list>
             {result.errors.map((message) => (
               <s-list-item key={message}>{message}</s-list-item>
@@ -613,19 +925,35 @@ function OfferEditor({ type, offer, maxItems, maxTargets }) {
         </s-banner>
       )}
 
+      {/*
+        Publishing and saving a live offer land here alike — both rewrote the
+        storefront — but they are different sentences. "Draft saved" on an offer
+        shoppers can already see is the wrong answer, and it was the bug: a save
+        changed nothing on the product page and said so in the language of a draft.
+      */}
       {result?.published && (
         <s-banner
           tone={result.failures?.length > 0 ? 'warning' : 'success'}
           heading={
             result.failures?.length > 0
-              ? 'Published, but some products did not go live'
-              : 'Offer published'
+              ? result.updated
+                ? 'Saved, but some products still show the old version'
+                : 'Published, but some products did not go live'
+              : result.updated
+                ? 'Changes are live'
+                : 'Offer published'
           }
           dismissible
         >
           <s-paragraph>
             {formatNumber(result.synced)} of {formatNumber(result.total)} product page
-            {result.total === 1 ? '' : 's'} now show this offer.
+            {result.total === 1 ? '' : 's'}{' '}
+            {result.updated ? 'now show the new version' : 'now show this offer'}.
+            {result.removed > 0
+              ? ` Removed from ${formatNumber(result.removed)} product page${
+                  result.removed === 1 ? '' : 's'
+                } you took out of the offer.`
+              : ''}
             {result.failures?.length > 0 ? ' Re-sync from Settings to try the rest again.' : ''}
           </s-paragraph>
           {result.failures?.length > 0 && (
@@ -825,71 +1153,142 @@ function OfferEditor({ type, offer, maxItems, maxTargets }) {
           </Card>
 
           {/* ---------------------------------------------------- preview */}
-          <s-stack direction="block" gap="base">
-            <s-stack
-              direction="inline"
-              gap="small-300"
-              alignItems="center"
-              justifyContent="space-between"
-            >
-              <s-stack direction="inline" gap="small-300" alignItems="center">
-                <s-heading>{title || 'Untitled offer'}</s-heading>
-                {badge && <s-badge tone="info">{badge}</s-badge>}
-              </s-stack>
-              {/* Decorative: the storefront block's slider arrows. */}
-              <s-stack direction="inline" gap="small-300" alignItems="center">
-                <s-button
-                  variant="tertiary"
-                  icon="chevron-left"
-                  accessibilityLabel="Previous"
-                  disabled
-                />
-                <s-button
-                  variant="tertiary"
-                  icon="chevron-right"
-                  accessibilityLabel="Next"
-                  disabled
-                />
-              </s-stack>
-            </s-stack>
-
-            {(items.length > 0 ? items : [{ id: 'preview', title: 'Recommended product #1' }]).map(
-              (product) => (
-                <Card key={product.id}>
-                  <s-stack
-                    direction="inline"
-                    gap="base"
-                    alignItems="center"
-                    justifyContent="space-between"
-                  >
-                    <s-stack direction="inline" gap="base" alignItems="center">
-                      <s-thumbnail size="large" alt="" />
-                      <s-stack direction="block" gap="small-500">
-                        <s-text type="strong">{product.title || `Product ${product.id}`}</s-text>
-                        <s-text color="subdued">White color</s-text>
-                        <s-text>$30.00</s-text>
-                      </s-stack>
-                    </s-stack>
-                    <s-button variant="primary">{buttonText || 'Add'}</s-button>
-                  </s-stack>
-                </Card>
-              ),
-            )}
-
-            {countdown && (
-              <Card>
-                <s-text color="subdued">Countdown timer shows here on the storefront.</s-text>
-              </Card>
-            )}
-
-            <s-paragraph color="subdued">
-              Preview of the {placement?.title.toLowerCase()} block. It follows the fields on the
-              left, not your theme&rsquo;s styling.
-            </s-paragraph>
-          </s-stack>
+          <OfferPreview
+            offerType={offerType}
+            title={title}
+            badge={badge}
+            buttonText={buttonText}
+            countdown={countdown}
+            items={items}
+            placementTitle={placement?.title}
+          />
         </s-grid>
       </s-query-container>
     </s-page>
+  );
+}
+
+/* ---------------------------------------------------------------- preview */
+
+/**
+ * Offer types whose storefront surface shows one product at a time.
+ *
+ * Cross-sell and product add-on are a row of cards the shopper scrolls through,
+ * so the preview steps through them the same way. Frequently bought together is
+ * a stacked bundle with a running total, and a volume discount is a list of
+ * quantity tiers — neither is a carousel, so both keep the stacked preview.
+ */
+const CAROUSEL_TYPES = new Set(['cross_sell', 'product_add_on']);
+
+/** What a card falls back to before any product has been picked. */
+const PLACEHOLDER = { id: 'placeholder', title: 'Recommended product' };
+
+function OfferPreview({ offerType, title, badge, buttonText, countdown, items, placementTitle }) {
+  const products = items.length > 0 ? items : [PLACEHOLDER];
+  const carousel = CAROUSEL_TYPES.has(offerType);
+
+  const [slide, setSlide] = useState(0);
+
+  /*
+   * Clamped on read rather than reset in an effect: removing products on the
+   * Offer tab can leave the index past the end, and an effect would render one
+   * frame of an empty carousel before correcting itself.
+   */
+  const index = Math.min(slide, products.length - 1);
+  const shown = carousel ? [products[index]] : products;
+
+  const step = (delta) => setSlide(Math.min(Math.max(index + delta, 0), products.length - 1));
+
+  return (
+    <s-stack direction="block" gap="base">
+      <s-stack
+        direction="inline"
+        gap="small-300"
+        alignItems="center"
+        justifyContent="space-between"
+      >
+        <s-stack direction="inline" gap="small-300" alignItems="center">
+          <s-heading>{title || 'Untitled offer'}</s-heading>
+          {badge && <s-badge tone="info">{badge}</s-badge>}
+        </s-stack>
+
+        {/*
+          Real controls, not decoration: they step the preview the way the
+          storefront slider steps the row. Hidden entirely for the stacked offer
+          types — arrows over a list that does not scroll misrepresent the block.
+          Disabled at the ends rather than wrapping, so the merchant can tell how
+          many products they have from the controls alone.
+        */}
+        {carousel && (
+          <s-stack direction="inline" gap="small-300" alignItems="center">
+            <s-button
+              variant="tertiary"
+              icon="chevron-left"
+              accessibilityLabel="Previous product"
+              onClick={() => step(-1)}
+              {...(index === 0 ? { disabled: true } : {})}
+            />
+            <s-button
+              variant="tertiary"
+              icon="chevron-right"
+              accessibilityLabel="Next product"
+              onClick={() => step(1)}
+              {...(index >= products.length - 1 ? { disabled: true } : {})}
+            />
+          </s-stack>
+        )}
+      </s-stack>
+
+      {shown.map((product) => (
+        <Card key={product.id}>
+          <s-stack
+            direction="inline"
+            gap="base"
+            alignItems="center"
+            justifyContent="space-between"
+          >
+            <s-stack direction="inline" gap="base" alignItems="center">
+              <s-thumbnail
+                size="large"
+                {...(product.image ? { src: product.image } : {})}
+                alt={product.imageAlt ?? ''}
+              />
+              <s-stack direction="block" gap="small-500">
+                <s-text type="strong">{product.title || `Product ${product.id}`}</s-text>
+                {/*
+                  Only a real price is shown. An invented one reads as the offer's
+                  own pricing, and this block never changes a price — it
+                  recommends products at whatever they already cost.
+                */}
+                {typeof product.price === 'number' && (
+                  <s-text color="subdued">
+                    {formatMoney(product.price, product.currencyCode)}
+                  </s-text>
+                )}
+              </s-stack>
+            </s-stack>
+            <s-button variant="primary" icon="plus">
+              {buttonText || 'Add'}
+            </s-button>
+          </s-stack>
+        </Card>
+      ))}
+
+      {carousel && products.length > 1 && (
+        <s-text color="subdued">{`Product ${index + 1} of ${products.length}`}</s-text>
+      )}
+
+      {countdown && (
+        <Card>
+          <s-text color="subdued">Countdown timer shows here on the storefront.</s-text>
+        </Card>
+      )}
+
+      <s-paragraph color="subdued">
+        Preview of the {(placementTitle ?? 'product page').toLowerCase()} block. It follows the
+        fields on the left, not your theme&rsquo;s styling.
+      </s-paragraph>
+    </s-stack>
   );
 }
 

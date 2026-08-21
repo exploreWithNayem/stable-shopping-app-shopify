@@ -25,7 +25,7 @@
 | --- | --- |
 | `/app` | Home — headline metrics, **offer list**, storefront status, quota meter, and the **Create offer** action |
 | `/app/offers/new` | **Choose Offer Placement** — the step after **Create offer**. Five placement cards; only Product page is built |
-| `/app/offers/new?type=PRODUCT_PAGE` | **New offer** builder on the same route: offer type, copy fields, product pickers, live preview. Saves drafts and publishes to the storefront (§4 `Offer`) |
+| `/app/offers/new?type=PRODUCT_PAGE` | **New offer** builder on the same route: offer type, copy fields, product pickers, and a live preview that is a working carousel for the card-style offer types. Saves drafts, duplicates, deletes, and publishes to the storefront (§4 `Offer`) |
 | `/app/offers/new?type=PRODUCT_PAGE&id=…` | The same builder, editing an existing offer |
 | `/app/recommendations` | List of all products + their recommendation source, filters + search, override editor. Each row shows its complementary products as thumbnails and picks them inline (§5, Phase 5 deviations) |
 | `/app/recommendations/$productId` | Override editor for a single product |
@@ -99,6 +99,7 @@ Metafield shape (`$app:reco_overrides`, type `json`) — **`v: 2` since 2026-08-
 {
   "v": 2,
   "updatedAt": "2026-08-12T10:00:00Z",
+  "type": "cross_sell",
   "copy": {
     "title": "Complete the set",
     "badge": "Limited offer",
@@ -112,6 +113,12 @@ Metafield shape (`$app:reco_overrides`, type `json`) — **`v: 2` since 2026-08-
 }
 ```
 
+`type` is the published offer's type, and like `copy` and `render` it is an **optional** v2 key rather
+than a version bump — omitted for a list curated on the recommendations page, which has no offer
+behind it. Only the app embed reads it (§7.6): a theme block's layout is a block setting, but the
+embed has no block settings to read, so the type is the only thing that can say whether the injected
+offer renders as a carousel of rows or a grid.
+
 `copy` is what a published **Offer** says, and it is **omitted entirely** when there is none — a list
 curated on the recommendations page produces the v1 shape plus a version bump. `reco-panel.liquid`
 therefore does a plain nil check rather than a version test, which is why **every v1 metafield
@@ -123,7 +130,17 @@ sits. Only the `custom` source reads any of this — the other sources never tou
 **The copy is denormalised onto `Override.presentation`**, not looked up from the Offer at sync time.
 That row is what gets written, and `syncAllOverrides()` (the Settings repair action) iterates rows
 with no offer in hand — reading the copy from the caller instead would make a repair silently blank
-every merchant's wording.
+every merchant's wording. `type` rides along on the same row for the same reason, and
+`normalizePresentation()` keeps it — it dropped every unknown field when the type was first added, so
+the type reached the row's caller and went no further while every test stayed green.
+
+> ⚠️ **`upsertOverride()` leaves `presentation` alone unless the caller passes it** (fixed
+> 2026-08-21). It used to default to `null`, so every save from the recommendations page — a route
+> that knows nothing about offers — silently stripped a published offer's title, badge, button text,
+> anchor and type out of the metafield. The storefront lost the offer's wording and fell back to the
+> grid, with nothing anywhere to say why. Now omitting the key preserves the stored value and only an
+> explicit `null` clears it, which is what a publish whose offer has no copy does. Pinned by tests in
+> `app/models/override.test.js`.
 
 IDs *and* handles are stored: Liquid resolves products with `all_products[handle]`
 (hard limit **20 lookups per page** — cap override lists at 12). IDs are strings, matching how
@@ -873,10 +890,49 @@ themselves.
 > would have its only anchor rejected. The ancestor walk needs no layout, gives the same answer for
 > the case that matters, and is testable in jsdom — where `offsetParent` is always null.
 
+**The injected offer is laid out by the offer's type** (2026-08-21). The admin preview shows a
+cross-sell as a carousel — one product at a time, as a row — and the storefront rendered a grid of
+tiles, so the preview was describing a block that did not exist. The type now travels in the
+metafield (§3.1) and `buildBlock()` branches on it:
+
+| | `cross_sell` · `product_add_on` | `frequently_bought_together` · `volume_discount` |
+| --- | --- | --- |
+| Classes | `reco--slider reco--offer` | `reco--grid` |
+| Cards per view | 1 (`--reco-columns-*: 1`) | the grid's own columns |
+| Card shape | row: image, title + price, button on the trailing edge | tile: image over text |
+| Arrows | in the header beside the title | none |
+
+- **It reuses the slider, it is not a second carousel.** `reco--slider` is what brings the scroll-snap
+  CSS and makes `wire()` call `setupSlider()`; one card per view is just the column count set to 1,
+  which the existing `flex-basis` calc resolves to 100%. `reco--offer` only turns each card into a row.
+- **The arrows sit in the header**, via `.reco__nav--header` resetting the absolute positioning the
+  block's slider uses. Overlaid arrows straddle the first and last card, which works for a row of
+  tiles and would cover the image and the button on a single wide row. They start `hidden` and
+  `setupSlider()` unhides them only when the track overflows, so a one-product offer shows no controls.
+- **The arrow is an inline SVG, and it is bare in the header** (2026-08-21). It was the `‹` / `›` text
+  glyph, which every theme font draws at a different weight, size and baseline — thin, small and
+  sitting high in most of them. `chevron()` in `reco.js` and the copy in `reco-panel.liquid` draw the
+  identical path, pinned together by a test, and `currentColor` lets the same icon sit on a white disc
+  over photography and bare beside a heading. The disc exists to lift the arrow off product
+  photography; next to a heading there is nothing to lift it off, so the header variant drops the
+  border, background and shadow, and the button flex-centres the icon rather than trusting a font's
+  line-height.
+- **Their labels come from the embed's `strings`** (`recommendations.previous` / `.next`), because
+  these arrows are built in JS and there is no block Liquid on the page to translate them. This is the
+  one place §7.5's rule does not bite: the injected offer *is* the embed.
+- **A missing `type` still carousels when there is `copy`.** Only an offer publish writes `copy`, and
+  `cross_sell` is what an offer defaults to — without that fallback every already-published offer
+  would keep the grid until someone happened to re-publish it. No copy and no type means a list
+  curated on the recommendations page, which stays a grid.
+- **`box-sizing: border-box` is now set on `.reco` and its descendants.** Most themes set it globally,
+  but a card that is 100% wide *plus* its own padding and border overflows its own scroller in one
+  that does not — and this block is injected into themes the app has never seen.
+
 `tests/reco-runtime.test.js` drives all of this in jsdom against a Dawn-shaped buy form: injection
 position, the offer's copy, escaping, money format, the serve beacon, attributed add-to-cart, the
 block-wins rule, re-entry, a merchant selector, `before`, a stale selector, an invalid selector, no
-anchor at all, an empty offer, and a hidden duplicate.
+anchor at all, an empty offer, a hidden duplicate, and the carousel-vs-grid branch with its nav
+markup and labels.
 
 The anchor is set on the **Placement** tab of the offer builder and travels as `render` in the v2
 metafield (§3.1).
@@ -1233,9 +1289,22 @@ marking done.
 
    - **A draft is validated more loosely than a publish.** `validateOffer` wants a name, placement and
      type; `validateForPublish` also wants targets, items and a title. A merchant who has picked
-     products but not written a title must not lose the products.
-   - **A plain save never changes status.** Publishing has storefront side effects, so it goes through
-     `publishOffer()` and can never happen by accident.
+     products but not written a title must not lose the products. **A live offer is validated as a
+     publish**, because saving it is one.
+   - **Saving a live offer republishes it** (2026-08-21). This was the sharpest bug in the flow:
+     editing a published offer wrote the `Offer` row, said **"Draft saved — nothing is live yet"**, and
+     changed nothing on the product page, because the theme reads only the `Override` rows and their
+     metafields. The merchant's own fix was Unpublish then Publish, which is not a workflow, it is a
+     workaround for a lie. Now the action reads the row's status *before* the write and a save on a
+     `published` offer falls through to `publishOffer()` — same allowance gate, same per-product error
+     reporting — and the banner reads **"Changes are live"**.
+   - **A re-publish is subtractive as well as additive.** `publishOffer({ previousTargets })` deletes
+     the Override row and metafield for every product the offer no longer targets. Without that, a
+     product dropped from a live offer kept rendering it with nothing in the admin still claiming it
+     did — and no way left to take it down short of the Settings re-sync.
+   - **A save can still never publish a draft.** Only an offer that is *already* live republishes on
+     save; `saveOffer()` itself never touches `status`, so going live is always a deliberate press of
+     Publish.
    - **One failing product does not take the publish down.** A metafield write fails per product (a
      deleted product, a throttled shop); each failure is reported, `syncedAt` is left null for the
      Settings repair action, and the offer is still `published` if *any* product went live — calling
@@ -1267,6 +1336,64 @@ marking done.
    that layout and colours are theme block settings rather than offer settings, which is true and not
    a placeholder. **Placement** shows the chosen type and where to add the block.
 
+   **The preview is a working carousel for the card-style offer types** (2026-08-21). It used to
+   stack every chosen product and show two disabled arrows next to a hardcoded `$30.00` and the words
+   "White color" on every card. Now:
+
+   - **`CAROUSEL_TYPES` = `cross_sell` + `product_add_on`** — one card at a time, with arrows that
+     step through the list. **The storefront now matches**, through the same split: the type travels
+     in the metafield and `reco.js` lays the injected offer out the same way (§7.6). Keep the two
+     lists in step — a preview that describes a layout the shopper does not get is worse than no
+     preview. `frequently_bought_together` is a stacked bundle with a running total
+     (§7.4) and `volume_discount` is a list of quantity tiers, so both keep the stacked preview and
+     the **arrows are hidden rather than disabled**: arrows over a list that does not scroll
+     misrepresent the block.
+   - **The index is clamped on read**, not corrected in an effect — removing products on the Offer tab
+     can leave it past the end, and an effect renders one frame of an empty carousel first. Arrows
+     disable at the ends instead of wrapping, so the control itself says how many products there are.
+   - **No invented prices.** A price renders only when one is known; a made-up number on a card reads
+     as the offer's own pricing, and this block never changes a price. `normalizeAdminProduct` now
+     carries `price` (the cheapest variant) and `currencyCode`, as the raw amount rather than a
+     formatted string.
+   - **Images and prices are hydrated per load, never stored.** The offer stores
+     `{id, handle, title, position}` — enough to publish. `hydrateProducts()` in the loader fills in
+     image and price for both lists in **one `nodes(ids:)` call**, and a failed hydrate degrades to no
+     images rather than an error page. Newly picked products get the same fields straight off the
+     resource picker's result, so the preview updates with no round trip. `submit()` strips them back
+     with `storedProduct` before posting: the server drops them anyway (`normalizeProducts`), and
+     sending them would imply a product's price is part of the offer — it is not, or every price
+     change would need every offer re-saved.
+
+   **Delete and Duplicate** (2026-08-21), in the content-column header beside Publish/Unpublish:
+
+   - Both appear **only once the row exists** (`id`). Before the first save there is nothing to copy
+     or remove, and that is also when **Save draft** shows instead — the contextual save bar only
+     appears once something is dirty, so a merchant who changed nothing still needs a way to store
+     the defaults. Once the row exists, the save bar is where saving happens.
+   - **Delete unpublishes first, then deletes.** The theme block renders from the metafield (§3.1), so
+     deleting the row alone would leave products showing an offer that no longer exists in the admin,
+     with nothing left to unpublish it with. A metafield that will not delete is reported and the
+     offer still goes — refusing would leave a row the merchant cannot remove — and that is the one
+     case that **does not redirect**, because the warning has to be readable.
+   - It asks first, through `s-modal` + `commandFor`. The confirm button sits in the **modal body**,
+     not an action slot: `primaryAction`/`secondaryActions` are slot names the TypeScript validator
+     cannot check, and a confirmation rendering in the wrong place is worse than one rendering plainly.
+   - **A duplicate is always a draft**, whatever the original was (`duplicateOffer`): publishing writes
+     an Override row and a metafield per target, so a copy born published would overwrite the
+     original's storefront output on every product the two share. The products come along — re-picking
+     twelve by hand is the work being saved.
+   - **Duplicate is disabled while the save bar is up.** The copy is made from the stored row, so
+     duplicating mid-edit would silently drop the changes on screen. Delete stays enabled: deleting
+     makes unsaved changes moot.
+   - Both send **only the id** — posting the form body would imply the copy or the takedown used the
+     unsaved edits. And both **navigate**, since `?id=` is what the editor opens from: a duplicate
+     lands on the copy, a clean delete lands on `/app`.
+
+   **Not built from the reference design: Translations.** The screenshot carries an "Add translation"
+   section; there is no translation storage on `Offer` and no Translate & Adapt integration, so a
+   button there would do nothing. It needs its own decision about whether offer copy is translated in
+   this app or in Shopify's.
+
    **Title, Badge and Button text now reach the storefront** (2026-08-20). The metafield carries a
    `copy` object (§3.1, `v: 2`), `reco-panel.liquid` prefers it over the block's own settings, and the
    badge renders beside the heading. `reco.js` needed no change: the client-rendered path only runs
@@ -1277,6 +1404,11 @@ marking done.
    > image shape, button style and padding remain in the theme editor, which is what the Design tab
    > says. Moving them onto the offer is the app-embed direction's step 4, and it needs `reco.css` to
    > take them as custom properties set from JS rather than inline from Liquid.
+   >
+   > One exception, and it is not a settings move: on the **app embed** path there is no block and so
+   > no block settings, so the offer's *type* picks the layout there (§7.6, 2026-08-21). A block a
+   > merchant placed keeps its own `layout` setting — they chose it, and an offer must not overrule the
+   > theme editor.
 
    **The heading is repeated in the content column**, with a back arrow beside it. `s-page heading`
    alone is hoisted into the admin's header strip — the same place `primary-action` goes (see the
@@ -1483,7 +1615,7 @@ so the first can declare `enabled_on` and the second can own a real collection p
 They share their markup through `reco-panel` and `reco-collection-cards`; only the schema JSON
 duplicates, and a test pins the two copies together. A third block, **Upsell**, is a
 **Bought Together** bundle over the same Custom list (§7.4) — product templates only, its own
-`upsell` placement, billable. 455 Vitest tests pass; lint and typecheck are clean — though see the
+`upsell` placement, billable. 485 Vitest tests pass; lint and typecheck are clean — though see the
 warning in §4: typecheck does not read a single `.js`/`.jsx` file, which is all of them.
 
 Custom recommendations are no longer a paid-only feature: **Free covers 10 products** and the

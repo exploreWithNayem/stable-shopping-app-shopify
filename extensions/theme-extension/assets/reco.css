@@ -15,6 +15,19 @@
 }
 
 /*
+ * Scoped to this block rather than assumed from the theme. Most themes set it
+ * globally, but a card that is 100% wide *plus* its own padding and border — the
+ * offer carousel below — overflows its own scroller in one that does not, and the
+ * block is injected into themes this app has never seen.
+ */
+.reco,
+.reco *,
+.reco *::before,
+.reco *::after {
+  box-sizing: border-box;
+}
+
+/*
  * Background is opt-in: the block only gets the class when the colour setting
  * has a non-zero alpha, so an existing block keeps inheriting whatever the
  * section behind it uses. The inline padding comes with the colour — without a
@@ -136,6 +149,16 @@
 
 .reco__nav-button {
   pointer-events: auto;
+  /*
+   * Flex-centred rather than relying on line-height. These held the text glyphs
+   * for `‹` and `›`, which every theme font draws at a different weight, size and
+   * baseline — thin, small and sitting slightly high in most of them. The icon is
+   * an inline SVG now, and centring it is the button's job.
+   */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
   width: var(--reco-nav-size);
   height: var(--reco-nav-size);
   border: 1px solid rgba(0, 0, 0, 0.12);
@@ -143,10 +166,19 @@
   /* Opaque: these sit on top of product photography. */
   background: rgba(255, 255, 255, 0.92);
   color: #1a1a1a;
-  font-size: 1.25rem;
-  line-height: 1;
   cursor: pointer;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+}
+
+/*
+ * Sized here rather than on the SVG, so a chevron scales with the button it sits
+ * in. `currentColor` on the stroke means it inherits the button's colour — the
+ * theme's text colour in the header variant, near-black on the overlaid discs.
+ */
+.reco__nav-icon {
+  display: block;
+  width: 1.125rem;
+  height: 1.125rem;
 }
 
 /*
@@ -186,6 +218,105 @@
 
 .reco--list .reco-card__media {
   aspect-ratio: 1/1;
+}
+
+/* --- Offer carousel (app embed) ------------------------------------------ */
+
+/*
+ * The shape the offer editor previews: one product per view, laid out as a row —
+ * image, then title and price, with the button on the trailing edge.
+ *
+ * It builds on `.reco--slider`, so the scrolling, snapping and arrow wiring are
+ * the ones the theme block already uses; the column count is set to 1 inline, so
+ * `flex-basis` resolves to the full width and each card snaps on its own.
+ *
+ * A card carries its own border here, unlike everywhere else. This block is
+ * injected into a theme it knows nothing about, directly under the buy button,
+ * and without an edge a single row reads as part of the product form.
+ */
+.reco--offer .reco-card {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  align-items: center;
+  text-align: left;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 8px;
+  padding: 0.75rem;
+}
+
+.reco--offer .reco-card__media {
+  aspect-ratio: 1/1;
+}
+
+.reco--offer .reco-card__info {
+  padding-top: 0;
+  align-items: flex-start;
+  gap: 0.125rem;
+}
+
+.reco--offer .reco-card__button {
+  margin-top: 0;
+  white-space: nowrap;
+}
+
+/*
+ * Arrows beside the heading rather than straddling the row.
+ *
+ * The overlaid position the theme block's slider uses puts a button on top of the
+ * first and last card, which works for a row of tiles and not for a single wide
+ * row — it would cover the image and the button. Resetting the absolute
+ * positioning here keeps one nav implementation for both.
+ */
+.reco__nav--header {
+  position: static;
+  inset: auto;
+  transform: none;
+  justify-content: flex-end;
+  gap: 0.375rem;
+  margin-inline-start: auto;
+  pointer-events: auto;
+}
+
+/*
+ * Bare chevrons in the header, not the discs the overlaid nav uses.
+ *
+ * A disc exists to lift the arrow off product photography; beside a heading there
+ * is nothing to lift it off, and a thin glyph inside a bordered circle reads as an
+ * unfinished button. Same markup, same JS — only the chrome differs.
+ */
+.reco__nav--header .reco__nav-button {
+  margin-inline: 0;
+  width: 1.5rem;
+  height: 1.5rem;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  box-shadow: none;
+  /* Inherit the theme's text colour rather than forcing near-black on it. */
+  color: inherit;
+  opacity: 0.75;
+}
+
+.reco__nav--header .reco__nav-button:hover {
+  opacity: 1;
+}
+
+.reco__nav--header .reco__nav-button[disabled] {
+  opacity: 0.3;
+}
+
+/*
+ * The heading's bottom margin is what separates it from the track everywhere
+ * else; in the offer header the flex row owns the spacing, so the margin would
+ * push the arrows out of alignment with the title.
+ */
+.reco--offer .reco__header {
+  margin-bottom: 1rem;
+}
+
+.reco--offer .reco__heading {
+  margin-bottom: 0;
 }
 
 /* --- Card ---------------------------------------------------------------- */

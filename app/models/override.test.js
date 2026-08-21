@@ -14,6 +14,7 @@ import {
   listUnsyncedOverrides,
   markOverrideSynced,
   normalizeItems,
+  normalizePresentation,
   upsertOverride,
 } from "./override.server";
 
@@ -105,6 +106,59 @@ describe("upsertOverride", () => {
     expect((await getOverride({ shopId, productId: 999 })).syncedAt).toBeInstanceOf(Date);
 
     expect((await save(999, [{ id: 2 }])).syncedAt).toBeNull();
+  });
+});
+
+describe("presentation", () => {
+  const copy = {
+    type: "cross_sell",
+    title: "You may also like",
+    badge: "Limited",
+    buttonText: "Add",
+    countdown: true,
+  };
+
+  test("carries the offer type as well as the wording", () => {
+    // The type is what tells the app embed to lay the offer out as a carousel, so
+    // it has to survive onto the row the metafield is written from.
+    expect(normalizePresentation(copy)).toMatchObject({ type: "cross_sell", title: copy.title });
+  });
+
+  test("a type alone is still worth storing", () => {
+    // Layout without wording is a real combination; dropping it would silently
+    // send the offer back to the grid.
+    expect(normalizePresentation({ type: "product_add_on" })).toEqual({
+      type: "product_add_on",
+      title: "",
+      badge: "",
+      buttonText: "",
+      countdown: false,
+    });
+  });
+
+  test("nothing worth storing is null, so the block's settings speak", () => {
+    expect(normalizePresentation({ title: " ", badge: "", buttonText: "" })).toBeNull();
+    expect(normalizePresentation(null)).toBeNull();
+  });
+
+  test("an edit that says nothing about presentation keeps it", async () => {
+    /*
+     * The recommendations page saves a product's list without knowing offers
+     * exist. While `presentation` defaulted to null, that edit stripped a
+     * published offer's title, badge, button text and anchor out of the metafield
+     * — the storefront lost the offer's wording and layout with nothing to say
+     * why.
+     */
+    await save(999, [{ id: 1 }], { presentation: copy });
+    const after = await save(999, [{ id: 2 }]);
+
+    expect(after.presentation).toMatchObject({ type: "cross_sell", title: copy.title });
+  });
+
+  test("passing null explicitly does clear it", async () => {
+    // Which is how a publish whose offer has no copy at all takes it back off.
+    await save(999, [{ id: 1 }], { presentation: copy });
+    expect((await save(999, [{ id: 2 }], { presentation: null })).presentation).toBeNull();
   });
 });
 

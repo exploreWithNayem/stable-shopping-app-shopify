@@ -210,6 +210,14 @@
       <div class="reco__track" data-reco-track>{{ cards }}</div>
 
       {%- if block.settings.layout == 'slider' -%}
+        {%- comment -%}
+          Drawn arrows, not the `‹` and `›` text glyphs these used to be: every
+          theme font renders those at a different weight, size and baseline —
+          thin and sitting slightly high in most of them. The SVG is the same
+          shape everywhere and takes the button's colour through `currentColor`.
+          reco.js builds the identical icon for the offer carousel it injects;
+          the two are pinned together by a test.
+        {%- endcomment -%}
         <div class="reco__nav" data-reco-nav hidden>
           <button
             type="button"
@@ -217,7 +225,16 @@
             data-reco-prev
             aria-label="{{ 'recommendations.previous' | t }}"
           >
-            &#8249;
+            <svg class="reco__nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path
+                d="M15 5 8 12l7 7"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
           </button>
           <button
             type="button"
@@ -225,7 +242,16 @@
             data-reco-next
             aria-label="{{ 'recommendations.next' | t }}"
           >
-            &#8250;
+            <svg class="reco__nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path
+                d="M9 5l7 7-7 7"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
           </button>
         </div>
       {%- endif -%}

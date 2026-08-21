@@ -160,6 +160,11 @@ export function countOffers(shopId, { status } = {}) {
  * Status is never changed here — publishing has storefront side effects and goes
  * through publishOffer() in app/lib/offers.server.js, so a plain save can never
  * make something live by accident.
+ *
+ * The editor's save path does republish an offer that is *already* live, so an
+ * edit reaches the storefront instead of sitting in this row unseen. That is the
+ * route's decision, made from the status it reads before calling this; going live
+ * in the first place stays a deliberate press of Publish.
  */
 export async function saveOffer(shopId, input = {}) {
   const data = shape(input);
@@ -188,6 +193,40 @@ export function markDraft(id) {
   return prisma.offer.update({
     where: { id },
     data: { status: "draft", publishedAt: null },
+  });
+}
+
+/**
+ * Copy an offer as a draft.
+ *
+ * A duplicate is never born published, whatever the original was: publishing
+ * writes Override rows and metafields for every target (§3.1), so a copy that
+ * went live on creation would silently overwrite the original's storefront
+ * output for the products the two share.
+ *
+ * The products come along — a duplicate exists to be a variation on something,
+ * and re-picking twelve products by hand is the thing being avoided.
+ */
+export async function duplicateOffer(shopId, id) {
+  const existing = await getOffer(shopId, id);
+  if (!existing) return null;
+
+  return prisma.offer.create({
+    data: {
+      shopId,
+      name: `${existing.name} copy`.trim(),
+      placement: existing.placement,
+      offerType: existing.offerType,
+      title: existing.title,
+      badge: existing.badge,
+      buttonText: existing.buttonText,
+      countdown: existing.countdown,
+      anchorSelector: existing.anchorSelector,
+      anchorPosition: existing.anchorPosition,
+      targets: existing.targets ?? [],
+      items: existing.items ?? [],
+      status: "draft",
+    },
   });
 }
 

@@ -28,12 +28,38 @@ import { markDraft, markPublished } from "../models/offer.server";
  * merchant with no idea which products are live. Each result is reported and
  * `syncedAt` is left null on the ones that failed, which is what the re-sync
  * repair action on Settings looks for.
+ *
+ * `previousTargets` makes a re-publish subtractive as well as additive. Editing a
+ * live offer republishes it, and without the old list a product the merchant
+ * dropped keeps its Override row and its metafield — so its page goes on
+ * rendering an offer that no longer claims it, and nothing in the admin says so.
+ * Omit it for a first publish; there is nothing to take away.
  */
-export async function publishOffer({ admin, shopId, offer }) {
+export async function publishOffer({ admin, shopId, offer, previousTargets = [] }) {
   const targets = offer.targets ?? [];
   const items = offer.items ?? [];
   const failures = [];
   let synced = 0;
+
+  const keeping = new Set(targets.map((target) => String(target.id)));
+  const dropped = (previousTargets ?? []).filter(
+    (target) => !keeping.has(String(target.id)),
+  );
+  let removed = 0;
+
+  for (const target of dropped) {
+    try {
+      await deleteOverride({ shopId, productId: target.id, placement: "pdp" });
+      await deleteOverrideMetafield(admin, target.id);
+      removed += 1;
+    } catch (error) {
+      failures.push({
+        productId: String(target.id),
+        title: target.title ?? String(target.id),
+        message: error.message,
+      });
+    }
+  }
 
   for (const target of targets) {
     try {
@@ -50,6 +76,13 @@ export async function publishOffer({ admin, shopId, offer }) {
         // Projected onto the row so the metafield carries the offer's wording,
         // and so the Settings re-sync can rewrite it without the offer.
         presentation: {
+          /*
+           * The offer type, carried through so the app embed can lay the offer
+           * out the way the editor previewed it (§7.6). A theme block ignores it
+           * — its layout is a block setting — but the embed has no theme settings
+           * to read, so the type is the only thing that can decide.
+           */
+          type: offer.offerType,
           title: offer.title,
           badge: offer.badge,
           buttonText: offer.buttonText,
@@ -78,7 +111,7 @@ export async function publishOffer({ admin, shopId, offer }) {
    */
   const published = synced > 0 ? await markPublished(offer.id) : offer;
 
-  return { offer: published, synced, total: targets.length, failures };
+  return { offer: published, synced, total: targets.length, removed, failures };
 }
 
 /**

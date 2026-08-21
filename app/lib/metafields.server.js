@@ -94,6 +94,14 @@ export function buildMetafieldValue(items, { now = new Date(), presentation = nu
     : null;
 
   /*
+   * The offer type, which decides how the app embed lays the offer out — a
+   * carousel of rows for the card-style types, a grid for the bundle ones (§7.6).
+   * Another optional v2 key, like `render`: omitted for a list curated on the
+   * recommendations page, which has no type and takes the block's own layout.
+   */
+  const type = String(presentation?.type ?? "").trim() || null;
+
+  /*
    * Where the app embed injects the offer when no theme block is on the page.
    * Omitted unless the merchant set a selector — reco.js has a fallback chain
    * that covers Dawn-family themes, and an empty selector here would read as
@@ -109,6 +117,7 @@ export function buildMetafieldValue(items, { now = new Date(), presentation = nu
   return JSON.stringify({
     v: METAFIELD_VERSION,
     updatedAt: now.toISOString(),
+    ...(type ? { type } : {}),
     ...(copy ? { copy } : {}),
     ...(anchor ? { render: anchor } : {}),
     items: (items ?? []).map((item) => ({

@@ -643,6 +643,73 @@ describe("two blocks, six sources", () => {
     expect(runtime).toContain("window.EasyReco.loaded = true;");
   });
 
+  test("the embed passes the offer type through to the runtime", () => {
+    /*
+     * The type is what decides the injected layout — a carousel of rows for the
+     * card-style offer types, a grid for the bundle ones — and the embed has no
+     * block settings to read instead. Null when the metafield has none, which is
+     * the case for a list curated on the recommendations page.
+     */
+    const embed = readLiquid(join(BLOCKS, "app-embed.liquid"));
+
+    expect(embed).toContain("type: {%- if reco.type -%}{{ reco.type | json }}");
+
+    // The injected arrows are built in JS, so their labels have to ride on the
+    // embed's config — a block's Liquid is not on the page here.
+    expect(embed).toContain("recommendations.previous");
+    expect(embed).toContain("recommendations.next");
+  });
+
+  test("the offer carousel reuses the slider, it is not a second scroller", () => {
+    /*
+     * `reco--slider` is what brings the scroll-snap CSS and makes wire() call
+     * setupSlider; `reco--offer` only turns each card into a row. A separate
+     * carousel implementation for one caller is the thing being avoided.
+     */
+    const runtime = readFileSync(join(EXTENSION, "assets", "reco.js"), "utf8");
+    const css = readFileSync(join(EXTENSION, "assets", "reco.css"), "utf8");
+
+    expect(runtime).toContain('"reco--slider reco--offer"');
+    expect(runtime).toContain("CAROUSEL_OFFER_TYPES");
+    // One column per view is the carousel; the slider CSS resolves flex-basis
+    // from the column count.
+    expect(runtime).toContain('block.style.setProperty("--reco-columns-desktop", "1")');
+
+    expect(css).toContain(".reco--offer .reco-card");
+    expect(css).toContain(".reco__nav--header");
+    // The injected block lands in a theme this app has never seen, so a 100%-wide
+    // card with its own padding must not depend on the theme's box model.
+    expect(css).toContain("box-sizing: border-box");
+  });
+
+  test("the slider arrows are drawn, and the two copies match", () => {
+    /*
+     * They were the `‹` and `›` text glyphs, which every theme font renders at a
+     * different weight, size and baseline — thin and sitting high in most of them.
+     * Liquid draws the block's nav and reco.js draws the injected offer's, so the
+     * two paths have to agree on the shape or one storefront row gets a different
+     * arrow from the next.
+     */
+    const runtime = readFileSync(join(EXTENSION, "assets", "reco.js"), "utf8");
+    const css = readFileSync(join(EXTENSION, "assets", "reco.css"), "utf8");
+
+    for (const path of ["M15 5 8 12l7 7", "M9 5l7 7-7 7"]) {
+      expect(panel, `${path} missing from reco-panel.liquid`).toContain(path);
+      expect(runtime, `${path} missing from reco.js`).toContain(path);
+    }
+
+    // No glyph left in either copy.
+    expect(panel).not.toContain("&#8249;");
+    expect(runtime).not.toContain("&#8249;");
+
+    // currentColor is what lets the same icon sit on a white disc over
+    // photography and bare beside a heading.
+    expect(runtime).toContain('stroke="currentColor"');
+    expect(css).toContain(".reco__nav-icon");
+    // Centred by the button rather than by a font's line-height.
+    expect(css).toContain("display: inline-flex");
+  });
+
   test("the embed loads the stylesheet it will need", () => {
     // Blocks emit reco.css themselves; on the embed path there is no block, so
     // the injected container would be unstyled without this.

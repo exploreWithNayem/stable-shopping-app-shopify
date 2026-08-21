@@ -307,17 +307,104 @@ describe("the offer editor", () => {
    */
   test("the route has an action handling save, publish and unpublish", () => {
     expect(source).toMatch(/export const action/);
-    for (const intent of ["'save'", "'publish'", "'unpublish'"]) {
+    for (const intent of ["'save'", "'publish'", "'unpublish'", "'duplicate'", "'delete'"]) {
       expect(source, `no ${intent} branch`).toContain(intent);
     }
   });
 
+  test("deleting takes the offer off the storefront before deleting the row", () => {
+    /*
+     * The theme block renders from the `$app:reco_overrides` metafield, so
+     * deleting the row alone would leave products showing an offer that no longer
+     * exists in the admin — with nothing left to unpublish it with.
+     */
+    const remove = source.slice(
+      source.indexOf("if (intent === 'delete')"),
+      source.indexOf("if (intent !== 'save'"),
+    );
+
+    expect(remove.indexOf("unpublishOffer(")).toBeLessThan(remove.indexOf("deleteOffer("));
+    // A stuck metafield is reported rather than blocking the delete, so the
+    // merchant is never left with a row they cannot remove.
+    expect(remove).toContain("failures");
+    expect(remove).toContain("redirectTo: failures.length === 0 ? '/app' : null");
+  });
+
+  test("a duplicate is a draft that opens at its own URL", () => {
+    const copy = source.slice(
+      source.indexOf("if (intent === 'duplicate')"),
+      source.indexOf("if (intent === 'delete')"),
+    );
+
+    // duplicateOffer owns the draft rule; this side must not reach for `admin`,
+    // because a copy has no storefront side effects to apply.
+    expect(copy).toContain("duplicateOffer(shop.id");
+    expect(copy).toContain("redirectTo: `/app/offers/new?type=${copy.placement}&id=${copy.id}`");
+    expect(copy).not.toContain("publishOffer");
+
+    // `?id=` is what the editor opens from, so the URL has to change with it.
+    expect(source).toContain("navigate(result.redirectTo)");
+  });
+
+  test("Delete and Duplicate only appear once the offer is stored", () => {
+    // Before the first save there is nothing to copy or remove, and the form
+    // itself is the draft — so those two hang off `id`, and Save draft is what
+    // a never-saved offer gets instead.
+    const header = source.slice(source.indexOf("trailing={"), source.indexOf("</PageHeading>"));
+
+    expect(header).toContain("{id && (");
+    expect(header).toContain("{!id && (");
+    expect(header).toContain("Save draft");
+    expect(header).toContain("Duplicate");
+    // Duplicating copies the stored row, so mid-edit it would silently drop the
+    // changes on screen — hence disabled while the save bar is up.
+    expect(header).toContain("busy || dirty ? { disabled: true }");
+  });
+
+  test("deleting asks first", () => {
+    // Irreversible, and it takes products off the storefront with it.
+    expect(source).toContain('<s-modal id="offer-delete-modal"');
+    expect(source).toContain('commandFor="offer-delete-modal"');
+    expect(source).toContain("submit('delete')");
+  });
+
   test("a draft is validated more loosely than a publish", () => {
     // A merchant who has picked products but not written a title should be able
-    // to save and come back, so only publishing demands a complete offer.
+    // to save and come back, so only publishing demands a complete offer — and so
+    // does saving one that is already live, since that save is what shoppers see.
     expect(source).toContain(
-      "intent === 'publish' ? validateForPublish(input) : validateOffer(input)",
+      "intent === 'publish' || live ? validateForPublish(input) : validateOffer(input)",
     );
+  });
+
+  test("saving a live offer republishes it instead of leaving a stale storefront", () => {
+    /*
+     * The bug this exists for: editing a published offer said "Draft saved" and
+     * changed nothing on the product page, because only the Offer row was written
+     * — the Override rows and their metafields, which is all the theme reads, were
+     * left as they were. The merchant had to Unpublish and Publish again to see
+     * their own edit.
+     */
+    const start = source.indexOf('const input = readOffer');
+    const action = source.slice(start, source.indexOf('/* ------', start));
+
+    // The status is read before the write, or the save would already have changed it.
+    expect(action).toContain("const before = input.id ? await getOffer(shop.id, input.id) : null");
+    expect(action).toContain("const live = before?.status === 'published'");
+
+    // A draft save still stops at the row; a live one falls through to publish.
+    expect(action).toContain("if (intent === 'save' && !live) return");
+    expect(action).toContain('previousTargets: before?.targets ?? []');
+
+    // The allowance gate is on the same path, so a live save cannot smuggle in
+    // more products than the plan covers.
+    expect(action.indexOf('newlyOccupiedTargets(saved, occupied)')).toBeLessThan(
+      action.indexOf('publishOffer({'),
+    );
+
+    // "Draft saved" would be a lie for a live offer, so the result says which
+    // happened.
+    expect(action).toContain("updated: intent === 'save'");
   });
 
   test("publishing enforces the product allowance server-side", () => {
@@ -373,6 +460,70 @@ describe("the offer editor", () => {
     // The row only exists after the first save, so the returned id has to be
     // held — without it every press of Save created another draft.
     expect(source).toContain("setId(result.offer.id)");
+  });
+
+  /*
+   * The preview is the only thing on this screen that shows the merchant what a
+   * shopper will see, so it has to behave like the surface it stands for rather
+   * than being decoration.
+   */
+  test("cross-sell previews as a carousel, the bundle types do not", () => {
+    const block = source.slice(source.indexOf("const CAROUSEL_TYPES"));
+
+    expect(block).toContain("'cross_sell'");
+    expect(block).toContain("'product_add_on'");
+    // Frequently bought together is a stacked bundle with a running total and a
+    // volume discount is a list of quantity tiers; neither scrolls.
+    expect(block).not.toContain("'frequently_bought_together'");
+    expect(block).not.toContain("'volume_discount'");
+  });
+
+  test("the carousel arrows move the preview and stop at the ends", () => {
+    const block = source.slice(source.indexOf("function OfferPreview"));
+
+    // Real controls, not the disabled pair they replaced.
+    expect(block).toContain("onClick={() => step(-1)}");
+    expect(block).toContain("onClick={() => step(1)}");
+    expect(block).toContain("index === 0 ? { disabled: true }");
+    expect(block).toContain("index >= products.length - 1 ? { disabled: true }");
+    // Clamped on read: removing products can leave the index past the end, and an
+    // effect would render one frame of an empty carousel before correcting.
+    expect(block).toContain("Math.min(slide, products.length - 1)");
+    // The arrows are hidden, not disabled, for the stacked types — arrows over a
+    // list that does not scroll misrepresent the block.
+    expect(block).toContain("{carousel && (");
+  });
+
+  test("the preview never invents a price", () => {
+    /*
+     * It used to print a hardcoded "$30.00" and "White color" beside every
+     * product. A made-up number on a card reads as the offer's own pricing, and
+     * this block never changes a price.
+     */
+    const block = source.slice(source.indexOf("function OfferPreview"));
+
+    expect(source).not.toContain("$30.00");
+    expect(source).not.toContain("White color");
+    expect(block).toContain("typeof product.price === 'number'");
+    expect(block).toContain("formatMoney(product.price");
+  });
+
+  test("images and prices are hydrated per load, not stored on the offer", () => {
+    /*
+     * The stored lists carry id/handle/title only — enough to publish. A product
+     * whose image or price changes must not need every offer that mentions it to
+     * be re-saved, so the editor fetches those on open in one nodes(ids:) call,
+     * and a failed hydrate degrades to no images rather than an error page.
+     */
+    expect(source).toContain("getProductsByIds(admin, ids)");
+    expect(source).toContain("offer: await hydrateProducts(admin, offer)");
+
+    const hydrate = source.slice(
+      source.indexOf("async function hydrateProducts"),
+      source.indexOf("export const loader"),
+    );
+    expect(hydrate).toContain("[...new Set(");
+    expect(hydrate).toContain("} catch {");
   });
 
   test("the Offer tab picks both product lists", () => {

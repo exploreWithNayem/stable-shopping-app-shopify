@@ -27,7 +27,14 @@
       added: {{ 'recommendations.added' | t | json }},
       soldOut: {{ 'recommendations.sold_out' | t | json }},
       chooseOptions: {{ 'recommendations.choose_options' | t | json }},
-      error: {{ 'recommendations.error' | t | json }}
+      error: {{ 'recommendations.error' | t | json }},
+      {%- comment -%}
+        The injected offer builds its own slider arrows, so their labels come from
+        here rather than from a block's Liquid. reco.js falls back to English if
+        the embed is off — but this path *is* the embed, so it never has to.
+      {%- endcomment -%}
+      previous: {{ 'recommendations.previous' | t | json }},
+      next: {{ 'recommendations.next' | t | json }}
     }
   };
 </script>
@@ -92,6 +99,13 @@
         window.EasyReco = window.EasyReco || {};
         window.EasyReco.offer = {
           productId: {{ product.id | json }},
+          {%- comment -%}
+            The offer type, which decides the injected layout: the card-style
+            types render as a carousel of rows — one product at a time, the shape
+            the offer editor previews — and the bundle types as a grid. Null for a
+            list curated on the recommendations page, which never had a type.
+          {%- endcomment -%}
+          type: {%- if reco.type -%}{{ reco.type | json }}{%- else -%}null{%- endif -%},
           copy: {%- if reco.copy -%}{{ reco.copy | json }}{%- else -%}null{%- endif -%},
           render: {%- if reco.render -%}{{ reco.render | json }}{%- else -%}null{%- endif -%},
           items: [{{ offer_items }}]
